@@ -1,6 +1,7 @@
 import {
   redactDeep,
   redactUrlValue,
+  redactVlessEncryption,
   buildDiagnosticReport,
   collectNodeIdentifiers,
   redactIdentifiers,
@@ -159,6 +160,40 @@ describe('redactDeep — 密钥脱敏（红线：零明文密钥）', () => {
     const src = { password: 'p' };
     redactDeep(src);
     expect(src.password).toBe('p');
+  });
+});
+
+describe('redactDeep — Xray 节点（VLESS Encryption / 自定义 Xray outbound）', () => {
+  it('VLESS Encryption 串保留方案前缀、打码密钥段；none / vmess 算法名原样', () => {
+    const out = redactDeep({
+      servers: [
+        { id: 'n1', protocol: 'vless', encryption: 'mlkem768x25519plus.native.0rtt.SECRETKEY' },
+        { id: 'n2', protocol: 'vless', encryption: 'none' },
+      ],
+    }) as { servers: { id: string; encryption: string }[] };
+    expect(out.servers[0].encryption).toBe('mlkem768x25519plus.native.0rtt.<redacted>');
+    expect(out.servers[1].encryption).toBe('none');
+    expect(out.servers[0].id).toBe('n1'); // 结构 id 保留
+    expect(redactVlessEncryption('aes-128-gcm')).toBe('aes-128-gcm');
+  });
+
+  it('自定义 Xray outbound：用户 id / pass 无需声明 secretKeys 即打码；节点结构 id 保留', () => {
+    const out = redactDeep({
+      id: 'node-1',
+      protocol: 'custom',
+      customSettings: {
+        engine: 'xray',
+        outbound: {
+          protocol: 'vless',
+          settings: { vnext: [{ address: 'a.com', port: 443, users: [{ id: 'UUID-SECRET' }] }] },
+          streamSettings: { network: 'xhttp' },
+        },
+      },
+    }) as any;
+    expect(out.id).toBe('node-1');
+    expect(out.customSettings.outbound.settings.vnext[0].users[0].id).toBe(REDACTED);
+    expect(out.customSettings.outbound.settings.vnext[0].address).toBe('a.com');
+    expect(JSON.stringify(out)).not.toContain('UUID-SECRET');
   });
 });
 

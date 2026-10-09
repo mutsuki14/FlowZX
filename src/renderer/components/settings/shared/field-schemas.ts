@@ -144,6 +144,10 @@ interface TransportValues {
   wsPath?: string;
   wsHost?: string;
   grpcServiceName?: string;
+  xhttpPath?: string;
+  xhttpHost?: string;
+  xhttpMode?: string;
+  xhttpExtra?: string;
 }
 
 /** 从既有 serverConfig 读取传输字段默认值（ws/http 共用 wsPath/wsHost 输入框；undefined=新建分支）。 */
@@ -153,6 +157,7 @@ export function readTransportDefaults(serverConfig?: ServerConfig) {
     wsHost:
       serverConfig?.wsSettings?.headers?.['Host'] || serverConfig?.httpSettings?.host?.[0] || '',
     grpcServiceName: serverConfig?.grpcSettings?.serviceName || '',
+    ...readXhttpDefaults(serverConfig),
   };
 }
 
@@ -179,5 +184,76 @@ export function buildTransportSettings(network: string, values: TransportValues)
           }
         : null,
     grpcSettings: network === 'grpc' ? { serviceName: values.grpcServiceName?.trim() || '' } : null,
+    xhttpSettings: network === 'xhttp' ? buildXhttpSettings(values) : null,
+  };
+}
+
+// ── Xray（XHTTP 传输 / 强制 Xray 内核 / 证书钉扎 / Reality 扩展）——vless/vmess/trojan 表单共用 ──
+
+/** XHTTP 模式（与 shared types XhttpMode 一致）。 */
+export const XHTTP_MODES = ['auto', 'packet-up', 'stream-up', 'stream-one'] as const;
+
+/** extra 文本框：空或合法 JSON 对象。 */
+export function parseXhttpExtra(
+  text: string | undefined
+): Record<string, unknown> | null | 'invalid' {
+  const t = (text || '').trim();
+  if (!t) return null;
+  try {
+    const o = JSON.parse(t);
+    return o && typeof o === 'object' && !Array.isArray(o)
+      ? (o as Record<string, unknown>)
+      : 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+/** Xray 相关字段的 zod 形状（展开进 z.object）。xhttpExtra 非法 JSON 时提交被拦（错误挂在该字段）。 */
+export const xraySchemaShape = {
+  xhttpPath: z.string().optional(),
+  xhttpHost: z.string().optional(),
+  xhttpMode: z.enum(XHTTP_MODES).optional(),
+  xhttpExtra: z
+    .string()
+    .optional()
+    .refine((v) => parseXhttpExtra(v) !== 'invalid', { message: 'invalid-json' }),
+  useXrayCore: z.boolean().optional(),
+  tlsPinnedSha256: z.string().optional(),
+};
+
+/** 新建表单的 Xray 默认值。 */
+export const xrayDefaults = {
+  useXrayCore: false,
+  tlsPinnedSha256: '',
+};
+
+/** 从既有 serverConfig 读取 XHTTP 字段默认值（readTransportDefaults 内聚调用）。 */
+export function readXhttpDefaults(serverConfig?: ServerConfig) {
+  const x = serverConfig?.xhttpSettings;
+  return {
+    xhttpPath: x?.path || '',
+    xhttpHost: x?.host || '',
+    xhttpMode: (x?.mode || 'auto') as (typeof XHTTP_MODES)[number],
+    xhttpExtra: x?.extra && Object.keys(x.extra).length > 0 ? JSON.stringify(x.extra, null, 2) : '',
+  };
+}
+
+/** 从既有 serverConfig 读取 Xray 开关 / 证书钉扎默认值。 */
+export function readXrayDefaults(serverConfig: ServerConfig) {
+  return {
+    useXrayCore: serverConfig.useXrayCore === true,
+    tlsPinnedSha256: serverConfig.tlsSettings?.pinnedPeerCertSha256 || '',
+  };
+}
+
+/** XHTTP 提交映射（mode=auto 仍写入，便于往返；builder 侧不下发 auto）。 */
+export function buildXhttpSettings(values: TransportValues) {
+  const extra = parseXhttpExtra(values.xhttpExtra);
+  return {
+    path: values.xhttpPath?.trim() || '/',
+    host: values.xhttpHost?.trim() || undefined,
+    mode: (values.xhttpMode as (typeof XHTTP_MODES)[number] | undefined) || undefined,
+    extra: extra && extra !== 'invalid' ? extra : undefined,
   };
 }

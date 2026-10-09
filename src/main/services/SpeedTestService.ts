@@ -37,6 +37,13 @@ interface SpeedTestRunContext {
   skipped: SpeedTestSkipped;
 }
 import { isEndpointProtocol, isSpeedTestable } from '../../shared/endpoint-routes';
+import { requiresXrayCore } from '../../shared/xray';
+
+/** 临时测速用的 Xray 会话（见 ProxyManager.createXraySpeedTestSession）。 */
+export interface XraySpeedTestSession {
+  outboundFor: (server: ServerConfig, tag: string) => Record<string, unknown> | null;
+  dispose: () => Promise<void>;
+}
 import { normalizeDuration } from '../../shared/duration';
 
 /** 基于 UDP/QUIC 的协议，需要走真实代理测速 */
@@ -120,6 +127,18 @@ export class SpeedTestService {
   private currentTest: Promise<SpeedTestRunResult> | null = null;
   private currentTestIds: Set<string> | null = null;
   private lastDiagnostics: SpeedTestDiagnosticSnapshot | null = null;
+
+  /**
+   * 临时测速路径的 Xray 会话工厂（index.ts 注入 ProxyManager.createXraySpeedTestSession）：为 Xray 节点起临时 Xray，
+   * 返回各节点的 socks 出站构造器 + 释放函数。未注入 / 返回 null → Xray 节点记不可测（unusable）。
+   */
+  private xraySessionFactory?: (servers: ServerConfig[]) => Promise<XraySpeedTestSession | null>;
+
+  setXraySessionFactory(
+    fn: (servers: ServerConfig[]) => Promise<XraySpeedTestSession | null>
+  ): void {
+    this.xraySessionFactory = fn;
+  }
 
   constructor(
     logManager: LogManager,
@@ -435,13 +454,30 @@ export class SpeedTestService {
     let stderrOutput = '';
     let stdoutOutput = '';
 
+    // Xray 节点：临时 sing-box 无法直接承载 → 先起临时 Xray（直拨），这些节点在临时 sing-box 里是指向它的 socks 出站。
+    let xraySession: XraySpeedTestSession | null = null;
+    const xrayServers = servers.filter((s) => requiresXrayCore(s));
+    if (xrayServers.length > 0 && this.xraySessionFactory) {
+      try {
+        xraySession = await this.xraySessionFactory(xrayServers);
+      } catch (e) {
+        this.logManager.addLog(
+          'warn',
+          `测速临时 Xray 会话创建失败: ${e instanceof Error ? e.message : String(e)}`,
+          'SpeedTest'
+        );
+      }
+    }
+
     // 构造各节点出站；不可用（naive 缺 libcronet / 异常）→ 直接 null，不进临时核（避免预初始化 FATAL 拖垮整批）。
     const getOutbound =
       this.buildOutboundFn ?? ((s: ServerConfig, t: string) => this.buildOutbound(s, t));
     const usable: { server: ServerConfig; tag: string; outbound: Record<string, unknown> }[] = [];
     for (const s of servers) {
       const tag = `out-${s.id.slice(0, 8)}`;
-      const ob = getOutbound(s, tag);
+      const ob = requiresXrayCore(s)
+        ? (xraySession?.outboundFor(s, tag) ?? null)
+        : getOutbound(s, tag);
       if (ob) usable.push({ server: s, tag, outbound: ob });
       else {
         results.set(s.id, null);
@@ -452,6 +488,7 @@ export class SpeedTestService {
     // 解析测速端点（一次，预热+正式共用）；非法 testUrl 经 resolveSpeedTestTarget 回落默认 generate_204。
     const target = resolveSpeedTestTarget(testUrl);
     if (usable.length === 0) {
+      await xraySession?.dispose();
       this.lastDiagnostics = {
         generatedAt: new Date().toISOString(),
         target,
@@ -611,6 +648,7 @@ export class SpeedTestService {
           // ignore
         }
       }
+      await xraySession?.dispose().catch(() => {});
     }
 
     return results;

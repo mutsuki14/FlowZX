@@ -33,6 +33,7 @@
 
 **協定**
 - 代理：VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
+- **Xray 核心（FlowZX）**：隨包內建 Xray-core sidecar，支援 **VLESS + XHTTP + REALITY + ENC（VLESS Encryption）**、XHTTP、REALITY ML-DSA-65、vision-udp443 與任意「自訂 Xray outbound JSON」；sing-box 仍為主核。詳見 [docs/XRAY.md](docs/XRAY.md)
 - 組網：**WireGuard** / **Cloudflare WARP** / **Tailscale**
 - **自訂協定 + 換核擴充**：貼上 sing-box outbound JSON，儲存時以「核心即權威」即時探測相容性；官方核心不支援的協定可手動替換為支援它的第三方 fork 核心（FlowZ 會自動辨識 fork、停用線上更新以防覆蓋）
 

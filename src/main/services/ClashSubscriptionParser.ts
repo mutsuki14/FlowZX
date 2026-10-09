@@ -227,8 +227,32 @@ function applyTransportAndTls(
       if (single) httpSettings.host = [single];
     }
     if (Object.keys(httpSettings).length > 0) config.httpSettings = httpSettings;
+  } else if (rawNet === 'xhttp' || rawNet === 'splithttp') {
+    // XHTTP（mihomo network:xhttp + xhttp-opts）：Xray 独有传输，节点经 Xray sidecar 承载（shared/xray.ts）。
+    // mihomo 的 kebab-case 键映射到 Xray xhttpSettings（extra 承载 Xray 的 camelCase 高级项）。
+    config.network = 'xhttp';
+    const xo = (p['xhttp-opts'] as Record<string, unknown>) || {};
+    const xhttp: NonNullable<ServerConfig['xhttpSettings']> = {};
+    const path = str(xo['path']);
+    if (path) xhttp.path = path;
+    const host = str(xo['host']) ?? pickHostHeader(xo['headers']);
+    if (host) xhttp.host = host;
+    const mode = str(xo['mode'])?.toLowerCase();
+    if (mode === 'auto' || mode === 'packet-up' || mode === 'stream-up' || mode === 'stream-one') {
+      xhttp.mode = mode;
+    }
+    const extra: Record<string, unknown> = {};
+    if (bool(xo['no-grpc-header']) === true) extra.noGRPCHeader = true;
+    const xpb = str(xo['x-padding-bytes']);
+    if (xpb) extra.xPaddingBytes = xpb;
+    const scPost = str(xo['sc-max-each-post-bytes']);
+    if (scPost) extra.scMaxEachPostBytes = scPost;
+    const scInterval = str(xo['sc-min-posts-interval-ms']);
+    if (scInterval) extra.scMinPostsIntervalMs = scInterval;
+    if (Object.keys(extra).length > 0) xhttp.extra = extra;
+    config.xhttpSettings = xhttp;
   } else if (rawNet && rawNet !== 'tcp') {
-    // xhttp/splithttp/kcp 等 sing-box 不支持的传输：静默落 tcp 会产出连不上的假节点，
+    // kcp 等结构化表单无法承载的传输：静默落 tcp 会产出连不上的假节点，
     // 整节点拒绝（mapNode catch 计 fail、聚合告警；与分享链/sing-box JSON 路径统一口径，issue #263）。
     throw new Error(`不支持的传输层类型: ${rawNet}`);
   }
@@ -391,7 +415,8 @@ function mapNode(rawProxy: unknown, subscriptionId: string, now: string): NodeOu
       const uuid = str(p['uuid']);
       if (!uuid) return { kind: 'fail', reason: `vless 节点 "${name}" 缺 uuid` };
       config.uuid = uuid;
-      config.encryption = 'none';
+      // VLESS Encryption（mihomo encryption: mlkem768x25519plus.*）：非 none 即经 Xray sidecar 承载。
+      config.encryption = str(p['encryption'])?.trim() || 'none';
       const flow = str(p['flow']);
       if (flow) config.flow = flow;
       const pe = str(p['packet-encoding']);

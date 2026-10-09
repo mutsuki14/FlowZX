@@ -16,6 +16,7 @@ import type {
   WebSocketSettings,
   GrpcSettings,
   HttpSettings,
+  XhttpSettings,
 } from './types/protocol-settings';
 
 import type { Rule, CustomRuleSet, RuleResource, AppRule, CustomAppPreset } from './types/rules';
@@ -46,6 +47,8 @@ export type {
   WireGuardSettings,
   TailscaleSettings,
   CustomSettings,
+  XhttpMode,
+  XhttpSettings,
 } from './types/protocol-settings';
 
 // ============================================================================
@@ -125,7 +128,8 @@ export type Protocol =
   | 'wireguard'
   | 'tailscale'
   | 'custom';
-export type Network = 'tcp' | 'ws' | 'grpc' | 'http' | 'httpupgrade';
+// xhttp = Xray 独有传输（sing-box 不支持）：选用即节点经 Xray 内核运行（shared/xray.ts#requiresXrayCore）。
+export type Network = 'tcp' | 'ws' | 'grpc' | 'http' | 'httpupgrade' | 'xhttp';
 export type Security = 'none' | 'tls' | 'reality';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 // 'auto' = 默认档：跟随平台映射（macOS·Windows→gvisor / Linux→system），经 shared/tun-defaults#resolveTunStack
@@ -238,6 +242,13 @@ export interface ServerConfig {
   wsSettings?: WebSocketSettings;
   grpcSettings?: GrpcSettings;
   httpSettings?: HttpSettings;
+  // XHTTP 传输（Xray 独有，network='xhttp' 时消费）
+  xhttpSettings?: XhttpSettings;
+
+  // 强制经 Xray 内核运行（仅 vless/vmess/trojan/shadowsocks 有意义）。缺省=自动：仅当节点用到 Xray 独有特性
+  //（XHTTP / VLESS Encryption / Reality ML-DSA-65 / vision-udp443 / 自定义 Xray JSON）时才走 Xray，其余走 sing-box。
+  // 判定单一真值见 shared/xray.ts#xrayRequirement。
+  useXrayCore?: boolean;
 
   createdAt?: string;
   updatedAt?: string;

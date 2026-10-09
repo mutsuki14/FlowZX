@@ -10,6 +10,7 @@ export const IPC_CHANNELS = {
   // §2 动作条「立即应用」：把 ConfigManager 最新 config force-restart 入核（复用 F11 applyConfigForcingRestart，绕 P2-A/B defer）。
   PROXY_APPLY_PENDING_CHANGES: 'proxy:applyPendingChanges',
   KERNEL_PROBE_OUTBOUND: 'kernel:probeOutbound', // 自定义协议兼容性 probe（当前内核 sing-box check）
+  KERNEL_XRAY_STATUS: 'kernel:xrayStatus', // Xray sidecar 内核状态（版本 / 路径 / 运行态）
 
   // 配置管理
   CONFIG_GET: 'config:get',

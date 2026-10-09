@@ -1295,15 +1295,54 @@ describe('LOW-4 override skip-cert-verify:false 也覆盖（赋值语义）', ()
 describe('传输层白名单 + reality 完整性（issue #263 统一口径）', () => {
   const NOW = '2026-07-07T00:00:00.000Z';
 
-  it('vless network=xhttp → fail 计数 + 聚合告警，不入库', () => {
+  it('vless network=kcp → fail 计数 + 聚合告警，不入库', () => {
     const r = parseClashProxies(
-      [{ name: 'x', type: 'vless', server: 'a.com', port: 443, uuid: 'u', network: 'xhttp' }],
+      [{ name: 'x', type: 'vless', server: 'a.com', port: 443, uuid: 'u', network: 'kcp' }],
       'sub',
       NOW
     );
     expect(r.servers).toHaveLength(0);
     expect(r.failed).toBe(1);
-    expect(r.warnings.join('\n')).toMatch(/不支持的传输层类型: xhttp/);
+    expect(r.warnings.join('\n')).toMatch(/不支持的传输层类型: kcp/);
+  });
+
+  it('mihomo vless network=xhttp + xhttp-opts + encryption → XHTTP 节点（Xray sidecar 承载）', () => {
+    const r = parseClashProxies(
+      [
+        {
+          name: 'x',
+          type: 'vless',
+          server: 'a.com',
+          port: 443,
+          uuid: 'u',
+          encryption: 'mlkem768x25519plus.native.0rtt.k',
+          network: 'xhttp',
+          tls: true,
+          servername: 'sni.com',
+          'reality-opts': { 'public-key': 'pbk', 'short-id': 'ab' },
+          'xhttp-opts': {
+            path: '/xh',
+            host: 'cdn.com',
+            mode: 'stream-up',
+            'no-grpc-header': true,
+            'x-padding-bytes': '100-1000',
+          },
+        },
+      ],
+      'sub',
+      NOW
+    );
+    expect(r.failed).toBe(0);
+    const s = r.servers[0];
+    expect(s.encryption).toBe('mlkem768x25519plus.native.0rtt.k');
+    expect(s.network).toBe('xhttp');
+    expect(s.security).toBe('reality');
+    expect(s.xhttpSettings).toEqual({
+      path: '/xh',
+      host: 'cdn.com',
+      mode: 'stream-up',
+      extra: { noGRPCHeader: true, xPaddingBytes: '100-1000' },
+    });
   });
 
   it('network 缺省/tcp 正常入库（不受白名单影响）', () => {

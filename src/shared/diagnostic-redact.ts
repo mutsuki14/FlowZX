@@ -40,6 +40,21 @@ export const SECRET_KEYS: ReadonlySet<string> = new Set([
   'userkey', // snell 多用户服务器鉴权 key（一等公民 snellSettings.userkey / 自定义 JSON 兜底）
 ]);
 
+/** Xray 自定义 outbound 子树内额外打码的键（归一化后）：VLESS/VMess 用户 id、socks/http 的 pass。 */
+const XRAY_SECRET_KEYS: readonly string[] = ['id', 'pass'];
+
+/**
+ * VLESS Encryption 串脱敏：保留握手方案前缀（mlkem768x25519plus.native.0rtt 之类，供判形态），打码密钥段。
+ * none / 空 / 非 VLESS Encryption 形态的短值（vmess 的 auto / aes-128-gcm 等算法名）原样保留。
+ */
+export function redactVlessEncryption(raw: string): string {
+  const parts = raw.split('.');
+  if (parts.length >= 4 && /^mlkem768x25519plus$/i.test(parts[0])) {
+    return `${parts.slice(0, 3).join('.')}.${REDACTED}`;
+  }
+  return raw;
+}
+
 /** url 类键名（值按 url 处理：仅保留 origin，path/query 都打码——订阅 token 可能在 path 或 query）。 */
 export const URL_KEYS: ReadonlySet<string> = new Set(['url']);
 
@@ -78,11 +93,16 @@ export function redactDeep(value: unknown, extraSecretKeys?: ReadonlySet<string>
     const out: Record<string, unknown> = {};
 
     // custom 协议：outbound 内按该节点声明的 secretKeys 额外打码（归一化后并入黑名单传给子层）。
+    // Xray 自定义 outbound（engine='xray'）的凭据键名与 sing-box 不同（VLESS/VMess 用户 id、socks/http 的 pass、
+    // VLESS Encryption 的 encryption）→ 无需用户声明即叠加。'id' 不能进全局黑名单（ServerConfig.id 等结构 id 要保留）。
     let childExtra = extraSecretKeys;
-    const cs = src.customSettings as { secretKeys?: unknown } | undefined;
-    if (cs && Array.isArray(cs.secretKeys)) {
+    const cs = src.customSettings as { secretKeys?: unknown; engine?: unknown } | undefined;
+    if (cs && (Array.isArray(cs.secretKeys) || cs.engine === 'xray')) {
       const merged = new Set(extraSecretKeys ?? []);
-      for (const k of cs.secretKeys) if (typeof k === 'string') merged.add(normalizeKey(k));
+      if (Array.isArray(cs.secretKeys)) {
+        for (const k of cs.secretKeys) if (typeof k === 'string') merged.add(normalizeKey(k));
+      }
+      if (cs.engine === 'xray') for (const k of XRAY_SECRET_KEYS) merged.add(k);
       childExtra = merged;
     }
 
@@ -95,6 +115,8 @@ export function redactDeep(value: unknown, extraSecretKeys?: ReadonlySet<string>
         out[k] = REDACTED;
       } else if (URL_KEYS.has(nk) && typeof v === 'string') {
         out[k] = redactUrlValue(v);
+      } else if (nk === 'encryption' && typeof v === 'string') {
+        out[k] = redactVlessEncryption(v);
       } else if (typeof v === 'object') {
         out[k] = redactDeep(v, childExtra);
       } else {
@@ -280,6 +302,8 @@ export interface DiagnosticReportInput {
   app: {
     flowzVersion: string;
     coreVersion: string;
+    // Xray sidecar 内核摘要（版本 / 运行态 / 承载节点数）；缺省 = 旧主进程未采集。
+    xray?: string;
     os: string; // e.g. "win32 x64 10.0.22631"
     electron?: string;
   };
@@ -436,6 +460,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
   lines.push(`- 生成时间：${input.generatedAt}`);
   lines.push(`- FlowZ 版本：${app.flowzVersion}`);
   lines.push(`- 内核版本：${app.coreVersion}`);
+  if (app.xray) lines.push(`- Xray 内核：${app.xray}`);
   lines.push(`- 系统：${app.os}`);
   if (app.electron) lines.push(`- Electron：${app.electron}`);
   lines.push('');

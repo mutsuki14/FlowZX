@@ -801,6 +801,14 @@
       "checkUpdate": "检查更新",
       "downloading": "正在下载更新...",
       "updateAvailable": "可更新 {{version}}"
+    },
+    "xrayCore": {
+      "title": "Xray 内核（sidecar）",
+      "missing": "缺失",
+      "running": "运行中 · {{n}} 个节点",
+      "idle": "未运行",
+      "desc": "与 sing-box 协同运行 Xray 独有协议节点（XHTTP、VLESS Encryption 等）。如需更换 Xray 版本，把 xray 可执行文件放到 {{dir}}。",
+      "refresh": "刷新"
     }
   },
   "servers": {
@@ -1217,7 +1225,36 @@
     "meshTsKeyReadySub": "设置 · 删除",
     "meshTsAddSub": "交互登录 / AuthKey",
     "meshTsEntryTitle": "Tailscale 组网接入与账户管理",
-    "speedTestingNodes": "测速中 · {{tested}}/{{total}} 节点"
+    "speedTestingNodes": "测速中 · {{tested}}/{{total}} 节点",
+    "xrayReasonXhttp": "XHTTP 传输",
+    "xrayReasonEncryption": "VLESS Encryption 加密",
+    "xrayReasonVisionUdp443": "xtls-rprx-vision-udp443 流控",
+    "xrayReasonPqv": "REALITY ML-DSA-65 后量子验证",
+    "xrayReasonCustom": "自定义 Xray 出站 JSON",
+    "xrayReasonForced": "手动开启",
+    "xhttpPath": "XHTTP 路径",
+    "xhttpHost": "XHTTP Host",
+    "xhttpMode": "XHTTP 模式",
+    "xhttpModeDesc": "auto 自动选择最佳模式。packet-up 可穿过绝大多数 CDN；stream-up / stream-one 需要链路支持流式传输。",
+    "xhttpExtra": "XHTTP extra（JSON）",
+    "xhttpExtraDesc": "Xray xhttpSettings.extra 原样对象，如 {\"xmux\":{\"maxConcurrency\":\"16-32\"}}，或用 downloadSettings 实现上下行分离。",
+    "xhttpExtraInvalid": "必须是 JSON 对象",
+    "xrayCore": "使用 Xray 内核",
+    "xrayCoreDesc": "FlowZ 仍以 sing-box 为主核（TUN / 分流 / DNS），把此节点交给随包的 Xray 内核运行。XHTTP、VLESS Encryption 等 Xray 独有协议必须使用。",
+    "xrayCoreAuto": "使用了{{reason}}，此节点将由 Xray 内核运行。",
+    "xrayCoreForced": "此节点将由 Xray 内核运行。",
+    "xrayCoreUnsupported": "HTTP/2 传输、Shadow-TLS、SS 插件为 sing-box 独有特性，无法切换到 Xray 内核。",
+    "pinnedCert": "证书 SHA-256 指纹",
+    "pinnedCertDesc": "Xray 26 已移除「允许不安全证书」。自签证书节点请填证书 SHA-256（十六进制，多个用逗号分隔；可用 `xray tls hash --cert cert.pem` 获取）。",
+    "realityMldsa65": "ML-DSA-65 验证公钥",
+    "realityMldsa65Desc": "REALITY 后量子证书验证（Xray 独有，分享链 pqv）。填写后此节点由 Xray 内核运行。",
+    "vlessEncryptionDesc": "填 none，或 `xray vlessenc` 生成的 VLESS Encryption 串（如 mlkem768x25519plus.native.0rtt.…）。启用 VLESS Encryption 的节点由 Xray 内核运行。",
+    "multiplexXrayConflict": "Xray 内核节点不使用 sing-box 多路复用（可在 XHTTP extra 中配置 xmux）。",
+    "xrayBadgeTip": "由 Xray 内核运行（{{reason}}）",
+    "customEngine": "内核",
+    "customXrayIntro": "粘贴一份 Xray outbound JSON（protocol + settings + streamSettings）。",
+    "customXrayIntroFull": "由随包 Xray 内核（sidecar）运行，任何 Xray 独有组合都可用——mKCP + finalmask、XHTTP downloadSettings、hysteria、wireguard……tag、proxySettings 与 sockopt.dialerProxy 由 FlowZ 接管（链式代理请用节点的前置代理）。",
+    "customXrayJsonInvalid": "JSON 无效——必须是含 \"protocol\" 字段的 Xray outbound 对象"
   },
   "rules": {
     "ruleColumn": "规则",

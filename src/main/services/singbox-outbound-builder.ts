@@ -32,6 +32,8 @@ import {
   getDomesticResolverTag,
 } from './singbox-config-helpers';
 import { isDirectSelection, resolveGlobalExitTag } from '../../shared/direct-selection';
+import { requiresXrayCore } from '../../shared/xray';
+import { XRAY_DIAL_DIRECT_TAG, type XrayBridgePlan } from './xray-bridge';
 
 /**
  * 协议的 TLS 是否「在 QUIC 内自管」（hy2/tuic）：无 TCP ClientHello → 不挂 uTLS / tls.engine / fragment / spoof。
@@ -65,12 +67,35 @@ function meshNonFullTunnelReason(): string {
   return '已关闭外网访问';
 }
 
-/** 节点是否可用：naive 需要 libcronet 核心库，缺库时不可用（会被跳过、分流/选中回退到 selector）。 */
+/**
+ * 节点是否可用：naive 需要 libcronet 核心库、Xray 节点需要 Xray 内核，缺失时不可用（会被跳过、分流/选中回退到 selector）。
+ */
 export function isNodeUsable(server: ServerConfig): boolean {
   if (server.protocol.toLowerCase() === 'naive' && !resourceManager.hasCronetLib()) {
     return false;
   }
+  if (requiresXrayCore(server) && !resourceManager.hasXrayCore()) {
+    return false;
+  }
   return true;
+}
+
+/**
+ * Xray 节点在 sing-box 侧的出站：socks 指向 Xray sidecar 中该节点的专属 loopback 入站（端口 + 凭据见 xray-bridge）。
+ * loopback 不进 TUN；sing-box 的接口绑定对回环地址自动豁免。TCP/UDP 均经 socks（Xray 入站 udp:true）。
+ */
+export function buildXrayBridgeOutbound(
+  tag: string,
+  node: { port: number; user: string; pass: string }
+): SingBoxOutbound {
+  return {
+    type: 'socks',
+    tag,
+    server: '127.0.0.1',
+    server_port: node.port,
+    username: node.user,
+    password: node.pass,
+  };
 }
 
 /**
@@ -584,7 +609,9 @@ function applyAntiCensorshipOptions(outbound: SingBoxOutbound, server: ServerCon
   if (outbound.tls) {
     if (server.tlsSettings?.ech) {
       // 可选 ECHConfigList：填了下发 tls.ech.config（PEM 按行拆数组）；留空则 sing-box 从 DNS(HTTPS RR) 自取。
-      const echCfg = server.tlsSettings.echConfig?.trim();
+      // Xray 形态的「DNS 查询地址」（https://… / udp://…，来自 Xray 分享链 ech=）sing-box 不认 → 视同留空（自取）。
+      const rawEch = server.tlsSettings.echConfig?.trim();
+      const echCfg = rawEch && !/:\/\//.test(rawEch) ? rawEch : undefined;
       const echLines = echCfg
         ? echCfg
             .split(/\r?\n/)
@@ -675,6 +702,9 @@ export interface OutboundsDeps {
   systemInterfaceAvailable?: boolean;
   // §15 主核测速探测池：K 个 probe-selector-k selector 的端口数（allocateProbePorts 3+K 产出）。空/缺省=不注入池。
   probePoolPorts?: number[];
+  // Xray sidecar 桥规划（ProxyManager.prepareXrayBridge 产出）。缺省 = 本次无 Xray（预检/快照/诊断或无 Xray 节点）
+  // → 需要 Xray 的节点不发射（同 naive 缺库跳过语义），路由死引用由 fixRouteDeadReferences 兜底。
+  xrayBridge?: XrayBridgePlan | null;
 }
 
 /**
@@ -814,6 +844,7 @@ export function buildOutbounds(
   pendingEndpoints.length = 0;
   const nodeTags: string[] = [];
   let systemWgCount = 0; // 多 System WG 唯一内核接口名计数（防多个 system:true WG 都叫 flowz-wg 撞名致核 FATAL）。
+  const xrayNodes = new Map((deps.xrayBridge?.nodes ?? []).map((n) => [n.serverId, n]));
 
   if (config) {
     // 生成【全部】节点的 Outbound：selector 需要列出所有可切换节点；detour 前置节点亦在 config.servers
@@ -832,6 +863,18 @@ export function buildOutbounds(
       // 启动前配置校验 gate 已标记为非法的节点：跳过、不进 outbounds/selector（防 onRetry 重生成复活）。
       // 路由层对其 tag 的死引用由 generateSingBoxConfig 末尾 fixRouteDeadReferences 统一修正为 selector。
       if (deps.gateInvalidNodes.has(server.id)) {
+        continue;
+      }
+      // Xray 节点：sing-box 侧只是一个指向 sidecar 的 socks 出站（协议细节全在 Xray 配置里）。前置代理(detour)
+      // 由 Xray 的 dialer 回环到 sing-box 后按 auth_user 路由实现（见 xray-bridge），故此处不设 outbound.detour。
+      if (requiresXrayCore(server)) {
+        const node = xrayNodes.get(server.id);
+        if (!node) {
+          deps.log('debug', `Xray 节点「${server.name}」未进入本次 Xray 内核配置，已跳过`);
+          continue;
+        }
+        outbounds.push(buildXrayBridgeOutbound(tag, node));
+        nodeTags.push(tag);
         continue;
       }
       // Phase 2：reverseMesh(system:true 内核接口)需提权——仅 TUN 模式 + helper 下可行。非提权路径（系统代理 /
@@ -972,6 +1015,38 @@ export function buildOutbounds(
       }
     }
 
+    // Xray 节点前置代理存活校验：前置节点未发射（不可用 / gate 剔除 / 生成失败）→ 剔除本 Xray 节点、绝不静默改直连
+    //（与 sing-box 节点 detour 死引用同隐私语义）；选中节点 → throw。收敛循环：前置本身是被剔的 Xray 节点时连锁剔除。
+    if (deps.xrayBridge && deps.xrayBridge.detourOf.size > 0) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [xid, did] of deps.xrayBridge.detourOf) {
+          const xtag = idToTagMap.get(xid);
+          if (!xtag || !nodeTags.includes(xtag)) continue;
+          const dtag = idToTagMap.get(did);
+          if (dtag && nodeTags.includes(dtag)) continue;
+          if (selectedServer && selectedServer.id === xid) {
+            throw new Error(
+              `选中节点「${xtag}」的代理链依赖的前置节点不可用，无法启动，请更换节点后重试`
+            );
+          }
+          nodeTags.splice(nodeTags.indexOf(xtag), 1);
+          const idx = outbounds.findIndex((o) => o.tag === xtag);
+          if (idx >= 0) outbounds.splice(idx, 1);
+          if (!deps.gateInvalidNodes.has(xid)) {
+            deps.gateInvalidNodes.set(xid, {
+              id: xid,
+              tag: xtag,
+              reason: '代理链依赖的前置节点不可用（detour 引用无效）',
+            });
+          }
+          deps.log('warn', `Xray 节点「${xtag}」的前置代理不可用，已剔除`);
+          changed = true;
+        }
+      }
+    }
+
     // 全局 TLS 分片（PR-6）：开启后对所有已生成的 TCP-TLS 节点出站切分 ClientHello，抗 SNI-DPI。
     // 跳过 hy2/tuic（QUIC 内 TLS、无 TCP ClientHello，死配置）与 naive（Cronet 自管 TLS，拒绝
     // fragment 字段 → 启动 FATAL）。
@@ -1035,6 +1110,16 @@ export function buildOutbounds(
     domain_resolver: getDomesticResolverTag(config, 'dns-bootstrap'),
   });
 
+  // Xray sidecar 回环拨号的直连出站：Xray 节点的服务器地址经 xray-dial-in 交回 sing-box 拨号，解析器与 sing-box
+  // 节点 dial 同档（getNodeDialDomainResolver：race 多上游 / 关 IPv6 时的 AAAA 放宽），行为与原生节点一致。
+  if (deps.xrayBridge && deps.xrayBridge.dialInbound.port > 0) {
+    outbounds.push({
+      type: 'direct',
+      tag: XRAY_DIAL_DIRECT_TAG,
+      domain_resolver: getNodeDialDomainResolver(config),
+    });
+  }
+
   // 【已删除：legacy `block` 出站】阻断改由 sing-box 1.14 的 `action: 'reject'` 路由动作表达
   // （自定义规则与应用分流两处发射点均已迁移），故本出站无任何引用者：
   //  · 三种 selector 的成员表分别是 [...nodeTags,'direct'] / [...nodeTags,'proxy-selector'] /
@@ -1070,7 +1155,8 @@ export function buildOutbounds(
   for (const ob of outbounds) {
     // 根据 tag（节点名称）反查对应的 ServerConfig；selector/direct/block 等非节点出站匹配不到 → 跳过
     const srv = config?.servers.find((s) => idToTagMap.get(s.id) === ob.tag);
-    if (srv?.shadowTlsSettings) {
+    // Xray 节点的 sing-box 出站是指向 sidecar 的 socks：Shadow-TLS 外层（sing-box 独有）不适用，跳过。
+    if (srv?.shadowTlsSettings && !requiresXrayCore(srv)) {
       // 创建独立的外层 ShadowTLS outbound
       const stlsTag = `stls-out-${srv.id}`;
       const stlsOutbound: SingBoxOutbound = {

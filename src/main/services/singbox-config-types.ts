@@ -126,6 +126,8 @@ export interface SingBoxInbound {
   // **仅 Linux + auto_route + auto_redirect**；脏 MAC → check/启动 FATAL。构建期门控见 buildInbounds。
   include_mac_address?: string[];
   exclude_mac_address?: string[];
+  // socks/http/mixed 入站认证用户（Xray sidecar 回环拨号入站 xray-dial-in 用：凭据鉴权 + route auth_user 分流）
+  users?: { username: string; password: string }[];
   platform?: {
     http_proxy?: {
       enabled: boolean;
@@ -341,6 +343,8 @@ export interface SingBoxRouteRule {
   process_path?: string | string[];
   process_name_not?: string | string[]; // sing-box 1.13+
   inbound?: string | string[]; // sing-box 1.13+
+  // 入站认证用户名匹配（socks/http/mixed）。Xray sidecar 回环拨号按用户名钉死 direct / 前置代理（xray-bridge.ts）。
+  auth_user?: string[];
   action?: string; // logical 子规则为纯 matcher 无 action；default/logical 外层显式设 'route'
   outbound?: string;
   // preferred_by（1.11+；route rule matcher）：按 outbound/endpoint tag 反查其 PreferredAddress/PreferredDomain

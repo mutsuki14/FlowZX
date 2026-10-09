@@ -50,6 +50,11 @@ export interface InboundsDeps {
    * 优先级低于用户显式配置的 `tunConfig.inet4Address`（用户指定即照办，不做避让）。
    */
   tunInet4Address?: string;
+  /**
+   * Xray sidecar 回环拨号入站（xray-dial-in，socks + 凭据）：Xray 节点出网拨号经 dialerProxy 交回 sing-box，
+   * 由 route 头部按 auth_user 钉死 direct / 前置代理。缺省（无 Xray 节点 / 非起核路径）= 不注入。
+   */
+  xrayDialInbound?: { port: number; users: { username: string; password: string }[] } | null;
 }
 
 /**
@@ -154,6 +159,17 @@ export function buildInbounds(
       tag: 'update-in',
       listen: '127.0.0.1',
       listen_port: deps.updateInPort,
+    });
+  }
+
+  // Xray sidecar 回环拨号入站：仅 loopback、强制凭据（防本机其它进程借道）。loopback 不进 TUN，无回环风险。
+  if (deps.xrayDialInbound && deps.xrayDialInbound.port > 0) {
+    inbounds.push({
+      type: 'socks',
+      tag: 'xray-dial-in',
+      listen: '127.0.0.1',
+      listen_port: deps.xrayDialInbound.port,
+      users: deps.xrayDialInbound.users,
     });
   }
 

@@ -188,6 +188,16 @@ export function getSingBoxPidPath(): string {
   return path.join(getUserDataPath(), 'singbox.pid');
 }
 
+/** Xray sidecar 配置（含节点凭据，0600 落盘；随每次起核重写）。 */
+export function getXrayConfigPath(): string {
+  return path.join(getUserDataPath(), 'xray_config.json');
+}
+
+/** Xray sidecar PID 文件（跨会话孤儿清理用：FlowZ 崩溃后残留的 xray 进程在下次起核前被回收）。 */
+export function getXrayPidPath(): string {
+  return path.join(getUserDataPath(), 'xray.pid');
+}
+
 /**
  * 提权/看护路径下的核启动日志。与 singbox.log（核自身 logger 按 log.output 写）是**两份不同的东西**：
  * 核在 logger 建起前挂掉、或 panic/运行时崩溃，错误只走 stderr，singbox.log 里一个字都没有（issue #324 的

@@ -1,5 +1,6 @@
 import type { ServerConfig, Protocol } from './types';
 import { isAccountBasedProtocol, isMeshNodeUnroutable } from './endpoint-routes';
+import { isValidXrayOutbound } from './xray';
 
 /**
  * 协议「必填字段是否齐备」的**单一真值**——主侧 `ConfigManager.validateConfig`（缺则 throw）
@@ -90,7 +91,13 @@ export function protocolRequirementError(server: ServerConfig): string | null {
     case 'tailscale':
       return null; // 账号制：auth_key 可选（无则运行时交互登录），无硬必填项；亦无 address/port
     case 'custom':
-      // raw-JSON 透传：必须是含 type 的 outbound 对象（语义/能否启用由内核 check 判，FlowZ 不校验）。
+      // raw-JSON 透传：sing-box 形态须含 type；Xray 形态（engine='xray'）须含 protocol。
+      // 语义/能否启用由对应内核 check（sing-box check / xray run -test）判，FlowZ 不校验。
+      if (server.customSettings?.engine === 'xray') {
+        return isValidXrayOutbound(server.customSettings?.outbound)
+          ? null
+          : 'Custom Xray outbound requires a JSON object with a "protocol" field';
+      }
       return isValidCustomOutbound(server.customSettings?.outbound)
         ? null
         : 'Custom protocol requires a JSON outbound object with a "type" field';

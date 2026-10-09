@@ -14,6 +14,13 @@ import { MultiplexFields } from './shared/anti-censor-fields';
 import { AddressField, PortField } from './shared/basic-fields';
 import { TlsAdvancedFields } from './shared/tls-fields';
 import { WsPathField, WsHostField, GrpcServiceNameField } from './shared/transport-fields';
+import {
+  XhttpFields,
+  XrayCoreField,
+  PinnedCertField,
+  formXrayRequirement,
+  formCanUseXray,
+} from './shared/xray-fields';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import { normalizeNetworkLower } from './shared/normalize-network';
 import {
@@ -30,6 +37,9 @@ import {
   buildTlsSpoofSettings,
   readTransportDefaults,
   buildTransportSettings,
+  xraySchemaShape,
+  xrayDefaults,
+  readXrayDefaults,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -39,7 +49,7 @@ const createTrojanSchema = (t: any) =>
     address: z.string().min(1, t('servers.addressRequired')),
     port: z.number().min(1).max(65535),
     password: z.string().min(1, t('servers.passwordRequired')),
-    network: z.enum(['tcp', 'ws', 'grpc', 'http', 'httpupgrade']),
+    network: z.enum(['tcp', 'ws', 'grpc', 'http', 'httpupgrade', 'xhttp']),
     security: z.enum(['none', 'tls']),
     tlsServerName: z.string().optional(),
     tlsAllowInsecure: z.boolean(),
@@ -52,6 +62,7 @@ const createTrojanSchema = (t: any) =>
     ...echSchemaShape,
     ...multiplexSchemaShape,
     ...tlsSpoofSchemaShape,
+    ...xraySchemaShape,
   });
 
 type TrojanFormValues = z.infer<ReturnType<typeof createTrojanSchema>>;
@@ -90,6 +101,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
         ...readEchDefault(serverConfig),
         ...readMultiplexDefaults(serverConfig),
         ...readTlsSpoofDefault(serverConfig),
+        ...readXrayDefaults(serverConfig),
       };
     }
     return {
@@ -107,6 +119,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
       ...echDefaults,
       ...multiplexDefaults,
       ...tlsSpoofDefaults,
+      ...xrayDefaults,
     };
   };
 
@@ -134,10 +147,12 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
               alpn: values.alpn ? values.alpn.split(',').map((s) => s.trim()) : undefined,
               ech: values.ech ? true : undefined,
               echConfig: values.echConfig?.trim() || undefined,
+              pinnedPeerCertSha256: values.tlsPinnedSha256?.trim() || undefined,
               ...buildTlsSpoofSettings(values),
             }
           : null,
       ...buildTransportSettings(network, values),
+      useXrayCore: values.useXrayCore ? true : undefined,
       multiplexSettings: buildMultiplexSettings(values),
     };
 
@@ -149,6 +164,14 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
   const showPathHostFields =
     watchedNetwork === 'ws' || watchedNetwork === 'httpupgrade' || watchedNetwork === 'http';
   const isGrpcEnabled = watchedNetwork === 'grpc';
+  const isXhttpEnabled = watchedNetwork === 'xhttp';
+  const xrayReq = formXrayRequirement({
+    protocol: 'trojan',
+    network: watchedNetwork,
+    security: form.watch('security'),
+    useXrayCore: form.watch('useXrayCore'),
+  });
+  const xraySupported = formCanUseXray({ protocol: 'trojan', network: watchedNetwork });
 
   return (
     <Form {...form}>
@@ -200,6 +223,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
                     <SelectItem value="grpc">gRPC</SelectItem>
                     <SelectItem value="httpupgrade">HTTPUpgrade</SelectItem>
                     <SelectItem value="http">HTTP/2</SelectItem>
+                    <SelectItem value="xhttp">XHTTP (Xray)</SelectItem>
                   </SelectContent>
                 </Select>
                 <FormMessage className="fld-err" />
@@ -227,8 +251,24 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
           />
         </FieldGrid>
 
+        {isXhttpEnabled && (
+          <div className="nd-fset">
+            <div className="nd-fset-h">
+              XHTTP <span className="nd-badge">Xray</span>
+            </div>
+            <XhttpFields control={form.control} t={t} />
+          </div>
+        )}
+
         <FormSection title={t('servers.advanced', 'Advanced')} collapsible defaultOpen={false}>
+          <XrayCoreField
+            control={form.control}
+            t={t}
+            requirement={xrayReq}
+            supported={xraySupported}
+          />
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} alpn="http/1.1" />}
+          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>
@@ -243,7 +283,15 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
             </FieldGrid>
           )}
 
-          <MultiplexFields control={form.control} t={t} disabled={false} />
+          <MultiplexFields
+            control={form.control}
+            t={t}
+            disabled={!!xrayReq}
+            disabledReason={t(
+              'servers.multiplexXrayConflict',
+              'Xray-core nodes do not use sing-box multiplex (configure xmux in XHTTP extra instead).'
+            )}
+          />
         </FormSection>
       </form>
     </Form>

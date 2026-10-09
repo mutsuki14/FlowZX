@@ -20,11 +20,31 @@ export interface TlsSettings {
   //   表单按 arch 门控置灰；构建期对 IP 字面量、等于 server_name、QUIC/naive 协议不 emit。
   spoofSni?: string;
   spoofMethod?: 'wrong-ack' | 'wrong-md5' | 'wrong-timestamp';
+  // 证书 SHA-256 指纹钉扎（**仅 Xray 内核节点消费**，Xray tlsSettings.pinnedPeerCertSha256）：十六进制，多个用 ',' 分隔。
+  // Xray 26 已移除 allowInsecure（启用即 FATAL），自签证书节点须改用本字段；sing-box 节点忽略此字段。
+  pinnedPeerCertSha256?: string;
 }
 
 export interface RealitySettings {
   publicKey: string;
   shortId?: string;
+  // 以下两项仅 Xray 内核消费（sing-box reality 无对应字段）：
+  spiderX?: string; // Xray realitySettings.spiderX（分享链 spx）
+  mldsa65Verify?: string; // Xray realitySettings.mldsa65Verify（分享链 pqv）；非空即需 Xray 内核
+}
+
+/**
+ * XHTTP 传输（Xray 独有，sing-box 不支持 → 节点经 Xray 内核运行，见 shared/xray.ts）。
+ * 字段与 Xray xhttpSettings 一一对应；extra 为 Xray `extra` 对象原样透传（xmux / downloadSettings /
+ * noGRPCHeader / scMaxEachPostBytes 等），FlowZ 不解析其语义，交 `xray run -test` 判定。
+ */
+export type XhttpMode = 'auto' | 'packet-up' | 'stream-up' | 'stream-one';
+
+export interface XhttpSettings {
+  path?: string;
+  host?: string;
+  mode?: XhttpMode;
+  extra?: Record<string, unknown>;
 }
 
 export interface WebSocketSettings {
@@ -216,7 +236,12 @@ export interface TailscaleSettings {
 // 供第三方内核协议（如 snell）使用——「内核即权威」：能否启用由 sing-box check probe / 启动 gate 判定，FlowZ 不维护
 // type 白名单。address/port 由 JSON 内部携带，不用 ServerConfig.address/port。
 export interface CustomSettings {
-  outbound: Record<string, unknown>; // 用户填的 outbound/endpoint 对象（须含字符串 type）；tag 由 FlowZ 生成期强制覆盖
-  isEndpoint?: boolean; // 该 type 属 sing-box endpoints[]（如类 wireguard/tailscale 的第三方实现）而非 outbounds[]
+  // 用户填的 outbound/endpoint 对象；tag 由 FlowZ 生成期强制覆盖。
+  //  - engine 缺省（sing-box）：sing-box outbound schema，须含字符串 type；
+  //  - engine='xray'：Xray outbound schema（protocol + settings + streamSettings），须含字符串 protocol，
+  //    节点经 Xray 内核运行（见 shared/xray.ts）；sockopt.dialerProxy / proxySettings 由 FlowZ 接管。
+  outbound: Record<string, unknown>;
+  engine?: 'xray';
+  isEndpoint?: boolean; // 该 type 属 sing-box endpoints[]（如类 wireguard/tailscale 的第三方实现）而非 outbounds[]（engine=xray 时无意义）
   secretKeys?: string[]; // 该 JSON 里属密钥的键名（诊断报告脱敏用：redactDeep 据此叠加打码）。无值层启发式，未声明则仅靠通用密钥黑名单兜底（psk/password/uuid 等），建议填全自定义密钥键
 }

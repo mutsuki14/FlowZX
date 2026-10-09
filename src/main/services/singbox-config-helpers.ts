@@ -34,6 +34,8 @@ const RESERVED_OUTBOUND_TAGS: readonly string[] = [
   'direct-loopback',
   'probe-direct-in',
   'probe-proxy-in',
+  // Xray sidecar 回环拨号出站（见 xray-bridge.ts）：节点名恰为此值时追加 (n)，防 tag 撞名。
+  'xray-dial-direct',
 ];
 
 /**

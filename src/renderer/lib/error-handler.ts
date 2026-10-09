@@ -148,6 +148,7 @@ export function proxyErrorCategory(code: unknown): ErrorCategory | null {
     case ProxyErrorCode.RESTART_LIMIT_REACHED:
     case ProxyErrorCode.STOP_AUTH_CANCELLED:
     case ProxyErrorCode.CORE_UPDATE_IN_PROGRESS:
+    case ProxyErrorCode.XRAY_CORE_FAILED:
       return ErrorCategory.Process;
     default:
       return null; // UNKNOWN

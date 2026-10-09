@@ -73,6 +73,11 @@ export const getTransportLabel = (server: ServerConfigWithId): string => {
   if (p === 'hysteria2' || p === 'tuic' || p === 'wireguard') return 'udp';
   if (p === 'tailscale') return 'mesh';
   if (p === 'naive') return server.naiveSettings?.useHttp3 ? 'udp' : 'tcp';
+  // 自定义 Xray JSON：传输在 outbound.streamSettings.network 里（ServerConfig.network 恒空）。
+  if (p === 'custom' && server.customSettings?.engine === 'xray') {
+    const ss = server.customSettings.outbound?.streamSettings as { network?: unknown } | undefined;
+    return typeof ss?.network === 'string' && ss.network ? ss.network : 'raw';
+  }
   return server.network || 'tcp';
 };
 
@@ -90,6 +95,11 @@ export const nodeTypeLabel = (s: ServerConfigWithId): string => {
   const p = s.protocol?.toLowerCase();
   if (p === 'wireguard') return 'WG';
   if (p === 'tailscale') return 'TS';
+  // 自定义 Xray JSON：显内层 Xray 协议名（VLESS/HYSTERIA…），内核由旁边的 Xray 角标表达。
+  if (p === 'custom' && s.customSettings?.engine === 'xray') {
+    const inner = s.customSettings.outbound?.protocol;
+    return typeof inner === 'string' && inner ? inner.toUpperCase() : 'XRAY';
+  }
   return (s.protocol || '').toUpperCase();
 };
 

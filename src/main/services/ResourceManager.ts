@@ -176,6 +176,46 @@ export class ResourceManager {
     }
   }
 
+  /** 随包 Xray 内核路径（scripts/fetch-core.mjs 落到 resources/<平台>/xray[.exe]，与 sing-box 同目录）。 */
+  getBundledXrayPath(): string {
+    const filename = this.platform === 'win32' ? 'xray.exe' : 'xray';
+    return path.join(this.getPlatformResourceDir(), filename);
+  }
+
+  /**
+   * 用户自行替换的 Xray 内核目录：<userData>/xray_core/xray[.exe]。存在且可执行即优先使用（手动升级 Xray 而不等
+   * FlowZ 发版）；不存在回落随包核。Xray 以普通用户权限运行（仅监听 127.0.0.1、拨号回环 sing-box），无需提权目录。
+   */
+  getXrayOverrideDir(): string {
+    return path.join(app.getPath('userData'), 'xray_core');
+  }
+
+  /** 现役 Xray 内核路径：用户覆盖核优先，否则随包核（文件可能不存在 → hasXrayCore 判定）。 */
+  getXrayPath(): string {
+    const fs = require('fs');
+    const filename = this.platform === 'win32' ? 'xray.exe' : 'xray';
+    try {
+      const override = path.join(this.getXrayOverrideDir(), filename);
+      fs.accessSync(override, this.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+      return override;
+    } catch {
+      /* 无覆盖核 → 随包核 */
+    }
+    return this.getBundledXrayPath();
+  }
+
+  /** Xray 内核是否可用（文件存在且可执行）。缺失时 Xray 节点不可用（同 naive 缺 libcronet 的处置）。 */
+  hasXrayCore(): boolean {
+    const fs = require('fs');
+    try {
+      const p = this.getXrayPath();
+      fs.accessSync(p, this.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  }
+
   /** 始终指向随 App 出厂的 bundle 内核（B 块 App 升级仲裁 / 受保护目录种子用，绕过受保护目录优先逻辑）。 */
   getBundledSingBoxPath(): string {
     const filename = this.platform === 'win32' ? 'sing-box.exe' : 'sing-box';

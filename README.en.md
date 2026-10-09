@@ -33,6 +33,7 @@ Built around: **simple setup · clear rules · uninterrupted switching · author
 
 **Protocols**
 - Proxy: VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
+- **Xray core (FlowZX)**: a bundled Xray-core sidecar runs Xray-only combinations — **VLESS + XHTTP + REALITY + ENC (VLESS Encryption)**, XHTTP (packet-up / stream-up / stream-one, `extra` / xmux / split up-down links), REALITY ML-DSA-65, vision-udp443, and any custom Xray outbound JSON. sing-box stays the main core, so Xray nodes keep hot-switching, routing rules, speed tests and proxy chains. See [docs/XRAY.md](docs/XRAY.md)
 - Mesh: **WireGuard** / **Cloudflare WARP** / **Tailscale**
 - **Custom protocol + core swap**: paste a sing-box outbound JSON; on save, "the core is the source of truth" probes live compatibility. For protocols the official core lacks, manually replace it with a third-party fork core that supports them (FlowZ auto-detects forks and disables online updates to avoid overwriting them).
 

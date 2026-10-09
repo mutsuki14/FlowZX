@@ -87,6 +87,13 @@ export interface RouteConfigDeps {
   raceUpstreamIps?: string[];
   /** macOS TUN 启动前按节点目标路由解析出的上游接口；仅在结果一致且可信时设置。 */
   defaultInterface?: string;
+  /**
+   * Xray sidecar 回环拨号路由（xray-dial-in 入站按 auth_user 钉死）：outbound 缺省 = 前置代理已不可用 → reject
+   *（fail-closed，绝不改直连泄露真实 IP）。缺省/空 = 无 Xray 节点，零注入。
+   */
+  xrayDialRoutes?: { username: string; outbound?: string }[];
+  /** Xray 内核二进制路径：TUN 下 Xray 自身的旁路连接（如 ECH 的 DoH 查询）按进程直连，防回环。 */
+  xrayProcessPath?: string;
 }
 
 export function buildRouteConfig(
@@ -171,6 +178,25 @@ export function buildRouteConfig(
   // 见下方「STUN 强制路由/阻断」注入点（功能性强制规则区、smart 自定义规则块之前），以及为稳健补的显式 stun sniffer。
   const webrtcLeak = config.webrtcLeakProtection ?? 'off';
 
+  // A0. Xray sidecar 回环拨号钉死路由（**先于 sniff**：回环拨号目标就是节点服务器，无需嗅探，且须先于一切分流）。
+  //   auth_user 精确匹配 → 该用户对应的 direct / 前置代理；兜底规则把 xray-dial-in 的其余流量 reject（凭据外的用户
+  //   连不进入站，此为纵深防御）。outbound 缺省 = 前置代理不可用 → reject（不静默改直连）。
+  if (deps.xrayDialRoutes && deps.xrayDialRoutes.length > 0) {
+    for (const r of deps.xrayDialRoutes) {
+      rules.push(
+        r.outbound
+          ? {
+              inbound: ['xray-dial-in'],
+              auth_user: [r.username],
+              action: 'route',
+              outbound: r.outbound,
+            }
+          : { inbound: ['xray-dial-in'], auth_user: [r.username], action: 'reject' }
+      );
+    }
+    rules.push({ inbound: ['xray-dial-in'], action: 'reject' });
+  }
+
   // A. 嗅探规则（必须在前，用于识别域名）
   // sing-box 1.14：路由层开启 sniff，替代早期已移除的 inbound 级别 sniff 字段。恒发射，无版本门控。
   // 注意（旧注释「等效 sniff_override_destination」不准确）：sniff 只把嗅出的域名用于【路由匹配】这半边——
@@ -231,6 +257,11 @@ export function buildRouteConfig(
     action: 'route',
     outbound: 'direct',
   });
+  // Xray sidecar 进程的旁路连接（正常拨号已经 dialerProxy 回环 sing-box，不会到这里；兜 ECH DoH 等 Xray 内部直连）
+  // 按**精确路径**直连，防 TUN 下回环进代理再回到 Xray 自身。仅本次有 Xray 节点时注入（用户自己的 xray 不受影响）。
+  if (deps.xrayProcessPath) {
+    rules.push({ process_path: [deps.xrayProcessPath], action: 'route', outbound: 'direct' });
+  }
 
   // C. 强制引导核心 DNS 直连（必须在 hijack-dns 之前！）
   // 把已知 bootstrap DNS IP 放在 hijack-dns 之前，无论哪个进程发包都走直连，彻底断环。

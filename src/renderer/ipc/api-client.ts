@@ -56,9 +56,23 @@ export const proxyApi = {
    */
   async probeOutbound(
     outbound: unknown,
-    isEndpoint?: boolean
+    isEndpoint?: boolean,
+    engine?: 'xray'
   ): Promise<{ ok: boolean; indeterminate?: boolean; error?: string }> {
-    return ipcClient.invoke(IPC_CHANNELS.KERNEL_PROBE_OUTBOUND, { outbound, isEndpoint });
+    return ipcClient.invoke(IPC_CHANNELS.KERNEL_PROBE_OUTBOUND, { outbound, isEndpoint, engine });
+  },
+
+  /** Xray sidecar 内核状态（版本 / 路径 / 是否运行）。 */
+  async getXrayStatus(): Promise<{
+    available: boolean;
+    version: string | null;
+    path: string;
+    overrideDir: string;
+    running: boolean;
+    pid: number | null;
+    nodes: number;
+  }> {
+    return ipcClient.invoke(IPC_CHANNELS.KERNEL_XRAY_STATUS);
   },
 
   /**

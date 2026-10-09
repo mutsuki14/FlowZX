@@ -617,21 +617,23 @@ describe('issue #263 — 聚合可见性 / 指纹传输维度 / ssh 映射', () 
     expect(infos).toMatch(/另有 3 条被跳过\/失败/);
   });
 
-  it('URL-list：xhttp 节点 fail 计入结果 info（issue #263 主症状可见化）', async () => {
+  it('URL-list：不支持传输（kcp）节点 fail 计入结果 info（issue #263 主症状可见化）；xhttp 经 Xray 内核入库', async () => {
     const log = new FakeLog();
     const svc = newService(log);
     const content = [
       'anytls://pw@a.com:443#any',
-      'vless://uuid-1@a.com:443?type=xhttp#dead',
+      'vless://uuid-1@a.com:443?type=kcp#dead',
+      'vless://uuid-2@a.com:443?type=xhttp&path=%2Fx#xh',
     ].join('\n');
     const r = await (svc as any).parseSubscriptionContent(content, 'sub-x', CTX);
-    expect(r.servers).toHaveLength(1);
+    expect(r.servers).toHaveLength(2);
     expect(r.servers[0].protocol).toBe('anytls');
+    expect(r.servers[1]).toMatchObject({ protocol: 'vless', network: 'xhttp' });
     const warns = log.entries
       .filter((e) => e.level === 'warn')
       .map((e) => e.message)
       .join('\n');
-    expect(warns).toMatch(/不支持的传输层类型: xhttp/);
+    expect(warns).toMatch(/不支持的传输层类型: kcp/);
     const infos = log.entries
       .filter((e) => e.level === 'info')
       .map((e) => e.message)
@@ -646,7 +648,14 @@ describe('issue #263 — 聚合可见性 / 指纹传输维度 / ssh 映射', () 
       { type: 'vless', tag: 'ok', server: 'a.com', server_port: 443, uuid: 'u' },
       { type: 'wireguard', tag: 'wg', server: 'a.com', server_port: 51820 },
       { type: 'vless', tag: 'noport', server: 'a.com', uuid: 'u' },
-      { type: 'vless', tag: 'quic', server: 'a.com', server_port: 443, uuid: 'u', transport: { type: 'quic' } },
+      {
+        type: 'vless',
+        tag: 'quic',
+        server: 'a.com',
+        server_port: 443,
+        uuid: 'u',
+        transport: { type: 'quic' },
+      },
       { type: 'direct', tag: 'direct' },
       { type: 'selector', tag: 'sel', outbounds: [] },
     ];
@@ -842,7 +851,11 @@ describe('parseSingboxOutbounds — snell', () => {
     expect(servers).toHaveLength(2);
     expect(servers[0].protocol).toBe('snell');
     expect(servers[0].password).toBe('psk-secret');
-    expect(servers[0].snellSettings).toEqual({ version: 4, obfsMode: 'http', obfsHost: 'bing.com' });
+    expect(servers[0].snellSettings).toEqual({
+      version: 4,
+      obfsMode: 'http',
+      obfsHost: 'bing.com',
+    });
     expect(servers[1].snellSettings).toEqual({
       version: 6,
       mode: 'unsafe-raw',
@@ -904,7 +917,10 @@ describe('parseSingboxOutbounds — snell review 边界补测', () => {
     );
     expect(servers).toHaveLength(0);
     expect(
-      log.entries.filter((e) => e.level === 'warn').map((e) => e.message).join('\n')
+      log.entries
+        .filter((e) => e.level === 'warn')
+        .map((e) => e.message)
+        .join('\n')
     ).toMatch(/缺 psk/);
   });
 });

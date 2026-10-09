@@ -28,11 +28,22 @@ export function registerProxyHandlers(
   // 本 handler 不再直接持有 systemProxyManager（拆双轨，修 C1/M4）。
   // 自定义协议兼容性 probe：当前内核能否识别该 outbound/endpoint type（sing-box check 最小 config）。
   // 主进程子进程 + ProxyManager 内缓存 → 渲染端异步调用、UI 不阻塞。
+  // engine='xray'：自定义 Xray outbound JSON → `xray run -test` 最小配置（Xray sidecar 内核即权威）。
   registerIpcHandler<
-    { outbound: unknown; isEndpoint?: boolean },
+    { outbound: unknown; isEndpoint?: boolean; engine?: 'xray' },
     { ok: boolean; indeterminate?: boolean; error?: string }
   >(IPC_CHANNELS.KERNEL_PROBE_OUTBOUND, async (_event, args) =>
-    proxyManager.probeOutbound(args?.outbound, args?.isEndpoint)
+    proxyManager.probeOutbound(
+      args?.outbound,
+      args?.isEndpoint,
+      args?.engine === 'xray' ? 'xray' : undefined
+    )
+  );
+
+  // Xray sidecar 内核状态（设置页内核卡展示版本 / 路径 / 运行态）。
+  registerIpcHandler<void, Awaited<ReturnType<ProxyManager['getXrayStatus']>>>(
+    IPC_CHANNELS.KERNEL_XRAY_STATUS,
+    async () => proxyManager.getXrayStatus()
   );
 
   // 关单条连接：经 ProxyManager（9090 keep-alive agent + Bearer secret 内部封装）发 DELETE /connections/{id}，

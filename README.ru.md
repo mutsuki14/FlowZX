@@ -33,6 +33,7 @@
 
 **Протоколы**
 - Прокси: VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
+- **Ядро Xray (FlowZX)**: встроенный Xray-core sidecar для комбинаций только Xray — **VLESS + XHTTP + REALITY + ENC (VLESS Encryption)**, XHTTP, REALITY ML-DSA-65, vision-udp443 и любой пользовательский Xray outbound JSON; sing-box остаётся основным ядром. См. [docs/XRAY.md](docs/XRAY.md)
 - Mesh: **WireGuard** / **Cloudflare WARP** / **Tailscale**
 - **Пользовательский протокол + подмена ядра**: вставьте JSON outbound для sing-box; при сохранении принцип «ядро — единственный источник истины» проверяет реальную совместимость. Для протоколов, которых нет в официальном ядре, вручную замените его сторонней fork-сборкой с их поддержкой (FlowZ автоматически распознаёт fork-сборки и отключает онлайн-обновления, чтобы не перезаписать их).
 

@@ -752,16 +752,53 @@ describe('传输层归一化与白名单（issue #263）', () => {
     expect(parser.parseUrl('vless://u@a.com:443?type=WS&path=%2Fp#n').network).toBe('ws');
   });
 
-  it('vless/trojan type=xhttp|splithttp|kcp（sing-box 不支持）→ 整节点拒绝且消息可检索', () => {
-    expect(() => parser.parseUrl('vless://u@a.com:443?type=xhttp#n')).toThrow(
-      /不支持的传输层类型: xhttp/
-    );
-    expect(() => parser.parseUrl('trojan://pw@a.com:443?type=splithttp#n')).toThrow(
-      /不支持的传输层类型: splithttp/
-    );
+  it('vless/trojan type=xhttp|splithttp → XHTTP 节点（Xray sidecar 承载）；kcp → 整节点拒绝且消息可检索', () => {
+    expect(parser.parseUrl('vless://u@a.com:443?type=xhttp#n').network).toBe('xhttp');
+    expect(parser.parseUrl('trojan://pw@a.com:443?type=splithttp#n').network).toBe('xhttp');
     expect(() => parser.parseUrl('vless://u@a.com:443?type=kcp#n')).toThrow(
       /不支持的传输层类型: kcp/
     );
+  });
+
+  it('VLESS-XHTTP-REALITY-ENC 分享链：encryption / xhttp(path·host·mode·extra) / pbk·sid·spx·pqv 全量解析 + 往返稳定', () => {
+    const extra = encodeURIComponent(JSON.stringify({ xmux: { maxConcurrency: '16-32' } }));
+    const url =
+      'vless://8a502aeb-b677-4fc6-bdbf-0b11435a99ec@x.example.com:443' +
+      '?encryption=mlkem768x25519plus.native.0rtt.QxKoobAnmyilC09GlvGiUCWXF1PrxmC7l2lR72ThGSE' +
+      `&security=reality&type=xhttp&path=%2Fxh&host=cdn.example.com&mode=stream-one&extra=${extra}` +
+      '&sni=www.microsoft.com&fp=chrome&pbk=e5pKf8zQy_I1P-H_GcWVubf9EYtWT6gX_6Q5exYFvi0&sid=ab&spx=%2F&pqv=PQ#XHTTP-REALITY-ENC';
+    const c = expectRoundTripStable(url);
+    expect(c.encryption).toBe(
+      'mlkem768x25519plus.native.0rtt.QxKoobAnmyilC09GlvGiUCWXF1PrxmC7l2lR72ThGSE'
+    );
+    expect(c.network).toBe('xhttp');
+    expect(c.xhttpSettings).toEqual({
+      path: '/xh',
+      host: 'cdn.example.com',
+      mode: 'stream-one',
+      extra: { xmux: { maxConcurrency: '16-32' } },
+    });
+    expect(c.security).toBe('reality');
+    expect(c.realitySettings).toEqual({
+      publicKey: 'e5pKf8zQy_I1P-H_GcWVubf9EYtWT6gX_6Q5exYFvi0',
+      shortId: 'ab',
+      spiderX: '/',
+      mldsa65Verify: 'PQ',
+    });
+  });
+
+  it('XHTTP-TLS：pcs 证书钉扎 / ech 解析 + 往返；非法 extra JSON 忽略不拒节点', () => {
+    const c = expectRoundTripStable(
+      'vless://u@a.com:443?security=tls&type=xhttp&path=%2Ft&mode=packet-up&sni=a.com&pcs=ab12&ech=AEX%2BDQ#t'
+    );
+    expect(c.tlsSettings?.pinnedPeerCertSha256).toBe('ab12');
+    expect(c.tlsSettings?.ech).toBe(true);
+    expect(c.tlsSettings?.echConfig).toBe(
+      '-----BEGIN ECH CONFIGS-----\nAEX+DQ\n-----END ECH CONFIGS-----'
+    );
+    const bad = parser.parseUrl('vless://u@a.com:443?type=xhttp&extra=%7Bnope#b');
+    expect(bad.network).toBe('xhttp');
+    expect(bad.xhttpSettings?.extra).toBeUndefined();
   });
 
   it('vmess net 未知（kcp/quic）→ 拒绝；net=raw → tcp（与 vless/trojan 统一口径）', () => {
@@ -773,6 +810,29 @@ describe('传输层归一化与白名单（issue #263）', () => {
     expect(() => parser.parseUrl(vmessUrl('kcp'))).toThrow(/不支持的传输层类型: kcp/);
     expect(() => parser.parseUrl(vmessUrl('quic'))).toThrow(/不支持的传输层类型: quic/);
     expect(parser.parseUrl(vmessUrl('raw')).network).toBe('tcp');
+  });
+
+  it('vmess net=xhttp → XHTTP（mode 取 type 字段）+ 往返稳定', () => {
+    const url =
+      'vmess://' +
+      Buffer.from(
+        JSON.stringify({
+          v: '2',
+          ps: 'VX',
+          add: 'x.com',
+          port: '443',
+          id: 'uid',
+          net: 'xhttp',
+          type: 'packet-up',
+          path: '/vx',
+          host: 'h.com',
+          tls: 'tls',
+          sni: 'h.com',
+        })
+      ).toString('base64');
+    const c = expectRoundTripStable(url);
+    expect(c.network).toBe('xhttp');
+    expect(c.xhttpSettings).toEqual({ path: '/vx', host: 'h.com', mode: 'packet-up' });
   });
 
   it('裸 IPv6（无方括号）泛化到 vless/trojan（原仅 ss://）', () => {
@@ -965,7 +1025,7 @@ describe('ALPN 归一化（逗号串 → 数组统一 dedupeTrim：修剪空白 
       expect(c.tlsSettings?.alpn).toEqual(['h2', 'h3', 'http/1.1']);
     });
 
-    it('纯空白输入 → 空数组而非 [\'\']', () => {
+    it("纯空白输入 → 空数组而非 ['']", () => {
       const c = parser.parseUrl(
         'hysteria2://pw@d.example.com:8443?sni=h.com&' + `alpn=${encodeURIComponent('  ,  ')}#n`
       );

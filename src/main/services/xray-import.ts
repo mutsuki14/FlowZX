@@ -2,22 +2,38 @@
  * Xray / v2ray JSON 配置 → ServerConfig 解析（纯模块，刻意不 import electron，可直接 jest 单测）。
  *
  * 与 sing-box JSON 的差异：xray outbound 用 `protocol` + `settings`（vnext/servers）+ `streamSettings`，
- * 而 sing-box 用扁平 `type` + 同级字段。本模块只覆盖 FlowZ 已建模的主流协议；其余协议跳过并报告
- * （不透传 custom：custom 落点是 sing-box outbound schema，xray schema 不兼容）。
+ * 而 sing-box 用扁平 `type` + 同级字段。两条落点：
+ *  - **结构化**：vless/vmess/trojan/shadowsocks 且只用到 FlowZ 已建模字段（含 XHTTP / VLESS Encryption /
+ *    Reality spiderX·ML-DSA-65 / 证书钉扎）→ 普通节点，可在表单编辑；需要 Xray 的组合由 sidecar 承载。
+ *  - **原样透传**：其余（mKCP/finalmask/mux/sockopt、wireguard/hysteria 等 Xray 协议）→ 自定义节点
+ *    （customSettings.engine='xray'，Xray outbound JSON 原样保存），由 Xray sidecar 直接运行，零语义丢失。
  *
  * 逐 outbound try/catch，单条失败不影响其它（对齐 ClashSubscriptionParser.parseClashProxies）。
  */
 import { randomUUID } from 'crypto';
-import type { ServerConfig, Network, Security } from '../../shared/types';
+import type { ServerConfig, Network, Security, XhttpMode } from '../../shared/types';
+import { xrayOutboundDisplayAddress } from '../../shared/xray';
 
-/** 本模块可映射的 xray outbound.protocol。 */
+/** 本模块可结构化映射的 xray outbound.protocol。 */
 const XRAY_SUPPORTED = new Set(['vmess', 'vless', 'trojan', 'shadowsocks']);
-/** xray 内部/非节点 outbound（忽略，不计入 skipped）。 */
+/** xray 内部/非节点 outbound（忽略，不计入任何统计）。 */
 const XRAY_INTERNAL = new Set(['freedom', 'blackhole', 'dns', 'loopback']);
+/** 结构化映射认识的传输层（其余 → 原样透传）。 */
+const STRUCTURED_NETWORKS = new Set([
+  'tcp',
+  'raw',
+  'ws',
+  'grpc',
+  'h2',
+  'http',
+  'httpupgrade',
+  'xhttp',
+  'splithttp',
+]);
 
 export interface XrayParseResult {
   servers: ServerConfig[];
-  skipped: number; // 协议不支持
+  skipped: number; // 无法导入（非对象 / 无 protocol）
   failed: number; // 字段缺失 / 异常
   warnings: string[];
 }
@@ -36,6 +52,27 @@ function num(v: unknown): number | undefined {
   return undefined;
 }
 
+function obj(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+/**
+ * 该 outbound 是否需原样透传（结构化映射会丢语义）：未知传输、finalmask、mux 开启、除 dialerProxy 外的 sockopt、
+ * 遗留 xtls 安全层。dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理）。
+ */
+function needsPassthrough(o: Record<string, unknown>): string | null {
+  const ss = obj(o.streamSettings);
+  const network = (str(ss.network) || 'tcp').toLowerCase();
+  if (!STRUCTURED_NETWORKS.has(network)) return `传输 ${network}`;
+  if (ss.finalmask !== undefined) return 'finalmask';
+  const security = (str(ss.security) || 'none').toLowerCase();
+  if (security === 'xtls') return 'xtls';
+  const sockopt = obj(ss.sockopt);
+  if (Object.keys(sockopt).some((k) => k !== 'dialerProxy')) return 'sockopt';
+  if (obj(o.mux).enabled === true) return 'mux';
+  return null;
+}
+
 /** xray streamSettings → ServerConfig 传输/安全层字段。 */
 function applyStreamSettings(server: ServerConfig, ss: Record<string, unknown> | undefined): void {
   if (!ss || typeof ss !== 'object') return;
@@ -44,17 +81,18 @@ function applyStreamSettings(server: ServerConfig, ss: Record<string, unknown> |
   const network = (str(ss.network) || 'tcp').toLowerCase();
   if (network === 'ws') {
     server.network = 'ws';
-    const ws = (ss.wsSettings as Record<string, unknown>) || {};
-    const headers = (ws.headers as Record<string, unknown>) || {};
-    const host = str(headers.Host) || str(headers.host);
+    const ws = obj(ss.wsSettings);
+    const headers = obj(ws.headers);
+    const host = str(ws.host) || str(headers.Host) || str(headers.host);
     server.wsSettings = { path: str(ws.path) || '/', headers: host ? { Host: host } : undefined };
   } else if (network === 'grpc') {
     server.network = 'grpc';
-    const grpc = (ss.grpcSettings as Record<string, unknown>) || {};
+    const grpc = obj(ss.grpcSettings);
     server.grpcSettings = { serviceName: str(grpc.serviceName) || '' };
+    if (grpc.multiMode === true) server.grpcSettings.multiMode = true;
   } else if (network === 'h2' || network === 'http') {
     server.network = 'http';
-    const h2 = (ss.httpSettings as Record<string, unknown>) || {};
+    const h2 = obj(ss.httpSettings);
     const hostVal = h2.host;
     server.httpSettings = {
       path: str(h2.path) || '/',
@@ -66,18 +104,32 @@ function applyStreamSettings(server: ServerConfig, ss: Record<string, unknown> |
     };
   } else if (network === 'httpupgrade') {
     server.network = 'httpupgrade';
-    const hu = (ss.httpupgradeSettings as Record<string, unknown>) || {};
+    const hu = obj(ss.httpupgradeSettings);
     const host = str(hu.host);
     server.wsSettings = { path: str(hu.path) || '/', headers: host ? { Host: host } : undefined };
+  } else if (network === 'xhttp' || network === 'splithttp') {
+    server.network = 'xhttp';
+    const xh = obj(ss.xhttpSettings ?? ss.splithttpSettings);
+    const mode = str(xh.mode)?.toLowerCase();
+    const extra = obj(xh.extra);
+    server.xhttpSettings = {
+      path: str(xh.path) || '/',
+      host: str(xh.host),
+      mode:
+        mode === 'auto' || mode === 'packet-up' || mode === 'stream-up' || mode === 'stream-one'
+          ? (mode as XhttpMode)
+          : undefined,
+      extra: Object.keys(extra).length > 0 ? extra : undefined,
+    };
   } else {
     server.network = 'tcp' as Network;
   }
 
   // 安全层
   const security = (str(ss.security) || 'none').toLowerCase();
-  if (security === 'tls' || security === 'xtls') {
+  if (security === 'tls') {
     server.security = 'tls' as Security;
-    const tls = (ss.tlsSettings as Record<string, unknown>) || {};
+    const tls = obj(ss.tlsSettings);
     const alpn = tls.alpn;
     server.tlsSettings = {
       serverName: str(tls.serverName),
@@ -85,20 +137,64 @@ function applyStreamSettings(server: ServerConfig, ss: Record<string, unknown> |
       alpn: Array.isArray(alpn) ? (alpn as string[]) : undefined,
       fingerprint: str(tls.fingerprint) || 'chrome',
     };
+    const pinned = str(tls.pinnedPeerCertSha256);
+    if (pinned) server.tlsSettings.pinnedPeerCertSha256 = pinned;
+    const ech = str(tls.echConfigList);
+    if (ech) {
+      server.tlsSettings.ech = true;
+      server.tlsSettings.echConfig = /:\/\//.test(ech)
+        ? ech
+        : `-----BEGIN ECH CONFIGS-----\n${ech}\n-----END ECH CONFIGS-----`;
+    }
   } else if (security === 'reality') {
     server.security = 'reality' as Security;
-    const reality = (ss.realitySettings as Record<string, unknown>) || {};
+    const reality = obj(ss.realitySettings);
     server.tlsSettings = {
       serverName: str(reality.serverName),
       fingerprint: str(reality.fingerprint) || 'chrome',
     };
     server.realitySettings = {
-      publicKey: str(reality.publicKey) || '',
+      // Xray 25+ 客户端字段名 password（= publicKey），两者择一。
+      publicKey: str(reality.publicKey) || str(reality.password) || '',
       shortId: str(reality.shortId),
     };
+    const spiderX = str(reality.spiderX);
+    if (spiderX) server.realitySettings.spiderX = spiderX;
+    const pqv = str(reality.mldsa65Verify);
+    if (pqv) server.realitySettings.mldsa65Verify = pqv;
   } else {
     server.security = 'none' as Security;
   }
+}
+
+/** vnext[0]/servers[0] 或 Xray 25+ 扁平 settings（address/port/id…）取首个服务端条目。 */
+function firstServer(
+  settings: Record<string, unknown>,
+  key: 'vnext' | 'servers'
+): {
+  address?: string;
+  port?: number;
+  entry: Record<string, unknown>;
+  user: Record<string, unknown>;
+} {
+  const list = settings[key];
+  if (Array.isArray(list) && list.length > 0) {
+    const entry = obj(list[0]);
+    const users = entry.users;
+    return {
+      address: str(entry.address),
+      port: num(entry.port),
+      entry,
+      user: Array.isArray(users) ? obj(users[0]) : {},
+    };
+  }
+  // 扁平形态：settings 自身即服务端 + 用户
+  return {
+    address: str(settings.address),
+    port: num(settings.port),
+    entry: settings,
+    user: settings,
+  };
 }
 
 /** 单条 xray outbound → ServerConfig（失败 throw / 返回 null）。 */
@@ -107,7 +203,7 @@ function mapXrayOutbound(
   proto: string,
   now: string
 ): ServerConfig | null {
-  const settings = (o.settings as Record<string, unknown>) || {};
+  const settings = obj(o.settings);
   const tag = str(o.tag);
 
   const base = (address: string, port: number): ServerConfig => ({
@@ -121,31 +217,26 @@ function mapXrayOutbound(
   });
 
   if (proto === 'vmess' || proto === 'vless') {
-    const vnext = (settings.vnext as Array<Record<string, unknown>>)?.[0];
-    if (!vnext) return null;
-    const address = str(vnext.address);
-    const port = num(vnext.port);
-    const user = (vnext.users as Array<Record<string, unknown>>)?.[0];
-    const uuid = str(user?.id);
+    const { address, port, user } = firstServer(settings, 'vnext');
+    const uuid = str(user.id);
     if (!address || !port || !uuid) return null;
     const server = base(address, port);
     server.uuid = uuid;
     if (proto === 'vmess') {
-      server.alterId = num(user?.alterId) ?? 0;
-      server.vmessSecurity = str(user?.security) || 'auto';
+      server.alterId = num(user.alterId) ?? 0;
+      server.vmessSecurity = str(user.security) || 'auto';
     } else {
-      server.flow = str(user?.flow);
+      server.flow = str(user.flow) || undefined;
+      // VLESS Encryption（非 none → Xray sidecar 承载）。
+      server.encryption = str(user.encryption) || 'none';
     }
     applyStreamSettings(server, o.streamSettings as Record<string, unknown>);
     return server;
   }
 
   if (proto === 'trojan') {
-    const srv = (settings.servers as Array<Record<string, unknown>>)?.[0];
-    if (!srv) return null;
-    const address = str(srv.address);
-    const port = num(srv.port);
-    const password = str(srv.password);
+    const { address, port, entry } = firstServer(settings, 'servers');
+    const password = str(entry.password);
     if (!address || !port || !password) return null;
     const server = base(address, port);
     server.password = password;
@@ -154,12 +245,9 @@ function mapXrayOutbound(
   }
 
   if (proto === 'shadowsocks') {
-    const srv = (settings.servers as Array<Record<string, unknown>>)?.[0];
-    if (!srv) return null;
-    const address = str(srv.address);
-    const port = num(srv.port);
-    const method = str(srv.method);
-    const password = str(srv.password);
+    const { address, port, entry } = firstServer(settings, 'servers');
+    const method = str(entry.method);
+    const password = str(entry.password);
     if (!address || !port || !method || !password) return null;
     const server = base(address, port);
     server.shadowsocksSettings = { method, password };
@@ -170,6 +258,24 @@ function mapXrayOutbound(
   return null;
 }
 
+/** 原样透传为自定义 Xray 节点（customSettings.engine='xray'）。tag/proxySettings 由生成期接管，此处保留原文。 */
+function makeXrayCustomNode(o: Record<string, unknown>, now: string): ServerConfig {
+  const { address, port } = xrayOutboundDisplayAddress(o);
+  const proto = str(o.protocol) || 'xray';
+  const outbound = JSON.parse(JSON.stringify(o)) as Record<string, unknown>;
+  delete outbound.tag;
+  return {
+    id: randomUUID(),
+    name: str(o.tag) || (address ? `${proto} ${address}:${port}` : proto),
+    protocol: 'custom',
+    address,
+    port,
+    customSettings: { outbound, engine: 'xray' },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /** xray outbounds[] → ServerConfig[]，逐条 try/catch，聚合 skipped/failed/warnings。 */
 export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseResult {
   const servers: ServerConfig[] = [];
@@ -178,7 +284,7 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
   const warnings: string[] = [];
   if (!Array.isArray(outbounds)) return { servers, skipped, failed, warnings };
 
-  const skipByProto = new Map<string, number>();
+  const passByReason = new Map<string, number>();
 
   for (const ob of outbounds) {
     if (!ob || typeof ob !== 'object') {
@@ -187,14 +293,18 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
     }
     const o = ob as Record<string, unknown>;
     const proto = (str(o.protocol) || '').toLowerCase();
-    if (!XRAY_SUPPORTED.has(proto)) {
-      if (!XRAY_INTERNAL.has(proto)) {
-        skipped++;
-        skipByProto.set(proto || '(empty)', (skipByProto.get(proto || '(empty)') ?? 0) + 1);
-      }
+    if (!proto) {
+      skipped++;
       continue;
     }
+    if (XRAY_INTERNAL.has(proto)) continue;
     try {
+      const reason = XRAY_SUPPORTED.has(proto) ? needsPassthrough(o) : `协议 ${proto}`;
+      if (reason) {
+        servers.push(makeXrayCustomNode(o, now));
+        passByReason.set(reason, (passByReason.get(reason) ?? 0) + 1);
+        continue;
+      }
       const server = mapXrayOutbound(o, proto, now);
       if (server) servers.push(server);
       else failed++;
@@ -203,9 +313,10 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
     }
   }
 
-  if (skipByProto.size > 0) {
-    const detail = [...skipByProto.entries()].map(([p, c]) => `${p}(${c})`).join(', ');
-    warnings.push(`跳过 ${skipped} 个不支持的 Xray 协议: ${detail}`);
+  if (passByReason.size > 0) {
+    const total = [...passByReason.values()].reduce((a, b) => a + b, 0);
+    const detail = [...passByReason.entries()].map(([p, c]) => `${p}(${c})`).join(', ');
+    warnings.push(`${total} 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: ${detail}`);
   }
   return { servers, skipped, failed, warnings };
 }

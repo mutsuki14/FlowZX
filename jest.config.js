@@ -14,6 +14,9 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '<rootDir>/src/main/services/__tests__/singbox-check-gate\\.test\\.ts$',
+    // Xray sidecar 真核门：同上，需随包 xray + sing-box 二进制，由 test:core-gate 执行。
+    '<rootDir>/src/main/services/__tests__/xray-check-gate\\.test\\.ts$',
+    '<rootDir>/src/main/services/__tests__/xray-runtime-e2e\\.test\\.ts$',
   ],
   transform: {
     '^.+\\.ts$': [

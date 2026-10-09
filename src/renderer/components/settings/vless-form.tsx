@@ -15,7 +15,16 @@ import { AddressField, PortField } from './shared/basic-fields';
 import { TlsServerNameField, FingerprintField, TlsAdvancedFields } from './shared/tls-fields';
 import { WsPathField, WsHostField, GrpcServiceNameField } from './shared/transport-fields';
 import { RealityPublicKeyField, RealityShortIdField } from './shared/reality-fields';
+import {
+  XhttpFields,
+  XrayCoreField,
+  PinnedCertField,
+  RealityXrayFields,
+  formXrayRequirement,
+  formCanUseXray,
+} from './shared/xray-fields';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
+import { InfoTooltip } from './shared/info-tooltip';
 import { normalizeNetworkUpper } from './shared/normalize-network';
 import {
   echSchemaShape,
@@ -31,6 +40,9 @@ import {
   buildTlsSpoofSettings,
   readTransportDefaults,
   buildTransportSettings,
+  xraySchemaShape,
+  xrayDefaults,
+  readXrayDefaults,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -48,7 +60,7 @@ const createVlessSchema = (t: any) =>
       ),
     encryption: z.string().optional(),
     flow: z.string().optional(),
-    network: z.enum(['Tcp', 'Ws', 'Grpc', 'Http', 'HttpUpgrade']),
+    network: z.enum(['Tcp', 'Ws', 'Grpc', 'Http', 'HttpUpgrade', 'Xhttp']),
     security: z.enum(['None', 'Tls', 'Reality']),
     tlsServerName: z.string().optional(),
     tlsAllowInsecure: z.boolean(),
@@ -56,12 +68,15 @@ const createVlessSchema = (t: any) =>
     tlsEngine: z.string().optional(),
     realityPublicKey: z.string().optional(),
     realityShortId: z.string().optional(),
+    realitySpiderX: z.string().optional(),
+    realityMldsa65: z.string().optional(),
     wsPath: z.string().optional(),
     wsHost: z.string().optional(),
     grpcServiceName: z.string().optional(),
     ...echSchemaShape,
     ...multiplexSchemaShape,
     ...tlsSpoofSchemaShape,
+    ...xraySchemaShape,
   });
 
 type VlessFormValues = z.infer<ReturnType<typeof createVlessSchema>>;
@@ -88,7 +103,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
         address: serverConfig.address || '',
         port: serverConfig.port || 443,
         uuid: serverConfig.uuid || '',
-        encryption: serverConfig.encryption?.toLowerCase() || 'none',
+        // VLESS Encryption 串（mlkem768x25519plus.*）含大小写敏感的 base64url 密钥 → 不得 toLowerCase。
+        encryption: serverConfig.encryption?.trim() || 'none',
         flow: (serverConfig.flow || '').toLowerCase(),
         network: normalizeNetworkUpper(serverConfig.network),
         security: normalizeSecurity(serverConfig.security),
@@ -98,10 +114,13 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
         tlsEngine: serverConfig.tlsSettings?.engine || 'go',
         realityPublicKey: serverConfig.realitySettings?.publicKey || '',
         realityShortId: serverConfig.realitySettings?.shortId || '',
+        realitySpiderX: serverConfig.realitySettings?.spiderX || '',
+        realityMldsa65: serverConfig.realitySettings?.mldsa65Verify || '',
         ...readTransportDefaults(serverConfig),
         ...readEchDefault(serverConfig),
         ...readMultiplexDefaults(serverConfig),
         ...readTlsSpoofDefault(serverConfig),
+        ...readXrayDefaults(serverConfig),
       };
     }
     return {
@@ -118,10 +137,13 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
       tlsEngine: 'go',
       realityPublicKey: '',
       realityShortId: '',
+      realitySpiderX: '',
+      realityMldsa65: '',
       ...readTransportDefaults(),
       ...echDefaults,
       ...multiplexDefaults,
       ...tlsSpoofDefaults,
+      ...xrayDefaults,
     };
   };
 
@@ -139,7 +161,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
       address: values.address,
       port: values.port,
       uuid: values.uuid,
-      encryption: values.encryption || 'none',
+      encryption: values.encryption?.trim() || 'none',
       flow: values.flow || undefined,
       network,
       security,
@@ -155,6 +177,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                   : undefined,
               ech: values.ech ? true : undefined,
               echConfig: values.echConfig?.trim() || undefined,
+              pinnedPeerCertSha256:
+                security === 'tls' ? values.tlsPinnedSha256?.trim() || undefined : undefined,
               ...(security === 'tls' ? buildTlsSpoofSettings(values) : {}),
             }
           : null,
@@ -163,10 +187,13 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           ? {
               publicKey: values.realityPublicKey?.trim() || '',
               shortId: values.realityShortId?.trim() || undefined,
+              spiderX: values.realitySpiderX?.trim() || undefined,
+              mldsa65Verify: values.realityMldsa65?.trim() || undefined,
             }
           : null,
       ...buildTransportSettings(network, values),
       multiplexSettings: buildMultiplexSettings(values, { skipVisionFlow: true }),
+      useXrayCore: values.useXrayCore ? true : undefined,
     };
 
     await onSubmit(serverConfig);
@@ -178,6 +205,18 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
   const showPathHostFields =
     watchedNetwork === 'Ws' || watchedNetwork === 'HttpUpgrade' || watchedNetwork === 'Http';
   const isGrpcEnabled = watchedNetwork === 'Grpc';
+  const isXhttpEnabled = watchedNetwork === 'Xhttp';
+  // 内核判定（与主进程生成期同一谓词）：XHTTP / VLESS Encryption / vision-udp443 / pqv / 手动勾选 → Xray。
+  const xrayReq = formXrayRequirement({
+    protocol: 'vless',
+    network: watchedNetwork,
+    encryption: form.watch('encryption'),
+    flow: form.watch('flow'),
+    security: form.watch('security'),
+    mldsa65Verify: isRealityEnabled ? form.watch('realityMldsa65') : undefined,
+    useXrayCore: form.watch('useXrayCore'),
+  });
+  const xraySupported = formCanUseXray({ protocol: 'vless', network: watchedNetwork });
 
   return (
     <Form {...form}>
@@ -213,15 +252,16 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
             name="encryption"
             render={({ field }) => (
               <div className="nd-fld">
-                <span className="nd-fld-lbl">{t('servers.encryption')}</span>
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('servers.selectEncryption')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">none</SelectItem>
-                  </SelectContent>
-                </Select>
+                <span className="nd-fld-lbl inline-flex items-center gap-1.5">
+                  {t('servers.encryption')}
+                  <InfoTooltip
+                    content={t(
+                      'servers.vlessEncryptionDesc',
+                      'none, or a VLESS Encryption string from `xray vlessenc` (e.g. mlkem768x25519plus.native.0rtt.…). VLESS Encryption runs on the Xray core.'
+                    )}
+                  />
+                </span>
+                <Input className="mono" placeholder="none" {...field} />
                 <FormMessage className="fld-err" />
               </div>
             )}
@@ -242,6 +282,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                     <SelectItem value="Grpc">gRPC</SelectItem>
                     <SelectItem value="HttpUpgrade">HTTPUpgrade</SelectItem>
                     <SelectItem value="Http">HTTP/2</SelectItem>
+                    <SelectItem value="Xhttp">XHTTP (Xray)</SelectItem>
                   </SelectContent>
                 </Select>
                 <FormMessage className="fld-err" />
@@ -310,18 +351,40 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                       <SelectContent>
                         <SelectItem value="_none">{t('servers.none')}</SelectItem>
                         <SelectItem value="xtls-rprx-vision">xtls-rprx-vision</SelectItem>
+                        <SelectItem value="xtls-rprx-vision-udp443">
+                          xtls-rprx-vision-udp443 (Xray)
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage className="fld-err" />
                   </div>
                 )}
               />
+              <RealityXrayFields control={form.control} t={t} />
             </FieldGrid>
           </div>
         )}
 
+        {/* XHTTP（Xray 独有）：path/mode 为常用必调项 → 放基础区而非折叠高级。 */}
+        {isXhttpEnabled && (
+          <div className="nd-fset">
+            <div className="nd-fset-h">
+              XHTTP <span className="nd-badge">Xray</span>
+            </div>
+            <XhttpFields control={form.control} t={t} />
+          </div>
+        )}
+
         <FormSection title={t('servers.advanced', 'Advanced')} collapsible defaultOpen={false}>
+          <XrayCoreField
+            control={form.control}
+            t={t}
+            requirement={xrayReq}
+            supported={xraySupported}
+          />
+
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} />}
+          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>
@@ -339,11 +402,18 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           <MultiplexFields
             control={form.control}
             t={t}
-            disabled={form.watch('flow') === 'xtls-rprx-vision'}
-            disabledReason={t(
-              'servers.multiplexVisionConflict',
-              'Multiplex 与 xtls-rprx-vision flow 不兼容，已禁用。'
-            )}
+            disabled={(form.watch('flow') || '').startsWith('xtls-rprx-vision') || !!xrayReq}
+            disabledReason={
+              xrayReq
+                ? t(
+                    'servers.multiplexXrayConflict',
+                    'Xray-core nodes do not use sing-box multiplex (configure xmux in XHTTP extra instead).'
+                  )
+                : t(
+                    'servers.multiplexVisionConflict',
+                    'Multiplex 与 xtls-rprx-vision flow 不兼容，已禁用。'
+                  )
+            }
           />
         </FormSection>
       </form>

@@ -43,6 +43,7 @@ export enum ProxyErrorCode {
   RESTART_LIMIT_REACHED = 'RESTART_LIMIT_REACHED', // 健康检查发现死亡且重启耗尽
   STOP_AUTH_CANCELLED = 'STOP_AUTH_CANCELLED', // 停止时用户取消提权授权、进程仍在运行（非终态）
   CORE_UPDATE_IN_PROGRESS = 'CORE_UPDATE_IN_PROGRESS', // 内核二进制替换窗口中，手动 start/restart/switchMode 被拒（瞬态，非终态）
+  XRAY_CORE_FAILED = 'XRAY_CORE_FAILED', // Xray sidecar 启动失败 / 连续崩溃超自愈预算（非终态：sing-box 主核与非 Xray 节点照常）
   UNKNOWN = 'UNKNOWN',
 }
 

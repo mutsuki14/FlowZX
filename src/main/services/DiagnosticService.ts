@@ -143,6 +143,18 @@ export class DiagnosticService {
       ]);
 
     const coreVersion = await this.proxyManager.getCoreVersion().catch(() => 'unknown');
+    // Xray sidecar 摘要（不含路径：路径带用户名，属节点外标识，不进报告）。
+    let xrayStatus: Awaited<ReturnType<ProxyManager['getXrayStatus']>> | null = null;
+    try {
+      xrayStatus = await this.proxyManager.getXrayStatus();
+    } catch {
+      xrayStatus = null; // best-effort：采集失败不阻断报告
+    }
+    const xray = xrayStatus
+      ? xrayStatus.available
+        ? `${xrayStatus.version ?? 'unknown'}（${xrayStatus.running ? `运行中，${xrayStatus.nodes} 个节点` : '未运行'}）`
+        : '缺失'
+      : undefined;
     const status = this.proxyManager.getStatus();
     const sysProxy = await this.systemProxyManager.getProxyStatus().catch(() => null);
 
@@ -270,6 +282,7 @@ export class DiagnosticService {
       app: {
         flowzVersion: app.getVersion(),
         coreVersion,
+        xray,
         os: `${process.platform} ${process.arch} ${os.release()}`,
         electron: process.versions.electron,
       },

@@ -3,6 +3,8 @@
  * fetch-core.mjs — 按 core-manifest.json 的 bundledCoreVersion 从 SagerNet/sing-box 官方 release
  * 下载各平台 sing-box 二进制到 resources/{平台}/，供 electron-builder extraResources 随安装包打包
  * （与 libcronet/dashboard 同「现拉现打、不入库」模式）。
+ * 同时按 bundledXrayVersion 从 XTLS/Xray-core 官方 release 拉 Xray sidecar（xray[.exe]，承载 XHTTP / VLESS
+ * Encryption 等 Xray 独有协议组合，见 docs/XRAY.md），pin 为 xrayArchiveSha256 / xrayBinarySha256，同一套校验与落地流程。
  *
  * 用法：node scripts/fetch-core.mjs [--force]
  *
@@ -86,10 +88,18 @@ const TARGETS = [
 
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
+/**
+ * 拉取一组目标（sing-box 与 Xray 共用同一套「压缩包 sha → 解压 → 二进制 sha → 原子落地 / 可自证 skip」流程）。
+ * src = { repo, version, tag, sha, binSha }；返回 { ok, failed, unverified }。
+ */
+function fetchTargets(targets, src) {
 let ok = 0;
 let failed = 0;
 let unverified = 0; // 跳过但无 pin 可验：算 ready 但不该混进「已确认是这个版本」
-for (const t of TARGETS) {
+const VERSION = src.version;
+const SHA = src.sha;
+const BIN_SHA = src.binSha;
+for (const t of targets) {
   const absDir = join(ROOT, t.dir);
   const dest = join(absDir, t.bin);
 
@@ -127,14 +137,14 @@ for (const t of TARGETS) {
   const want = (SHA[t.key] || '').replace(/^sha256:/, '');
   if (!want) {
     console.error(
-      `  FAILED ${t.key}: core-manifest.json 缺 coreArchiveSha256[${t.key}] pin → 拒绝无完整性校验拉取（换版本须同步补；值=官方 release API 的 asset digest）`
+      `  FAILED ${t.key}: core-manifest.json 缺 ${src.shaKey}[${t.key}] pin → 拒绝无完整性校验拉取（换版本须同步补；值=官方 release API 的 asset digest）`
     );
     failed++;
     continue;
   }
 
   mkdirSync(absDir, { recursive: true });
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${t.asset}`;
+  const url = `https://github.com/${src.repo}/releases/download/${src.tag}/${t.asset}`;
   const work = mkdtempSync(join(tmpdir(), 'flowz-core-'));
   try {
     const archive = join(work, t.asset);
@@ -172,7 +182,7 @@ for (const t of TARGETS) {
     const tmpDest = `${dest}.tmp`;
     rmSync(tmpDest, { force: true });
     copyFileSync(binPath, tmpDest);
-    if (t.bin !== 'sing-box.exe') chmodSync(tmpDest, 0o755);
+    if (!t.bin.endsWith('.exe')) chmodSync(tmpDest, 0o755);
 
     // 完整性校验②：落地二进制本体 sha。压缩包 sha 已确保来源可信，本条锁的是「从包里取出来的到底是哪个
     // 文件」，并为下次运行的 verified-skip 留下可自证的锚（与 fetch-cronet 的 cronetLibSha256 同款分工）。
@@ -200,12 +210,52 @@ for (const t of TARGETS) {
     rmSync(`${dest}.tmp`, { force: true });
   }
 }
+return { ok, failed, unverified };
+}
 
 // 汇总行只在**全部可验证**时才敢把版本号说死；有 unverified 项就把话说回去——这行正是当初骗人的那行。
-console.log(
-  `\nsing-box cores: ${ok} ready, ${failed} failed` +
-    (unverified > 0
-      ? ` — 其中 ${unverified} 个未经校验，磁盘上未必是 ${VERSION}（补 coreBinarySha256 或加 --force）`
-      : ` (version ${VERSION}).`)
-);
-process.exit(failed > 0 ? 1 : 0);
+const summarize = (label, r, version, pinKey) =>
+  console.log(
+    `\n${label}: ${r.ok} ready, ${r.failed} failed` +
+      (r.unverified > 0
+        ? ` — 其中 ${r.unverified} 个未经校验，磁盘上未必是 ${version}（补 ${pinKey} 或加 --force）`
+        : ` (version ${version}).`)
+  );
+
+const sb = fetchTargets(TARGETS, {
+  repo: REPO,
+  version: VERSION,
+  tag: `v${VERSION}`,
+  sha: SHA,
+  binSha: BIN_SHA,
+  shaKey: 'coreArchiveSha256',
+  binShaKey: 'coreBinarySha256',
+});
+summarize('sing-box cores', sb, VERSION, 'coreBinarySha256');
+
+// ── Xray 内核（sidecar，承载 XHTTP / VLESS Encryption 等 Xray 独有协议组合，见 docs/XRAY.md）──
+// XTLS 官方 release：zip 平铺（xray[.exe] 在包根，另含 geoip/geosite/LICENSE，本脚本只取 xray 本体——
+// FlowZ 的 Xray 配置不引用 geo 文件）。archive sha == release 附带的 `<asset>.dgst` 中 SHA2-256。
+const XRAY_VERSION = manifest.bundledXrayVersion;
+const XRAY_TARGETS = [
+  { dir: 'resources/linux', asset: 'Xray-linux-64.zip', bin: 'xray', key: 'linux' },
+  { dir: 'resources/win', asset: 'Xray-windows-64.zip', bin: 'xray.exe', key: 'win' },
+  { dir: 'resources/mac-x64', asset: 'Xray-macos-64.zip', bin: 'xray', key: 'mac-x64' },
+  { dir: 'resources/mac-arm64', asset: 'Xray-macos-arm64-v8a.zip', bin: 'xray', key: 'mac-arm64' },
+];
+let xr = { ok: 0, failed: 0, unverified: 0 };
+if (XRAY_VERSION) {
+  xr = fetchTargets(XRAY_TARGETS, {
+    repo: 'XTLS/Xray-core',
+    version: XRAY_VERSION,
+    tag: `v${XRAY_VERSION}`,
+    sha: manifest.xrayArchiveSha256 || {},
+    binSha: manifest.xrayBinarySha256 || {},
+    shaKey: 'xrayArchiveSha256',
+    binShaKey: 'xrayBinarySha256',
+  });
+  summarize('xray cores', xr, XRAY_VERSION, 'xrayBinarySha256');
+} else {
+  console.log('\nxray cores: core-manifest.json 未声明 bundledXrayVersion，跳过');
+}
+process.exit(sb.failed + xr.failed > 0 ? 1 : 0);

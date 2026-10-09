@@ -109,7 +109,7 @@ describe('parseXrayOutbounds', () => {
     expect(ss.shadowsocksSettings?.password).toBe('sspw');
   });
 
-  it('不支持协议计 skipped；内部协议(freedom) 忽略不计', () => {
+  it('非结构化协议原样透传为自定义 Xray 节点；内部协议(freedom/blackhole) 忽略不计', () => {
     const r = parseXrayOutbounds(
       [
         { protocol: 'socks', tag: 's', settings: { servers: [{ address: 'x', port: 1 }] } },
@@ -118,8 +118,116 @@ describe('parseXrayOutbounds', () => {
       ],
       NOW
     );
-    expect(r.servers).toHaveLength(0);
-    expect(r.skipped).toBe(1); // 仅 socks，freedom/blackhole 不计
+    expect(r.servers).toHaveLength(1);
+    expect(r.skipped).toBe(0);
+    const c = r.servers[0];
+    expect(c.protocol).toBe('custom');
+    expect(c.customSettings?.engine).toBe('xray');
+    expect(c.customSettings?.outbound).toEqual({
+      protocol: 'socks',
+      settings: { servers: [{ address: 'x', port: 1 }] },
+    });
+    expect(c.address).toBe('x');
+    expect(c.port).toBe(1);
+    expect(r.warnings.join('')).toMatch(/自定义 Xray JSON/);
+  });
+
+  it('VLESS + XHTTP + REALITY + ENC → 结构化 xhttp 节点（encryption / spiderX / pqv / extra 全保留）', () => {
+    const r = parseXrayOutbounds(
+      [
+        {
+          protocol: 'vless',
+          tag: 'xh',
+          settings: {
+            vnext: [
+              {
+                address: 'x.com',
+                port: 443,
+                users: [{ id: 'u', encryption: 'mlkem768x25519plus.native.0rtt.k' }],
+              },
+            ],
+          },
+          streamSettings: {
+            network: 'xhttp',
+            security: 'reality',
+            xhttpSettings: {
+              path: '/p',
+              host: 'h',
+              mode: 'stream-one',
+              extra: { noGRPCHeader: true },
+            },
+            realitySettings: {
+              serverName: 'sni',
+              password: 'pbk',
+              shortId: 'ab',
+              spiderX: '/s',
+              mldsa65Verify: 'pq',
+            },
+          },
+        },
+      ],
+      NOW
+    );
+    const s = r.servers[0];
+    expect(s.protocol).toBe('vless');
+    expect(s.encryption).toBe('mlkem768x25519plus.native.0rtt.k');
+    expect(s.network).toBe('xhttp');
+    expect(s.xhttpSettings).toEqual({
+      path: '/p',
+      host: 'h',
+      mode: 'stream-one',
+      extra: { noGRPCHeader: true },
+    });
+    expect(s.realitySettings).toEqual({
+      publicKey: 'pbk',
+      shortId: 'ab',
+      spiderX: '/s',
+      mldsa65Verify: 'pq',
+    });
+  });
+
+  it('mKCP / finalmask / mux / sockopt → 原样透传（结构化会丢语义）；仅 dialerProxy 的 sockopt 仍结构化', () => {
+    const vless = (stream: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+      protocol: 'vless',
+      settings: { vnext: [{ address: 'a', port: 1, users: [{ id: 'u' }] }] },
+      streamSettings: stream,
+      ...extra,
+    });
+    const r = parseXrayOutbounds(
+      [
+        vless({ network: 'kcp' }),
+        vless({ network: 'raw', finalmask: { udp: [] } }),
+        vless({ network: 'raw' }, { mux: { enabled: true } }),
+        vless({ network: 'raw', sockopt: { tcpFastOpen: true } }),
+        vless({ network: 'raw', sockopt: { dialerProxy: 'chain' } }),
+      ],
+      NOW
+    );
+    expect(r.servers.map((s) => s.protocol)).toEqual([
+      'custom',
+      'custom',
+      'custom',
+      'custom',
+      'vless',
+    ]);
+  });
+
+  it('Xray 25+ 扁平 settings（address/port/id 直接在 settings）', () => {
+    const r = parseXrayOutbounds(
+      [
+        {
+          protocol: 'vless',
+          settings: { address: 'f.com', port: 8443, id: 'u', encryption: 'none' },
+        },
+      ],
+      NOW
+    );
+    expect(r.servers[0]).toMatchObject({
+      protocol: 'vless',
+      address: 'f.com',
+      port: 8443,
+      uuid: 'u',
+    });
   });
 
   it('缺必填字段 → failed，不产出节点', () => {

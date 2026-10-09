@@ -9,6 +9,8 @@ import type {
   WebSocketSettings,
   GrpcSettings,
   HttpSettings,
+  XhttpSettings,
+  XhttpMode,
   Hysteria2Settings,
   Hysteria2Network,
   AnyTlsSettings,
@@ -322,10 +324,7 @@ export class ProtocolParser implements IProtocolParser {
       throw new Error('Hysteria2 obfs=salamander 缺少 obfs-password');
     } else if (obfs) {
       // 非 salamander 值（sing-box hy2 无对应混淆类型/参数噪声）：剥离 + warn 留痕。
-      this.log(
-        'warn',
-        `Hysteria2 节点 "${name}" 的 obfs 参数（${obfs}）不受支持，已忽略混淆配置`
-      );
+      this.log('warn', `Hysteria2 节点 "${name}" 的 obfs 参数（${obfs}）不受支持，已忽略混淆配置`);
     }
 
     // 解析网络类型（tcp 或 udp）
@@ -486,9 +485,7 @@ export class ProtocolParser implements IProtocolParser {
    */
   private parseSnell(url: URL): ServerConfig {
     // psk 含未编码 ':' 时 URL 引擎会拆成 username:password——两段拼回，避免 psk 静默截断成假节点。
-    const psk = decodeURIComponent(
-      url.password ? `${url.username}:${url.password}` : url.username
-    );
+    const psk = decodeURIComponent(url.password ? `${url.username}:${url.password}` : url.username);
     const { address, port, params, name } = this.parseBase(url);
 
     if (!psk.trim()) {
@@ -783,9 +780,23 @@ export class ProtocolParser implements IProtocolParser {
         };
       } else if (net === 'tcp' || net === 'raw' || net === 'none') {
         config.network = 'tcp';
+      } else if (net === 'xhttp' || net === 'splithttp') {
+        // XHTTP（Xray 独有，经 Xray sidecar 承载）。v2rayN 生态 vmess JSON：path/host 同 ws，mode 放在 type 字段。
+        config.network = 'xhttp';
+        const mode = String(vmessData.type || vmessData.mode || '').toLowerCase();
+        config.xhttpSettings = {
+          path: vmessData.path || '/',
+          host: vmessData.host || undefined,
+          mode: ['auto', 'packet-up', 'stream-up', 'stream-one'].includes(mode)
+            ? (mode as XhttpMode)
+            : undefined,
+        };
+        if (vmessData.extra && typeof vmessData.extra === 'object') {
+          config.xhttpSettings.extra = vmessData.extra;
+        }
       } else {
-        // kcp/quic（V2Ray mKCP·QUIC 传输）/xhttp 等 sing-box 不支持——入库也连不上，
-        // 整节点拒绝（与 vless/trojan 统一口径，订阅逐行 catch 聚合告警）。
+        // kcp/quic（V2Ray mKCP·QUIC 传输）等结构化表单无法承载——整节点拒绝（与 vless/trojan 统一口径，
+        // 订阅逐行 catch 聚合告警）；需要者用「自定义 Xray JSON」节点。
         throw new Error(`不支持的传输层类型: ${net}`);
       }
 
@@ -884,8 +895,9 @@ export class ProtocolParser implements IProtocolParser {
    * 已知别名：h2→http（builder 兼容口径，见 generateTransportConfig）、raw/none→tcp（Xray 1.8.24+ 把 tcp
    * 更名 raw，二者在野共存）。httpupgrade 复用 ws 形态的 path/host 承载（与 sing-box JSON 导入、outbound
    * builder 同款，见 SubscriptionService.parseSingboxOutbounds / generateTransportConfig）。
-   * 未知值（xhttp/splithttp/kcp/quic 等 Xray 专属传输）sing-box 内核不支持——入库也连不上，整节点 throw
-   * 拒绝（订阅逐行 catch 聚合告警；消息保持「不支持的传输层类型」可检索，issue #263）。
+   * xhttp（含旧名 splithttp）为 Xray 独有传输：入库后由 Xray sidecar 内核承载（shared/xray.ts）。
+   * 其余未知值（kcp/quic 等）结构化表单无法承载——整节点 throw 拒绝（订阅逐行 catch 聚合告警；消息保持
+   * 「不支持的传输层类型」可检索，issue #263）；需要者用「自定义 Xray JSON」节点。
    */
   private parseTransportSettings(
     config: ServerConfig,
@@ -916,9 +928,41 @@ export class ProtocolParser implements IProtocolParser {
       case 'none':
         config.network = 'tcp'; // TCP 不需要额外配置
         break;
+      case 'xhttp':
+      case 'splithttp':
+        config.network = 'xhttp';
+        config.xhttpSettings = this.parseXhttpSettings(params, config.name);
+        break;
       default:
         throw new Error(`不支持的传输层类型: ${network}`);
     }
+  }
+
+  /**
+   * XHTTP 分享链参数（Xray 分享链标准）：path / host / mode / extra（URL 编码的 JSON 对象，原样透传给 Xray）。
+   * extra 非法 JSON → 告警并忽略（节点仍可用基本参数连接，不整节点拒绝）。
+   */
+  private parseXhttpSettings(params: URLSearchParams, name: string): XhttpSettings {
+    const settings: XhttpSettings = {};
+    const path = params.get('path');
+    if (path) settings.path = path;
+    const host = params.get('host');
+    if (host) settings.host = host;
+    const mode = (params.get('mode') || '').toLowerCase();
+    if (mode === 'auto' || mode === 'packet-up' || mode === 'stream-up' || mode === 'stream-one') {
+      settings.mode = mode as XhttpMode;
+    }
+    const extra = params.get('extra');
+    if (extra) {
+      try {
+        const obj = JSON.parse(extra);
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) settings.extra = obj;
+        else throw new Error('not an object');
+      } catch {
+        this.log('warn', `节点 "${name}" 的 XHTTP extra 参数不是合法 JSON 对象，已忽略`);
+      }
+    }
+    return settings;
   }
 
   private parseWebSocketSettings(params: URLSearchParams): WebSocketSettings {
@@ -1011,6 +1055,22 @@ export class ProtocolParser implements IProtocolParser {
       settings.fingerprint = fingerprint;
     }
 
+    // Xray 证书指纹钉扎（Xray 26 移除 allowInsecure 后的替代；sing-box 节点忽略）。
+    const pcs = params.get('pcs') || params.get('pinnedPeerCertSha256');
+    if (pcs) {
+      settings.pinnedPeerCertSha256 = pcs;
+    }
+
+    // ECH（Xray 分享链 ech=）：base64 ECHConfigList → 包成 PEM（sing-box/Xray 两侧 builder 均可消费）；
+    // DNS 查询地址形态（https://… / udp://… / domain+https://…）原样保留（Xray 直接消费；sing-box 侧自动 DNS 获取）。
+    const ech = params.get('ech');
+    if (ech) {
+      settings.ech = true;
+      settings.echConfig = /:\/\//.test(ech)
+        ? ech
+        : `-----BEGIN ECH CONFIGS-----\n${ech.replace(/\s+/g, '')}\n-----END ECH CONFIGS-----`;
+    }
+
     return settings;
   }
 
@@ -1027,6 +1087,16 @@ export class ProtocolParser implements IProtocolParser {
     const shortId = params.get('sid');
     if (shortId) {
       settings.shortId = shortId;
+    }
+
+    // Xray 独有：spiderX（spx）/ ML-DSA-65 验证公钥（pqv，非空 → 节点经 Xray 内核运行）。
+    const spiderX = params.get('spx');
+    if (spiderX) {
+      settings.spiderX = spiderX;
+    }
+    const pqv = params.get('pqv');
+    if (pqv) {
+      settings.mldsa65Verify = pqv;
     }
 
     return settings;
@@ -1287,6 +1357,11 @@ export class ProtocolParser implements IProtocolParser {
       vmessData.host = config.httpSettings.host ? config.httpSettings.host.join(',') : '';
     } else if (config.network === 'grpc' && config.grpcSettings) {
       vmessData.path = config.grpcSettings.serviceName || '';
+    } else if (config.network === 'xhttp' && config.xhttpSettings) {
+      vmessData.path = config.xhttpSettings.path || '/';
+      vmessData.host = config.xhttpSettings.host || '';
+      if (config.xhttpSettings.mode) vmessData.type = config.xhttpSettings.mode;
+      if (config.xhttpSettings.extra) vmessData.extra = config.xhttpSettings.extra;
     }
 
     if (config.security === 'tls' && config.tlsSettings) {
@@ -1381,6 +1456,15 @@ export class ProtocolParser implements IProtocolParser {
         params.set('method', config.httpSettings.method);
       }
     }
+
+    // XHTTP（Xray 分享链标准：path / host / mode / extra=URL 编码 JSON），与 parseXhttpSettings 对称。
+    if (config.network === 'xhttp' && config.xhttpSettings) {
+      const x = config.xhttpSettings;
+      if (x.path) params.set('path', x.path);
+      if (x.host) params.set('host', x.host);
+      if (x.mode) params.set('mode', x.mode);
+      if (x.extra && Object.keys(x.extra).length > 0) params.set('extra', JSON.stringify(x.extra));
+    }
   }
 
   private appendSecurityParams(params: URLSearchParams, config: ServerConfig): void {
@@ -1401,12 +1485,34 @@ export class ProtocolParser implements IProtocolParser {
       if (config.tlsSettings.fingerprint) {
         params.set('fp', config.tlsSettings.fingerprint);
       }
+      if (config.tlsSettings.pinnedPeerCertSha256) {
+        params.set('pcs', config.tlsSettings.pinnedPeerCertSha256);
+      }
+      if (config.tlsSettings.ech && config.tlsSettings.echConfig?.trim()) {
+        const ech = config.tlsSettings.echConfig.trim();
+        params.set(
+          'ech',
+          /:\/\//.test(ech)
+            ? ech
+            : ech
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l && !l.startsWith('-----'))
+                .join('')
+        );
+      }
     }
 
     if (config.security === 'reality' && config.realitySettings) {
       params.set('pbk', config.realitySettings.publicKey);
       if (config.realitySettings.shortId) {
         params.set('sid', config.realitySettings.shortId);
+      }
+      if (config.realitySettings.spiderX) {
+        params.set('spx', config.realitySettings.spiderX);
+      }
+      if (config.realitySettings.mldsa65Verify) {
+        params.set('pqv', config.realitySettings.mldsa65Verify);
       }
     }
   }

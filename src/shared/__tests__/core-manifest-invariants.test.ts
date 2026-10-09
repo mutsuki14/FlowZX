@@ -96,3 +96,23 @@ describe('core-manifest：供应链 pin 齐全（缺 pin 时 fetch 脚本拒拉�
     }
   });
 });
+
+describe('core-manifest：Xray sidecar pin（fetch-core 同时拉 Xray，缺 pin 即拒拉）', () => {
+  const m = manifest as {
+    bundledXrayVersion?: string;
+    xrayArchiveSha256?: Record<string, string>;
+    xrayBinarySha256?: Record<string, string>;
+  };
+
+  it('bundledXrayVersion 为 x.y.z 形态（release tag = v<版本>）', () => {
+    expect(m.bundledXrayVersion).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('xrayArchiveSha256 / xrayBinarySha256 覆盖四平台、64 位 hex，且两类 pin 不相等', () => {
+    for (const key of ['linux', 'win', 'mac-x64', 'mac-arm64']) {
+      expect(m.xrayArchiveSha256?.[key]).toMatch(HEX64);
+      expect(m.xrayBinarySha256?.[key]).toMatch(HEX64);
+      expect(m.xrayArchiveSha256?.[key]).not.toBe(m.xrayBinarySha256?.[key]);
+    }
+  });
+});

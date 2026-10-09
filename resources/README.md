@@ -10,16 +10,20 @@
 resources/
 ├── win/                          # Windows (x64)
 │   ├── sing-box.exe              # sing-box 可执行文件（fetch 产物，不入库）
+│   ├── xray.exe                  # Xray-core sidecar（Xray 独有协议组合，fetch 产物，不入库）
 │   ├── libcronet.dll             # NaïveProxy/cronet 运行时库（dlopen，fetch 产物，不入库）
 │   └── com.flowz.helper.exe      # 提权服务 helper（build 产物，不入库）
 ├── linux/                        # Linux (x64)
 │   ├── sing-box                  # sing-box 可执行文件（fetch 产物，不入库）
+│   ├── xray                      # Xray-core sidecar（fetch 产物，不入库）
 │   └── libcronet.so              # NaïveProxy/cronet 运行时库（dlopen，fetch 产物，不入库）
 ├── mac-x64/                      # macOS Intel (x64)
 │   ├── sing-box                  # sing-box 可执行文件（fetch 产物，不入库）
+│   ├── xray                      # Xray-core sidecar（fetch 产物，不入库）
 │   └── com.flowz.helper          # 提权服务 helper（build 产物，不入库）
 ├── mac-arm64/                    # macOS Apple Silicon (arm64)
 │   ├── sing-box                  # sing-box 可执行文件（fetch 产物，不入库）
+│   ├── xray                      # Xray-core sidecar（fetch 产物，不入库）
 │   ├── com.flowz.helper          # 提权服务 helper（build 产物，不入库）
 │   └── LICENSE
 ├── dashboard/                    # sing-box 官方面板静态资源（fetch 产物，不入库）
@@ -33,6 +37,7 @@ resources/
 > `com.flowz.helper{,.exe}` 体积大或属构建产物 **不入库**，由下列命令在开发/CI 现拉现编后随 `resources/` 一起打包：
 >
 > - `npm run fetch:core` → 各平台 `sing-box[.exe]`（SagerNet 官方 release，按 core-manifest.json 的 `bundledCoreVersion` 拉、`coreArchiveSha256` 校验压缩包）
+>   + `xray[.exe]`（XTLS 官方 release，按 `bundledXrayVersion` 拉、`xrayArchiveSha256` 校验；见 [docs/XRAY.md](../docs/XRAY.md)）
 > - `npm run fetch:cronet` → 各平台 `libcronet.*`（NaïveProxy/cronet，运行时 dlopen）
 > - `npm run fetch:dashboard`→ `dashboard/`（官方面板，gh-pages 构建产物）
 > - `npm run build:helper` → 各平台 `com.flowz.helper{,.exe}`（提权服务，交叉编译）

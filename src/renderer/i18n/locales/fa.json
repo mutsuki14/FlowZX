@@ -801,6 +801,14 @@
       "checkUpdate": "بررسی به‌روزرسانی‌ها",
       "downloading": "در حال دانلود به‌روزرسانی...",
       "updateAvailable": "به‌روزرسانی {{version}} در دسترس است"
+    },
+    "xrayCore": {
+      "title": "هسته Xray (sidecar)",
+      "missing": "موجود نیست",
+      "running": "در حال اجرا · {{n}} گره",
+      "idle": "غیرفعال",
+      "desc": "گره‌های مختص Xray (XHTTP، VLESS Encryption…) را در کنار sing-box اجرا می‌کند. برای استفاده از نسخه دیگری از Xray، فایل اجرایی xray را در {{dir}} قرار دهید.",
+      "refresh": "بازخوانی"
     }
   },
   "servers": {
@@ -1217,7 +1225,36 @@
     "meshTsKeyReadySub": "تنظیمات · حذف",
     "meshTsAddSub": "ورود تعاملی / AuthKey",
     "meshTsEntryTitle": "دسترسی به شبکهٔ Tailscale و مدیریت حساب",
-    "speedTestingNodes": "در حال تست · {{tested}}/{{total}} گره"
+    "speedTestingNodes": "در حال تست · {{tested}}/{{total}} گره",
+    "xrayReasonXhttp": "انتقال XHTTP",
+    "xrayReasonEncryption": "رمزنگاری VLESS Encryption",
+    "xrayReasonVisionUdp443": "flow نوع xtls-rprx-vision-udp443",
+    "xrayReasonPqv": "تأیید پساکوانتومی REALITY ML-DSA-65",
+    "xrayReasonCustom": "JSON خروجی سفارشی Xray",
+    "xrayReasonForced": "به‌صورت دستی فعال شده",
+    "xhttpPath": "مسیر XHTTP",
+    "xhttpHost": "Host در XHTTP",
+    "xhttpMode": "حالت XHTTP",
+    "xhttpModeDesc": "auto بهترین حالت را انتخاب می‌کند. packet-up از اغلب CDNها عبور می‌کند؛ stream-up / stream-one به مسیری با پشتیبانی از جریان‌دهی نیاز دارند.",
+    "xhttpExtra": "XHTTP extra (JSON)",
+    "xhttpExtraDesc": "شیء خام xhttpSettings.extra در Xray، مثل {\"xmux\":{\"maxConcurrency\":\"16-32\"}}، یا downloadSettings برای جدا کردن مسیر آپلود و دانلود.",
+    "xhttpExtraInvalid": "باید یک شیء JSON باشد",
+    "xrayCore": "اجرا با هسته Xray",
+    "xrayCoreDesc": "FlowZ همچنان sing-box را هسته اصلی (TUN، مسیریابی، DNS) نگه می‌دارد و این گره را در هسته Xray همراه برنامه اجرا می‌کند. برای پروتکل‌های مختص Xray مانند XHTTP و VLESS Encryption لازم است.",
+    "xrayCoreAuto": "از {{reason}} استفاده می‌کند؛ بنابراین این گره با هسته Xray اجرا می‌شود.",
+    "xrayCoreForced": "این گره با هسته Xray اجرا خواهد شد.",
+    "xrayCoreUnsupported": "با انتقال HTTP/2، Shadow-TLS یا افزونه‌های SS (ویژگی‌های مختص sing-box) در دسترس نیست.",
+    "pinnedCert": "اثرانگشت SHA-256 گواهی",
+    "pinnedCertDesc": "Xray 26 گزینه «مجاز کردن ناامن» را حذف کرده است. برای سرورهای خودامضا، SHA-256 گواهی را به‌صورت hex وارد کنید (چند مقدار با کاما؛ دریافت با `xray tls hash --cert cert.pem`).",
+    "realityMldsa65": "کلید تأیید ML-DSA-65",
+    "realityMldsa65Desc": "تأیید پساکوانتومی گواهی REALITY (مختص Xray؛ پارامتر pqv در لینک). با پر کردن آن، گره با هسته Xray اجرا می‌شود.",
+    "vlessEncryptionDesc": "none، یا رشته VLESS Encryption از `xray vlessenc` (مثلاً mlkem768x25519plus.native.0rtt.…). گره‌های دارای VLESS Encryption با هسته Xray اجرا می‌شوند.",
+    "multiplexXrayConflict": "گره‌های هسته Xray از چندگانه‌سازی sing-box استفاده نمی‌کنند (به‌جای آن xmux را در XHTTP extra تنظیم کنید).",
+    "xrayBadgeTip": "با هسته Xray اجرا می‌شود ({{reason}})",
+    "customEngine": "هسته",
+    "customXrayIntro": "یک JSON خروجی Xray (protocol + settings + streamSettings) جای‌گذاری کنید.",
+    "customXrayIntroFull": "با هسته Xray همراه برنامه (sidecar) اجرا می‌شود، پس هر ترکیب مختص Xray قابل استفاده است — mKCP + finalmask، XHTTP downloadSettings، hysteria، wireguard… مقادیر tag، proxySettings و sockopt.dialerProxy توسط FlowZ مدیریت می‌شوند (برای زنجیره از پروکسی پیشین گره استفاده کنید).",
+    "customXrayJsonInvalid": "JSON نامعتبر است — باید شیء خروجی Xray با فیلد \"protocol\" باشد"
   },
   "rules": {
     "ruleColumn": "قانون",

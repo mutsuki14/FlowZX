@@ -35,9 +35,10 @@
 - 代理：VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
 - 组网：**WireGuard** / **Cloudflare WARP** / **Tailscale**
 - **自定义协议 + 换核扩展**：粘贴 sing-box outbound JSON，保存时「内核即权威」实时探测兼容性；官方核不支持的协议可手动替换为支持它的第三方 fork 内核（FlowZ 自动识别 fork、停用在线更新以防覆盖）
+- **Xray 内核（FlowZX）**：随包内置 Xray-core sidecar，支持 **VLESS + XHTTP + REALITY + ENC（VLESS Encryption）**、XHTTP（packet-up / stream-up / stream-one，含 `extra`/xmux/上下行分离）、REALITY ML-DSA-65、vision-udp443，以及任意「自定义 Xray outbound JSON」；sing-box 仍为主核，Xray 节点同样支持热切换、分流、测速、代理链。详见 [docs/XRAY.md](docs/XRAY.md)
 
 **核心**
-- sing-box 1.14 统一内核，随包内置（Windows / macOS arm64+x64 / Linux）
+- sing-box 1.14 统一内核，随包内置（Windows / macOS arm64+x64 / Linux）；Xray-core 26 作为 sidecar 随包内置，仅承载 Xray 独有协议组合
 - 抗封增强：**TLS Fragment**（全局）/ ECH / Multiplex / httpupgrade / **Shadow-TLS**（可附加于 SS2022 等协议）/ **Hysteria2 端口跳跃**（订阅自动识别，部分附手动开关）
 - **Block QUIC**（节点无关）：reject 代理向 QUIC/UDP 443，逼浏览器回退 TCP，解决节点 UDP relay 不通导致的网页卡顿
 - **WebRTC 防泄露**（仅 TUN）：off / 走代理 / 阻断，三档可选

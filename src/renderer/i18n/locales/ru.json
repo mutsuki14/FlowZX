@@ -801,6 +801,14 @@
       "checkUpdate": "Проверить обновления",
       "downloading": "Скачивание обновления...",
       "updateAvailable": "Доступно обновление {{version}}"
+    },
+    "xrayCore": {
+      "title": "Ядро Xray (sidecar)",
+      "missing": "Отсутствует",
+      "running": "Работает · узлов: {{n}}",
+      "idle": "Не запущено",
+      "desc": "Запускает узлы с протоколами только Xray (XHTTP, VLESS Encryption…) вместе с sing-box. Чтобы использовать другую сборку Xray, поместите файл xray в {{dir}}.",
+      "refresh": "Обновить"
     }
   },
   "servers": {
@@ -1217,7 +1225,36 @@
     "meshTsKeyReadySub": "Настройки · удаление",
     "meshTsAddSub": "Интерактивный вход / AuthKey",
     "meshTsEntryTitle": "Подключение к сети Tailscale и управление аккаунтом",
-    "speedTestingNodes": "Тест · {{tested}}/{{total}} узлов"
+    "speedTestingNodes": "Тест · {{tested}}/{{total}} узлов",
+    "xrayReasonXhttp": "транспорт XHTTP",
+    "xrayReasonEncryption": "VLESS Encryption",
+    "xrayReasonVisionUdp443": "flow xtls-rprx-vision-udp443",
+    "xrayReasonPqv": "проверка REALITY ML-DSA-65",
+    "xrayReasonCustom": "пользовательский Xray outbound JSON",
+    "xrayReasonForced": "включено вручную",
+    "xhttpPath": "Путь XHTTP",
+    "xhttpHost": "Host XHTTP",
+    "xhttpMode": "Режим XHTTP",
+    "xhttpModeDesc": "auto выбирает лучший режим. packet-up проходит через большинство CDN; stream-up / stream-one требуют путь с поддержкой потоковой передачи.",
+    "xhttpExtra": "XHTTP extra (JSON)",
+    "xhttpExtraDesc": "Объект Xray xhttpSettings.extra как есть, например {\"xmux\":{\"maxConcurrency\":\"16-32\"}}, или downloadSettings для раздельных каналов отправки/загрузки.",
+    "xhttpExtraInvalid": "Должен быть JSON-объект",
+    "xrayCore": "Использовать ядро Xray",
+    "xrayCoreDesc": "FlowZ оставляет sing-box основным ядром (TUN, маршрутизация, DNS) и запускает этот узел во встроенном ядре Xray. Обязательно для протоколов только Xray, таких как XHTTP и VLESS Encryption.",
+    "xrayCoreAuto": "Используется {{reason}}, поэтому узел работает на ядре Xray.",
+    "xrayCoreForced": "Этот узел будет работать на ядре Xray.",
+    "xrayCoreUnsupported": "Недоступно с транспортом HTTP/2, Shadow-TLS или плагинами SS (возможности только sing-box).",
+    "pinnedCert": "Отпечаток сертификата SHA-256",
+    "pinnedCertDesc": "В Xray 26 удалён параметр «разрешить небезопасные». Для самоподписанных серверов укажите SHA-256 сертификата в hex (несколько — через запятую; получить: `xray tls hash --cert cert.pem`).",
+    "realityMldsa65": "Ключ проверки ML-DSA-65",
+    "realityMldsa65Desc": "Постквантовая проверка сертификата REALITY (только Xray; параметр ссылки pqv). При заполнении узел работает на ядре Xray.",
+    "vlessEncryptionDesc": "none или строка VLESS Encryption из `xray vlessenc` (например mlkem768x25519plus.native.0rtt.…). Узлы с VLESS Encryption работают на ядре Xray.",
+    "multiplexXrayConflict": "Узлы на ядре Xray не используют мультиплексирование sing-box (настройте xmux в XHTTP extra).",
+    "xrayBadgeTip": "Работает на ядре Xray ({{reason}})",
+    "customEngine": "Ядро",
+    "customXrayIntro": "Вставьте Xray outbound JSON (protocol + settings + streamSettings).",
+    "customXrayIntroFull": "Выполняется во встроенном ядре Xray (sidecar), поэтому подходит любая комбинация только Xray — mKCP + finalmask, XHTTP downloadSettings, hysteria, wireguard… tag, proxySettings и sockopt.dialerProxy управляются FlowZ (для цепочек используйте предварительный прокси узла).",
+    "customXrayJsonInvalid": "Неверный JSON — нужен объект Xray outbound с полем \"protocol\""
   },
   "rules": {
     "ruleColumn": "Правило",

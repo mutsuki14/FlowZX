@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, useRef } from 'react';
 import { Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { SegmentedControl } from '@/components/ui/segmented-control';
+import { xrayOutboundDisplayAddress } from '@shared/xray';
 import { FormSection } from './shared/form-layout';
 import { InfoTooltip } from './shared/info-tooltip';
 import { splitTextList } from './shared/parse-list';
@@ -22,17 +24,35 @@ const PLACEHOLDER = `{
   "version": 4
 }`;
 
-type ProbeState = { state: 'idle' | 'checking' | 'ok' | 'fail' | 'unknown'; error?: string };
+// Xray outbound 示例：VLESS + mKCP + finalmask 之类结构化表单不覆盖的组合，粘贴 Xray outbound 原文即可。
+const XRAY_PLACEHOLDER = `{
+  "protocol": "vless",
+  "settings": {
+    "vnext": [{ "address": "1.2.3.4", "port": 443,
+      "users": [{ "id": "uuid", "encryption": "none" }] }]
+  },
+  "streamSettings": {
+    "network": "xhttp",
+    "security": "reality",
+    "realitySettings": { "serverName": "www.example.com", "publicKey": "…" },
+    "xhttpSettings": { "path": "/", "extra": { "downloadSettings": {} } }
+  }
+}`;
 
-const parseOutbound = (text: string): Record<string, unknown> | null => {
+type ProbeState = { state: 'idle' | 'checking' | 'ok' | 'fail' | 'unknown'; error?: string };
+type Engine = 'singbox' | 'xray';
+
+/** sing-box 形态须含字符串 type；Xray 形态须含字符串 protocol。 */
+const parseOutbound = (text: string, engine: Engine): Record<string, unknown> | null => {
+  const key = engine === 'xray' ? 'protocol' : 'type';
   try {
     const o = JSON.parse(text);
     if (
       o &&
       typeof o === 'object' &&
       !Array.isArray(o) &&
-      typeof o.type === 'string' &&
-      o.type.trim()
+      typeof o[key] === 'string' &&
+      o[key].trim()
     ) {
       return o as Record<string, unknown>;
     }
@@ -50,6 +70,7 @@ const parseOutbound = (text: string): Record<string, unknown> | null => {
 export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
   const { t } = useTranslation();
   const [jsonText, setJsonText] = useState('');
+  const [engine, setEngine] = useState<Engine>('singbox');
   const [isEndpoint, setIsEndpoint] = useState(false);
   const [secretKeys, setSecretKeys] = useState('');
   const [jsonError, setJsonError] = useState('');
@@ -61,10 +82,19 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
     if (serverConfig && serverConfig.protocol?.toLowerCase() === 'custom') {
       const cs = serverConfig.customSettings;
       setJsonText(cs?.outbound ? JSON.stringify(cs.outbound, null, 2) : '');
+      setEngine(cs?.engine === 'xray' ? 'xray' : 'singbox');
       setIsEndpoint(!!cs?.isEndpoint);
       setSecretKeys((cs?.secretKeys || []).join(', '));
     }
   }, [serverConfig]);
+
+  const invalidMsg = () =>
+    engine === 'xray'
+      ? t(
+          'servers.customXrayJsonInvalid',
+          'Invalid JSON — must be an Xray outbound object with a "protocol" field'
+        )
+      : t('servers.customJsonInvalid', 'Invalid JSON — must be an object with a "type" field');
 
   useEffect(() => {
     if (probeTimer.current) clearTimeout(probeTimer.current);
@@ -73,11 +103,9 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
       setProbe({ state: 'idle' });
       return;
     }
-    const o = parseOutbound(jsonText);
+    const o = parseOutbound(jsonText, engine);
     if (!o) {
-      setJsonError(
-        t('servers.customJsonInvalid', 'Invalid JSON — must be an object with a "type" field')
-      );
+      setJsonError(invalidMsg());
       setProbe({ state: 'idle' });
       return;
     }
@@ -85,28 +113,46 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
     setProbe({ state: 'checking' });
     const seq = ++probeSeq.current;
     probeTimer.current = setTimeout(() => {
-      void api.proxy.probeOutbound(o, isEndpoint).then((r) => {
-        if (seq !== probeSeq.current) return; // 已被更新的输入取代，丢弃这次（旧）结果
-        if (r.ok) setProbe({ state: 'ok' });
-        else if (r.indeterminate) setProbe({ state: 'unknown', error: r.error });
-        else setProbe({ state: 'fail', error: r.error });
-      });
+      void api.proxy
+        .probeOutbound(
+          o,
+          engine === 'xray' ? false : isEndpoint,
+          engine === 'xray' ? 'xray' : undefined
+        )
+        .then((r) => {
+          if (seq !== probeSeq.current) return; // 已被更新的输入取代，丢弃这次（旧）结果
+          if (r.ok) setProbe({ state: 'ok' });
+          else if (r.indeterminate) setProbe({ state: 'unknown', error: r.error });
+          else setProbe({ state: 'fail', error: r.error });
+        });
     }, 500);
     return () => {
       if (probeTimer.current) clearTimeout(probeTimer.current);
     };
-  }, [jsonText, isEndpoint, t]);
+  }, [jsonText, isEndpoint, engine, t]);
 
   const handleSubmit = async () => {
-    const o = parseOutbound(jsonText);
+    const o = parseOutbound(jsonText, engine);
     if (!o) {
-      setJsonError(
-        t('servers.customJsonInvalid', 'Invalid JSON — must be an object with a "type" field')
-      );
+      setJsonError(invalidMsg());
       return;
     }
     // address/port 仅供列表展示（自定义协议的真实 server/port 在 JSON 内）；从 JSON 提取常见键，缺则空。
     // 提交态（转圈 + 置灰）由 NodeFormDialog 外壳自管，本组件不再自持 submitting。
+    if (engine === 'xray') {
+      const { address, port } = xrayOutboundDisplayAddress(o);
+      await onSubmit({
+        protocol: 'custom' as const,
+        address,
+        port,
+        customSettings: {
+          outbound: o,
+          engine: 'xray' as const,
+          secretKeys: splitTextList(secretKeys),
+        },
+      });
+      return;
+    }
     await onSubmit({
       protocol: 'custom' as const,
       address: typeof o.server === 'string' ? o.server : '',
@@ -128,6 +174,7 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
     const cs =
       serverConfig?.protocol?.toLowerCase() === 'custom' ? serverConfig.customSettings : undefined;
     setJsonText(cs?.outbound ? JSON.stringify(cs.outbound, null, 2) : '');
+    setEngine(cs?.engine === 'xray' ? 'xray' : 'singbox');
     setIsEndpoint(!!cs?.isEndpoint);
     setSecretKeys((cs?.secretKeys || []).join(', '));
     setJsonError('');
@@ -151,15 +198,40 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
       className="flex flex-col gap-[13px]"
     >
       <div className="nd-fld">
+        <span className="nd-fld-lbl">{t('servers.customEngine', 'Kernel')}</span>
+        <SegmentedControl<Engine>
+          value={engine}
+          onChange={setEngine}
+          options={[
+            { value: 'singbox', label: 'sing-box' },
+            { value: 'xray', label: 'Xray' },
+          ]}
+        />
+      </div>
+      <div className="nd-fld">
         <span className="nd-fld-lbl inline-flex items-center gap-1.5">
-          {t('servers.customIntro', 'Paste a raw sing-box outbound JSON (e.g. snell).')}
+          {engine === 'xray'
+            ? t(
+                'servers.customXrayIntro',
+                'Paste a raw Xray outbound JSON (protocol + settings + streamSettings).'
+              )
+            : t('servers.customIntro', 'Paste a raw sing-box outbound JSON (e.g. snell).')}
           <span className="nd-req">*</span>
-          <InfoTooltip content={t('servers.customIntroFull')} />
+          <InfoTooltip
+            content={
+              engine === 'xray'
+                ? t(
+                    'servers.customXrayIntroFull',
+                    'Runs on the bundled Xray core (sidecar). Any Xray-only combination works here — mKCP + finalmask, XHTTP downloadSettings, hysteria, wireguard… tag, proxySettings and sockopt.dialerProxy are managed by FlowZ (use the node chain/detour instead).'
+                  )
+                : t('servers.customIntroFull')
+            }
+          />
         </span>
         <textarea
-          className="nd-textarea"
+          className="nd-textarea mono"
           style={{ minHeight: 130 }}
-          placeholder={PLACEHOLDER}
+          placeholder={engine === 'xray' ? XRAY_PLACEHOLDER : PLACEHOLDER}
           value={jsonText}
           onChange={(e) => setJsonText(e.target.value)}
         />
@@ -209,20 +281,22 @@ export function CustomForm({ serverConfig, onSubmit }: CustomFormProps) {
       </div>
 
       <FormSection title={t('servers.advanced', 'Advanced')} collapsible defaultOpen={false}>
-        <div className="nd-swrow">
-          <div className="nd-swrow-main">
-            <div className="nd-swrow-t inline-flex items-center gap-1.5">
-              {t('servers.customIsEndpoint', 'Endpoint type')}
-              <InfoTooltip
-                content={t(
-                  'servers.customIsEndpointDesc',
-                  'Enable if this type belongs to sing-box endpoints[] (wireguard/tailscale-like) instead of outbounds[].'
-                )}
-              />
+        {engine === 'singbox' && (
+          <div className="nd-swrow">
+            <div className="nd-swrow-main">
+              <div className="nd-swrow-t inline-flex items-center gap-1.5">
+                {t('servers.customIsEndpoint', 'Endpoint type')}
+                <InfoTooltip
+                  content={t(
+                    'servers.customIsEndpointDesc',
+                    'Enable if this type belongs to sing-box endpoints[] (wireguard/tailscale-like) instead of outbounds[].'
+                  )}
+                />
+              </div>
             </div>
+            <Switch checked={isEndpoint} onCheckedChange={setIsEndpoint} />
           </div>
-          <Switch checked={isEndpoint} onCheckedChange={setIsEndpoint} />
-        </div>
+        )}
         <div className="nd-fld">
           <span className="nd-fld-lbl">
             {t('servers.customSecretKeys', 'Secret field names (optional)')}

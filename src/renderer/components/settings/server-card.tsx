@@ -11,6 +11,8 @@ import { openTailscaleLogin } from '../../lib/tailscale-login';
 import { ServerActions } from './server-actions';
 import { SpeedBadge } from './speed-badge';
 import { MeshInfoPopover } from './mesh-info-popover';
+import { xrayRequirement } from '../../../shared/xray';
+import { xrayReasonLabel } from './shared/xray-fields';
 import {
   flagAsset,
   transferSummary,
@@ -51,6 +53,8 @@ export function ServerCard({
   actions,
 }: ServerCardProps) {
   const { t } = useTranslation();
+  // 内核判定（单一真值 shared/xray）：需要 Xray 的节点显 Xray 角标（悬浮说明原因）。
+  const xrayReq = xrayRequirement(server);
   const flag = flagAsset(server.name);
   const isMesh = isEndpointProtocol(server.protocol);
   const isCurrent = selectedServerId === server.id;
@@ -164,6 +168,17 @@ export function ServerCard({
           </span>
         )}
         {server.shadowTlsSettings && <span className="nd-badge">+ST</span>}
+        {xrayReq && (
+          <span
+            className="nd-badge"
+            title={t('servers.xrayBadgeTip', {
+              defaultValue: 'Runs on the Xray core ({{reason}})',
+              reason: xrayReasonLabel(xrayReq, t),
+            })}
+          >
+            Xray
+          </span>
+        )}
       </div>
 
       {!isSelecting && <ServerActions server={server} {...actions} />}

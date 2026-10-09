@@ -20,5 +20,18 @@
   "cronetLibSha256": {
     "linux": "9d43c2ee2410a54262e394c09da14b402e872d919ea66280c6b1f54414ab5f6a",
     "win": "257f966119ffca91d7a2ce110a4b668b865d88bf2ed5339fd06a5644b0d02823"
+  },
+  "bundledXrayVersion": "26.3.27",
+  "xrayArchiveSha256": {
+    "linux": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+    "win": "d004c39288ce9ada487c6f398c7c545f7d749e44bdfdd59dbc9f865afba4e1ad",
+    "mac-x64": "f5b0471d3459eff1b82e48af0aeac186abcc3298210070afbbbd8437a4e8b203",
+    "mac-arm64": "2e93a67e8aa1936ecefb307e120830fcbd4c643ab9b1c46a2d0838d5f8409eaf"
+  },
+  "xrayBinarySha256": {
+    "linux": "8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed",
+    "win": "15c2d007954ac53ba69b80ec91242786b3c0b71d52649165b4ca1d5cc96ef8f1",
+    "mac-x64": "afd0eaebb77994a18f29b00c5f50a4f7fbb77da06e24352d43035f3cad3c3786",
+    "mac-arm64": "5d9dd24c0aba4b6cfcc6a33a5d67f854816ee17f392bf932ec8176da46f7e404"
   }
 }

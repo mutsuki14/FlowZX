@@ -28,6 +28,7 @@ import { useAppStore } from '@/store/app-store';
 import { useTranslation } from 'react-i18next';
 import type { CoreBuildKind } from '../../../shared/core-build';
 import { Srow, Swt } from './conduit-controls';
+import { XrayCoreRow } from './xray-core-row';
 
 interface AutoStatus {
   // autoUpdateEnabled 不在此快照消费（开关 UI 直接读 config.autoUpdateCore）；事件也不再推送该字段。
@@ -636,6 +637,9 @@ export function CoreManagementCard() {
           {t('settings.coreManagement.selectFile', '选择文件…')}
         </button>
       </Srow>
+
+      {/* Xray sidecar（承载 Xray 独有协议组合）：只读状态 + 覆盖目录指引。 */}
+      <XrayCoreRow />
 
       {/* B6：危险区（重置出厂 / 完全卸载） */}
       <div className="danger-zone">

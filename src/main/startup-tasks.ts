@@ -51,6 +51,14 @@ export function scheduleStartupTasks(deps: StartupTaskDeps): void {
         logManager.addLog('warn', `启动期落位 staged 内核异常: ${stagedErr}`, 'Main');
       }
 
+      // 上次会话崩溃残留的 Xray sidecar（普通用户进程，PID 文件 + 进程名双重确认后回收）：不回收会占着 xray[.exe]，
+      // 令随后的应用更新覆盖失败。best-effort，绝不阻断启动。
+      try {
+        await proxyManager?.reapOrphanedXray();
+      } catch (xrayErr) {
+        logManager.addLog('warn', `启动期回收残留 Xray 进程异常: ${xrayErr}`, 'Main');
+      }
+
       // 启动期随包核对齐（用户反馈：部署/自更新新随包核后运行时受保护核不自愈、须连接才刷新）：helper 在位=静默 reseed；
       // 无 helper 孤儿态 = 一次性 osascript 授权兜底（首启弹一次，防每启弹）。安全窗口 = 代理未连（此刻必然未连）。
       try {

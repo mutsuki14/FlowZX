@@ -14,6 +14,13 @@ import { MultiplexFields } from './shared/anti-censor-fields';
 import { AddressField, PortField } from './shared/basic-fields';
 import { TlsAdvancedFields } from './shared/tls-fields';
 import { WsPathField, WsHostField, GrpcServiceNameField } from './shared/transport-fields';
+import {
+  XhttpFields,
+  XrayCoreField,
+  PinnedCertField,
+  formXrayRequirement,
+  formCanUseXray,
+} from './shared/xray-fields';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import { normalizeNetworkUpper } from './shared/normalize-network';
 import {
@@ -30,6 +37,9 @@ import {
   buildTlsSpoofSettings,
   readTransportDefaults,
   buildTransportSettings,
+  xraySchemaShape,
+  xrayDefaults,
+  readXrayDefaults,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -47,7 +57,7 @@ const createVmessSchema = (t: any) =>
       ),
     alterId: z.number().default(0).or(z.literal('')), // '' = 清空态哨兵（提交归一为 0）
     vmessSecurity: z.string().default('auto'),
-    network: z.enum(['Tcp', 'Ws', 'Grpc', 'Http', 'HttpUpgrade']),
+    network: z.enum(['Tcp', 'Ws', 'Grpc', 'Http', 'HttpUpgrade', 'Xhttp']),
     security: z.enum(['None', 'Tls']),
     tlsServerName: z.string().optional().or(z.literal('')),
     tlsAllowInsecure: z.boolean(),
@@ -59,6 +69,7 @@ const createVmessSchema = (t: any) =>
     ...echSchemaShape,
     ...multiplexSchemaShape,
     ...tlsSpoofSchemaShape,
+    ...xraySchemaShape,
   });
 
 type VmessFormValues = z.infer<ReturnType<typeof createVmessSchema>>;
@@ -96,6 +107,7 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
         ...readEchDefault(serverConfig),
         ...readMultiplexDefaults(serverConfig),
         ...readTlsSpoofDefault(serverConfig),
+        ...readXrayDefaults(serverConfig),
       };
     }
     return {
@@ -114,6 +126,7 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
       ...echDefaults,
       ...multiplexDefaults,
       ...tlsSpoofDefaults,
+      ...xrayDefaults,
     };
   };
 
@@ -144,10 +157,12 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
               engine: values.tlsEngine && values.tlsEngine !== 'go' ? values.tlsEngine : undefined,
               ech: values.ech ? true : undefined,
               echConfig: values.echConfig?.trim() || undefined,
+              pinnedPeerCertSha256: values.tlsPinnedSha256?.trim() || undefined,
               ...buildTlsSpoofSettings(values),
             }
           : null,
       ...buildTransportSettings(network, values),
+      useXrayCore: values.useXrayCore ? true : undefined,
       multiplexSettings: buildMultiplexSettings(values),
     };
 
@@ -159,6 +174,14 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
   const showPathHostFields =
     watchedNetwork === 'Ws' || watchedNetwork === 'HttpUpgrade' || watchedNetwork === 'Http';
   const isGrpcEnabled = watchedNetwork === 'Grpc';
+  const isXhttpEnabled = watchedNetwork === 'Xhttp';
+  const xrayReq = formXrayRequirement({
+    protocol: 'vmess',
+    network: watchedNetwork,
+    security: form.watch('security'),
+    useXrayCore: form.watch('useXrayCore'),
+  });
+  const xraySupported = formCanUseXray({ protocol: 'vmess', network: watchedNetwork });
 
   return (
     <Form {...form}>
@@ -258,6 +281,7 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
                       <SelectItem value="Grpc">gRPC</SelectItem>
                       <SelectItem value="HttpUpgrade">HTTPUpgrade</SelectItem>
                       <SelectItem value="Http">HTTP/2</SelectItem>
+                      <SelectItem value="Xhttp">XHTTP (Xray)</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage className="fld-err" />
@@ -285,7 +309,17 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
             />
           </FieldGrid>
 
+          {isXhttpEnabled && <XhttpFields control={form.control} t={t} />}
+
+          <XrayCoreField
+            control={form.control}
+            t={t}
+            requirement={xrayReq}
+            supported={xraySupported}
+          />
+
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} />}
+          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>
@@ -300,7 +334,15 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
             </FieldGrid>
           )}
 
-          <MultiplexFields control={form.control} t={t} disabled={false} />
+          <MultiplexFields
+            control={form.control}
+            t={t}
+            disabled={!!xrayReq}
+            disabledReason={t(
+              'servers.multiplexXrayConflict',
+              'Xray-core nodes do not use sing-box multiplex (configure xmux in XHTTP extra instead).'
+            )}
+          />
         </FormSection>
       </form>
     </Form>

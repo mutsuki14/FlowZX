@@ -7,10 +7,10 @@
  * 别名归一：ws|websocket→ws；httpupgrade→httpupgrade；grpc→grpc；h2|http|http2→http；其余→tcp（默认）。
  */
 
-/** 规范 network 类目（小写真值，与 trojan Select 选项一致）。 */
-export type NetworkLower = 'tcp' | 'ws' | 'grpc' | 'http' | 'httpupgrade';
+/** 规范 network 类目（小写真值，与 trojan Select 选项一致）。xhttp = Xray 独有（含旧名 splithttp）。 */
+export type NetworkLower = 'tcp' | 'ws' | 'grpc' | 'http' | 'httpupgrade' | 'xhttp';
 /** 规范 network 类目（大写表单值，与 vless/vmess Select 选项一致）。 */
-export type NetworkUpper = 'Tcp' | 'Ws' | 'Grpc' | 'Http' | 'HttpUpgrade';
+export type NetworkUpper = 'Tcp' | 'Ws' | 'Grpc' | 'Http' | 'HttpUpgrade' | 'Xhttp';
 
 /** network 标准化（小写变体，trojan 表单用）。 */
 export function normalizeNetworkLower(n: string | undefined): NetworkLower {
@@ -19,6 +19,7 @@ export function normalizeNetworkLower(n: string | undefined): NetworkLower {
   if (lower === 'httpupgrade') return 'httpupgrade';
   if (lower === 'grpc') return 'grpc';
   if (lower === 'h2' || lower === 'http' || lower === 'http2') return 'http';
+  if (lower === 'xhttp' || lower === 'splithttp') return 'xhttp';
   return 'tcp';
 }
 
@@ -30,6 +31,7 @@ export function normalizeNetworkUpper(n: string | undefined): NetworkUpper {
     grpc: 'Grpc',
     http: 'Http',
     httpupgrade: 'HttpUpgrade',
+    xhttp: 'Xhttp',
   };
   return UPPER[normalizeNetworkLower(n)];
 }

@@ -801,6 +801,14 @@
       "checkUpdate": "Check for Updates",
       "downloading": "Downloading update...",
       "updateAvailable": "Update {{version}} available"
+    },
+    "xrayCore": {
+      "title": "Xray core (sidecar)",
+      "missing": "Missing",
+      "running": "Running · {{n}} nodes",
+      "idle": "Idle",
+      "desc": "Runs Xray-only nodes (XHTTP, VLESS Encryption…) alongside sing-box. To use another Xray build, put the xray binary in {{dir}}.",
+      "refresh": "Refresh"
     }
   },
   "servers": {
@@ -1217,7 +1225,36 @@
     "meshTsKeyReadySub": "Settings · Delete",
     "meshTsAddSub": "Interactive login / AuthKey",
     "meshTsEntryTitle": "Tailscale mesh access and account management",
-    "speedTestingNodes": "Testing · {{tested}}/{{total}} nodes"
+    "speedTestingNodes": "Testing · {{tested}}/{{total}} nodes",
+    "xrayReasonXhttp": "XHTTP transport",
+    "xrayReasonEncryption": "VLESS Encryption",
+    "xrayReasonVisionUdp443": "xtls-rprx-vision-udp443 flow",
+    "xrayReasonPqv": "REALITY ML-DSA-65 verification",
+    "xrayReasonCustom": "custom Xray outbound JSON",
+    "xrayReasonForced": "manually enabled",
+    "xhttpPath": "XHTTP Path",
+    "xhttpHost": "XHTTP Host",
+    "xhttpMode": "XHTTP Mode",
+    "xhttpModeDesc": "auto picks the best mode. packet-up works through most CDNs; stream-up / stream-one need paths that allow streaming.",
+    "xhttpExtra": "XHTTP extra (JSON)",
+    "xhttpExtraDesc": "Raw Xray xhttpSettings.extra object, e.g. {\"xmux\":{\"maxConcurrency\":\"16-32\"}}, or downloadSettings for split upload/download links.",
+    "xhttpExtraInvalid": "Must be a JSON object",
+    "xrayCore": "Run on Xray core",
+    "xrayCoreDesc": "FlowZ keeps sing-box as the main core (TUN, routing, DNS) and runs this node in a bundled Xray sidecar. Required for Xray-only protocols such as XHTTP and VLESS Encryption.",
+    "xrayCoreAuto": "Uses {{reason}}, so this node runs on the Xray core.",
+    "xrayCoreForced": "This node will run on the Xray core.",
+    "xrayCoreUnsupported": "Not available with HTTP/2 transport, Shadow-TLS or SS plugins (sing-box only features).",
+    "pinnedCert": "Certificate SHA-256 pin",
+    "pinnedCertDesc": "Xray 26 removed \"allow insecure\". For self-signed servers paste the certificate SHA-256 in hex (comma-separate several; get it with `xray tls hash --cert cert.pem`).",
+    "realityMldsa65": "ML-DSA-65 verify key",
+    "realityMldsa65Desc": "Post-quantum REALITY certificate verification (Xray only; share-link pqv). Filling this runs the node on the Xray core.",
+    "vlessEncryptionDesc": "none, or a VLESS Encryption string from `xray vlessenc` (e.g. mlkem768x25519plus.native.0rtt.…). VLESS Encryption runs on the Xray core.",
+    "multiplexXrayConflict": "Xray-core nodes do not use sing-box multiplex (configure xmux in XHTTP extra instead).",
+    "xrayBadgeTip": "Runs on the Xray core ({{reason}})",
+    "customEngine": "Kernel",
+    "customXrayIntro": "Paste a raw Xray outbound JSON (protocol + settings + streamSettings).",
+    "customXrayIntroFull": "Runs on the bundled Xray core (sidecar), so any Xray-only combination works here — mKCP + finalmask, XHTTP downloadSettings, hysteria, wireguard… tag, proxySettings and sockopt.dialerProxy are managed by FlowZ (use the node chain / detour instead).",
+    "customXrayJsonInvalid": "Invalid JSON — must be an Xray outbound object with a \"protocol\" field"
   },
   "rules": {
     "ruleColumn": "Rule",

@@ -1389,6 +1389,10 @@ if (gotTheLock) {
       () => proxyManager?.getSpeedTestMainCoreProbe() ?? null,
       () => proxyManager?.getLifecycleGeneration() ?? 0
     );
+    // Xray 节点在临时核测速路径需一个临时 Xray 承载（主核测速池路径经主核的 socks 桥直接可测，无需此项）。
+    speedTestService.setXraySessionFactory((servers) =>
+      proxyManager ? proxyManager.createXraySpeedTestSession(servers) : Promise.resolve(null)
+    );
     // 把日志 sink 注入「原本裸 console、不进 app.log」的服务，补排障盲区（系统代理/配置/资源/协议）
     configManager.setLogManager(logManager);
     protocolParser.setLogManager(logManager);

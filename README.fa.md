@@ -33,6 +33,7 @@
 
 **پروتکل‌ها**
 - پراکسی: VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
+- **هسته Xray (FlowZX)**: هسته Xray-core همراه برنامه (sidecar) برای ترکیب‌های مختص Xray — **VLESS + XHTTP + REALITY + ENC (VLESS Encryption)**، XHTTP، REALITY ML-DSA-65، vision-udp443 و هر JSON خروجی سفارشی Xray؛ sing-box همچنان هسته اصلی است. جزئیات: [docs/XRAY.md](docs/XRAY.md)
 - مش: **WireGuard** / **Cloudflare WARP** / **Tailscale**
 - **پروتکل سفارشی + تعویض هسته**: یک JSON از نوع outbound مربوط به sing-box را بچسبان؛ هنگام ذخیره، اصل «هسته منبع حقیقت است» سازگاری را به‌صورت زنده بررسی می‌کند. برای پروتکل‌هایی که هستهٔ رسمی ندارد، آن را به‌صورت دستی با یک هستهٔ fork شخص‌ثالث که پشتیبانی می‌کند جایگزین کن (FlowZ به‌صورت خودکار fork‌ها را تشخیص می‌دهد و به‌روزرسانی آنلاین را غیرفعال می‌کند تا روی آن‌ها بازنویسی نشود).
 
