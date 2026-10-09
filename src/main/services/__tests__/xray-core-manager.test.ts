@@ -2,6 +2,7 @@
  * XrayCoreManager 生命周期语义（注入假 spawn / execFile / 端口探测，零真实进程）：
  *  - 就绪后意外退出 → 自愈重拉；预算（60s 内 3 次）耗尽 → onFatal；
  *  - **启动期**就退出 → start() 抛错且不在后台重拉（已知起不来的配置不反复拉）；
+ *  - 就绪须经首个入站的 SOCKS5 凭据握手且子进程仍存活（端口被外部进程抢占时不误判就绪，bind 失败原因上抛）；
  *  - stop() 幂等、不触发自愈；
  *  - 孤儿回收仅在 PID 的进程名确为 xray 时才杀（防 PID 复用误杀）。
  */
@@ -11,6 +12,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { XrayCoreManager, parseXrayLogLine, parseXrayVersion } from '../XrayCoreManager';
 import type { XrayConfig } from '../xray-config-builder';
+import { system32 } from '../../utils/win-system32';
+import { withPlatformAsync } from './platform-test-utils';
 
 class FakeChild extends EventEmitter {
   static nextPid = 5000;
@@ -27,6 +30,7 @@ class FakeChild extends EventEmitter {
   exit(code: number): void {
     this.exitCode = code;
     this.emit('exit', code, null);
+    this.emit('close', code, null);
   }
 }
 
@@ -37,7 +41,13 @@ const CFG: XrayConfig = {
   routing: { rules: [] },
 };
 
-function setup(opts: { ready?: () => boolean; behavior?: (c: FakeChild) => void } = {}) {
+function setup(
+  opts: {
+    ready?: () => boolean;
+    behavior?: (c: FakeChild) => void;
+    probeReady?: (port: number, user?: string, pass?: string) => Promise<boolean>;
+  } = {}
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xcm-'));
   const children: FakeChild[] = [];
   const logs: string[] = [];
@@ -60,7 +70,7 @@ function setup(opts: { ready?: () => boolean; behavior?: (c: FakeChild) => void 
       _o: unknown,
       cb: (e: Error | null, out: string) => void
     ) => cb(null, '')) as never,
-    probePort: async () => (opts.ready ? opts.ready() : true),
+    probeReady: opts.probeReady ?? (async () => (opts.ready ? opts.ready() : true)),
     readyTimeoutMs: 400,
   });
   return { mgr, children, logs, spawnFn, dir };
@@ -185,6 +195,121 @@ describe('XrayCoreManager', () => {
     await mgr2.killOrphan();
     expect(killSpy).toHaveBeenCalledWith(999998, 'SIGKILL');
     killSpy.mockRestore();
+  });
+});
+
+describe('就绪判据：证明是本子进程（SOCKS5 凭据握手）', () => {
+  const CFG_AUTH: XrayConfig = {
+    ...CFG,
+    inbounds: [
+      {
+        tag: 'in-a',
+        listen: '127.0.0.1',
+        port: 30001,
+        protocol: 'socks',
+        settings: { auth: 'password', accounts: [{ user: 'flowz', pass: 's3cret' }], udp: true },
+      },
+      { tag: 'in-b', listen: '127.0.0.1', port: 30002, protocol: 'socks', settings: {} },
+    ],
+  };
+
+  it('探测用首个入站的端口 + 账号', async () => {
+    const probe = jest.fn(async () => true);
+    const { mgr } = setup({ probeReady: probe });
+    await mgr.start(CFG_AUTH);
+    expect(probe).toHaveBeenCalledWith(30001, 'flowz', 's3cret');
+    await mgr.stop();
+  });
+
+  it('端口被外部进程抢占：握手不过、Xray bind 失败退出 → start 抛含 bind 原因的错误，不当成就绪、不自愈重拉', async () => {
+    const fatal = jest.fn();
+    const { mgr, children } = setup({
+      probeReady: async () => false, // 外部监听者不是持有本凭据的 SOCKS5 服务
+      behavior: (c) =>
+        setTimeout(() => {
+          c.stdout.emit(
+            'data',
+            Buffer.from(
+              'Failed to start: main: failed to start server > listen tcp 127.0.0.1:30001: bind: address already in use\n'
+            )
+          );
+          c.exit(255);
+        }, 30),
+    });
+    mgr.onFatal = fatal;
+    await expect(mgr.start(CFG_AUTH)).rejects.toThrow(/bind: address already in use/);
+    expect(mgr.isRunning()).toBe(false);
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(children).toHaveLength(1);
+    expect(fatal).not.toHaveBeenCalled();
+  });
+
+  it('探测通过的同时子进程已退出 → 不算就绪（start 抛错）', async () => {
+    let child: FakeChild | null = null;
+    const { mgr, children } = setup({
+      behavior: (c) => {
+        child = c;
+      },
+      probeReady: async () => {
+        child?.exit(255);
+        return true;
+      },
+    });
+    await expect(mgr.start(CFG_AUTH)).rejects.toThrow(/启动失败/);
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(children).toHaveLength(1);
+  });
+
+  it('退出原因晚于 exit 到达（stdio 未关）：等 close 后再取输出尾巴', async () => {
+    const { mgr } = setup({
+      probeReady: async () => false,
+      behavior: (c) =>
+        setTimeout(() => {
+          c.exitCode = 255;
+          c.emit('exit', 255, null);
+          setTimeout(() => {
+            c.stderr.emit(
+              'data',
+              Buffer.from('listen tcp 127.0.0.1:30001: bind: address in use\n')
+            );
+            c.emit('close', 255, null);
+          }, 50);
+        }, 30),
+    });
+    await expect(mgr.start(CFG_AUTH)).rejects.toThrow(/bind: address in use/);
+  });
+});
+
+describe('孤儿回收（Windows）', () => {
+  it('tasklist 用 System32 绝对路径（不依赖 PATH）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xcm-'));
+    const pidPath = path.join(dir, 'xray.pid');
+    fs.writeFileSync(pidPath, JSON.stringify({ pid: 999997 }));
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const files: string[] = [];
+    const mgr = new XrayCoreManager({
+      getXrayPath: () => 'C:\\FlowZ\\xray.exe',
+      hasXrayCore: () => true,
+      configPath: path.join(dir, 'c.json'),
+      pidPath,
+      log: () => {},
+      execFileFn: ((
+        f: string,
+        _a: string[],
+        _o: unknown,
+        cb: (e: Error | null, out: string) => void
+      ) => {
+        files.push(f);
+        cb(null, '"xray.exe","999997","Console","1","20,000 K"');
+      }) as never,
+    });
+    try {
+      await withPlatformAsync('win32', () => mgr.killOrphan());
+      expect(files).toEqual([system32('tasklist.exe')]);
+      expect(killSpy).toHaveBeenCalledWith(999997, 'SIGKILL');
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 });
 

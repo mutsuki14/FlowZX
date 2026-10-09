@@ -40,6 +40,7 @@ import {
   xraySchemaShape,
   xrayDefaults,
   readXrayDefaults,
+  refineXhttpExtra,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -81,7 +82,8 @@ interface VmessFormProps {
 
 export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
   const { t } = useTranslation();
-  const vmessFormSchema = createVmessSchema(t);
+  // xhttpExtra 的 JSON 校验挂对象级（仅 XHTTP 时生效，见 refineXhttpExtra）。
+  const vmessFormSchema = createVmessSchema(t).superRefine(refineXhttpExtra);
 
   const normalizeSecurity = (s: string | undefined): 'None' | 'Tls' => {
     const lower = (s || 'none').toLowerCase();
@@ -179,6 +181,7 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
     protocol: 'vmess',
     network: watchedNetwork,
     security: form.watch('security'),
+    pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
   const xraySupported = formCanUseXray({ protocol: 'vmess', network: watchedNetwork });
@@ -319,7 +322,8 @@ export function VmessForm({ serverConfig, onSubmit }: VmessFormProps) {
           />
 
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} />}
-          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
+          {/* 证书钉扎（仅 Xray 消费）：TLS 下恒显示——填写即改走 Xray（tls-pinned-cert），不能只在已需 Xray 时露出。 */}
+          {isTlsEnabled && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>

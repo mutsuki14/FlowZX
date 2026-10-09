@@ -12,6 +12,7 @@
 import * as z from 'zod';
 import type { ServerConfig } from '@/bridge/types';
 import { TLS_SPOOF_METHODS, isValidTlsSpoofMethod, type TlsSpoofMethod } from '@shared/tls-spoof';
+import { parseXhttpExtra } from './xray-form-logic';
 
 /** ECH 字段的 zod 形状（展开进 z.object）。 */
 export const echSchemaShape = {
@@ -193,31 +194,18 @@ export function buildTransportSettings(network: string, values: TransportValues)
 /** XHTTP 模式（与 shared types XhttpMode 一致）。 */
 export const XHTTP_MODES = ['auto', 'packet-up', 'stream-up', 'stream-one'] as const;
 
-/** extra 文本框：空或合法 JSON 对象。 */
-export function parseXhttpExtra(
-  text: string | undefined
-): Record<string, unknown> | null | 'invalid' {
-  const t = (text || '').trim();
-  if (!t) return null;
-  try {
-    const o = JSON.parse(t);
-    return o && typeof o === 'object' && !Array.isArray(o)
-      ? (o as Record<string, unknown>)
-      : 'invalid';
-  } catch {
-    return 'invalid';
-  }
-}
+// extra 解析 / 对象级校验的纯逻辑在 xray-form-logic.ts（jest 可直测），此处 re-export 保持调用方不变。
+export { parseXhttpExtra, refineXhttpExtra } from './xray-form-logic';
 
-/** Xray 相关字段的 zod 形状（展开进 z.object）。xhttpExtra 非法 JSON 时提交被拦（错误挂在该字段）。 */
+/**
+ * Xray 相关字段的 zod 形状（展开进 z.object）。xhttpExtra 的 JSON 校验不在字段级：见 refineXhttpExtra
+ *（各表单 schema 以 `.superRefine(refineXhttpExtra)` 挂在对象级，仅 network=XHTTP 时校验）。
+ */
 export const xraySchemaShape = {
   xhttpPath: z.string().optional(),
   xhttpHost: z.string().optional(),
   xhttpMode: z.enum(XHTTP_MODES).optional(),
-  xhttpExtra: z
-    .string()
-    .optional()
-    .refine((v) => parseXhttpExtra(v) !== 'invalid', { message: 'invalid-json' }),
+  xhttpExtra: z.string().optional(),
   useXrayCore: z.boolean().optional(),
   tlsPinnedSha256: z.string().optional(),
 };

@@ -14,7 +14,8 @@ jest.mock('../ResourceManager', () => {
   return actual;
 });
 
-import { planXrayBridge } from '../xray-bridge';
+import { planXrayBridge, xrayNodeWantsTlsFragment } from '../xray-bridge';
+import { resourceManager } from '../ResourceManager';
 import { buildOutbounds } from '../singbox-outbound-builder';
 import { buildInbounds } from '../singbox-inbounds-builder';
 import { buildRouteConfig } from '../singbox-route-builder';
@@ -288,5 +289,222 @@ describe('buildInbounds / buildRouteConfig × Xray 回环', () => {
     });
     expect(JSON.stringify(rc.rules)).not.toMatch(/xray/);
     expect(rc.rules?.[0]).toEqual({ action: 'sniff' });
+  });
+});
+
+describe('TLS 分片 × Xray 节点（经 xray-dial-in 路由选项 tls_fragment）', () => {
+  beforeEach(() => (n = 0));
+  const custom = (id: string, stream: Record<string, unknown>, protocol = 'vless'): ServerConfig =>
+    ({
+      id,
+      name: id.toUpperCase(),
+      protocol: 'custom',
+      address: '',
+      port: 0,
+      customSettings: { engine: 'xray', outbound: { protocol, streamSettings: stream } },
+    }) as ServerConfig;
+
+  it('xrayNodeWantsTlsFragment：全局或节点 fragment，且仅 TLS/REALITY（含 trojan 隐式 TLS）；自定义 JSON 只认全局', () => {
+    expect(xrayNodeWantsTlsFragment(xh('a'), true)).toBe(true);
+    expect(xrayNodeWantsTlsFragment(xh('a'), false)).toBe(false);
+    expect(xrayNodeWantsTlsFragment(xh('a', { tlsSettings: { fragment: true } }), false)).toBe(
+      true
+    );
+    expect(
+      xrayNodeWantsTlsFragment(
+        xh('a', { security: 'reality', realitySettings: { publicKey: 'k' } }),
+        true
+      )
+    ).toBe(true);
+    expect(xrayNodeWantsTlsFragment(xh('a', { security: 'none' }), true)).toBe(false);
+    expect(
+      xrayNodeWantsTlsFragment(
+        xh('t', { protocol: 'trojan', security: undefined, password: 'p' }),
+        true
+      )
+    ).toBe(true);
+    expect(xrayNodeWantsTlsFragment(custom('c', { security: 'tls' }), true)).toBe(true);
+    expect(xrayNodeWantsTlsFragment(custom('c', { security: 'REALITY' }), true)).toBe(true);
+    expect(xrayNodeWantsTlsFragment(custom('c', { security: 'none' }), true)).toBe(false);
+    expect(xrayNodeWantsTlsFragment(custom('c', {}), true)).toBe(false);
+    expect(xrayNodeWantsTlsFragment(custom('c', { security: 'tls' }), false)).toBe(false);
+    // QUIC 系（Xray hysteria）无 TCP ClientHello → 不分片
+    expect(
+      xrayNodeWantsTlsFragment(
+        custom('c', { network: 'hysteria', security: 'tls' }, 'hysteria'),
+        true
+      )
+    ).toBe(false);
+  });
+
+  it('planXrayBridge：需分片节点改用 -frag dialer 用户（按前置复用、via 序号与非分片同号）；dialRoute 标 tlsFragment', () => {
+    const hop = hy2('hop');
+    const a = xh('a'); // TLS → 分片
+    const b = xh('b', { security: 'none' }); // 明文 → 不分片
+    const c = xh('c', { detour: 'hop' }); // TLS + 前置 → via-0-frag
+    const d = xh('d', { detour: 'hop', security: 'none' }); // 前置、不分片 → via-0
+    const e = xh('e'); // 与 a 共用 flowz-dialer-frag
+    const cands = [a, b, c, d, e];
+    const plan = planXrayBridge({
+      candidates: cands,
+      allServers: [hop, ...cands],
+      ports: ports(cands.length + 1),
+      secret,
+      tlsFragment: true,
+    });
+    expect(plan.nodes.map((x) => [x.serverId, x.dialerTag])).toEqual([
+      ['a', 'flowz-dialer-frag'],
+      ['b', 'flowz-dialer'],
+      ['c', 'flowz-dialer-via-0-frag'],
+      ['d', 'flowz-dialer-via-0'],
+      ['e', 'flowz-dialer-frag'],
+    ]);
+    expect(plan.dialRoutes).toEqual([
+      { username: 'direct' },
+      { username: 'direct-frag', tlsFragment: true },
+      { username: 'via-0-frag', detourServerId: 'hop', tlsFragment: true },
+      { username: 'via-0', detourServerId: 'hop' },
+    ]);
+    expect(plan.dialers.map((x) => [x.tag, x.user])).toEqual([
+      ['flowz-dialer', 'direct'],
+      ['flowz-dialer-frag', 'direct-frag'],
+      ['flowz-dialer-via-0-frag', 'via-0-frag'],
+      ['flowz-dialer-via-0', 'via-0'],
+    ]);
+    expect(plan.dialInbound.users.map((u) => u.username)).toEqual([
+      'direct',
+      'direct-frag',
+      'via-0-frag',
+      'via-0',
+    ]);
+    expect(new Set(plan.dialInbound.users.map((u) => u.password)).size).toBe(4);
+  });
+
+  it('全局关、无节点 fragment → 规划与旧版一致（零 -frag）；withDialer=false 不涉及分片', () => {
+    const a = xh('a');
+    const off = planXrayBridge({ candidates: [a], allServers: [a], ports: ports(2), secret });
+    expect(off.dialers.map((x) => x.tag)).toEqual(['flowz-dialer']);
+    expect(off.dialRoutes).toEqual([{ username: 'direct' }]);
+    const direct = planXrayBridge({
+      candidates: [a],
+      allServers: [a],
+      ports: ports(1),
+      secret,
+      withDialer: false,
+      tlsFragment: true,
+    });
+    expect(direct.dialers).toEqual([]);
+    expect(direct.dialRoutes).toEqual([]);
+  });
+
+  it('buildRouteConfig：tlsFragment 路由挂 tls_fragment:true；前置不可用的 reject 规则不挂', () => {
+    const rc = buildRouteConfig(cfg([hy2('h')]), new Map(), {
+      probeDirectPort: null,
+      probeProxyPort: null,
+      updateInPort: null,
+      lanResolverForDns: null,
+      pendingEndpoints: [],
+      log: () => {},
+      onDegraded: () => {},
+      xrayDialRoutes: [
+        { username: 'direct', outbound: 'xray-dial-direct' },
+        { username: 'direct-frag', outbound: 'xray-dial-direct', tlsFragment: true },
+        { username: 'via-0-frag', outbound: undefined, tlsFragment: true },
+      ],
+    });
+    expect((rc.rules ?? []).slice(0, 4)).toEqual([
+      {
+        inbound: ['xray-dial-in'],
+        auth_user: ['direct'],
+        action: 'route',
+        outbound: 'xray-dial-direct',
+      },
+      {
+        inbound: ['xray-dial-in'],
+        auth_user: ['direct-frag'],
+        action: 'route',
+        outbound: 'xray-dial-direct',
+        tls_fragment: true,
+      },
+      { inbound: ['xray-dial-in'], auth_user: ['via-0-frag'], action: 'reject' },
+      { inbound: ['xray-dial-in'], action: 'reject' },
+    ]);
+  });
+});
+
+describe('buildOutbounds × Xray 前置链级联 / 跳过原因', () => {
+  const vlessTls = (id: string, detour?: string): ServerConfig =>
+    ({
+      id,
+      name: id.toUpperCase(),
+      protocol: 'vless',
+      address: `${id}.example.com`,
+      port: 443,
+      uuid: '8a502aeb-b677-4fc6-bdbf-0b11435a99ec',
+      security: 'tls',
+      tlsSettings: { serverName: `${id}.example.com` },
+      detour,
+    }) as ServerConfig;
+
+  it('Xray 节点的前置（sing-box 节点）因自身 detour 失效被预校验剔除 → Xray 节点一并剔除并记 gate（不留 reject 死节点）', () => {
+    const x1 = xh('x1', { detour: 'd1' });
+    const d1 = vlessTls('d1', 'e1');
+    const e1 = hy2('e1');
+    const s2 = hy2('s2');
+    const servers = [x1, d1, e1, s2];
+    const bridge = planXrayBridge({
+      candidates: [x1],
+      allServers: servers,
+      ports: ports(2),
+      secret,
+    });
+    expect(bridge.detourOf.get('x1')).toBe('d1');
+    const gate = new Map<string, InvalidNodeInfo>([
+      ['e1', { id: 'e1', tag: 'E1', reason: 'xray -test failed' }],
+    ]);
+    const ids = idMap(servers);
+    const r = buildOutbounds(s2, cfg(servers, 's2'), ids, {
+      gateInvalidNodes: gate,
+      log: () => {},
+      xrayBridge: bridge,
+    });
+    const tags = r.outbounds.map((o) => o.tag);
+    expect(tags).not.toContain('D1');
+    expect(tags).not.toContain('X1');
+    expect(r.outbounds.find((o) => o.tag === 'proxy-selector')?.outbounds).toEqual([
+      'S2',
+      'direct',
+    ]);
+    expect(gate.get('d1')?.reason).toMatch(/detour/);
+    expect(gate.get('x1')?.reason).toMatch(/detour/);
+    expect(ids.has('x1')).toBe(false);
+
+    // 选中的正是该 Xray 节点 → 明确 throw（不静默选中一个回环路由 reject 的死节点）
+    expect(() =>
+      buildOutbounds(x1, cfg(servers, 'x1'), idMap(servers), {
+        gateInvalidNodes: new Map([['e1', { id: 'e1', tag: 'E1', reason: 'x' }]]),
+        log: () => {},
+        xrayBridge: bridge,
+      })
+    ).toThrow(/前置节点/);
+  });
+
+  it('Xray 内核缺失：跳过日志写明 Xray 内核（不误报 libcronet）', () => {
+    const logs: string[] = [];
+    const orig = resourceManager.hasXrayCore;
+    resourceManager.hasXrayCore = () => false;
+    try {
+      const servers = [hy2('h'), xh('a')];
+      buildOutbounds(servers[0], cfg(servers), idMap(servers), {
+        gateInvalidNodes: new Map(),
+        log: (_l: string, m: string) => logs.push(m),
+        xrayBridge: null,
+      });
+    } finally {
+      resourceManager.hasXrayCore = orig;
+    }
+    const line = logs.find((m) => m.includes('「A」'));
+    expect(line).toMatch(/Xray 内核/);
+    expect(line).not.toMatch(/libcronet/);
   });
 });

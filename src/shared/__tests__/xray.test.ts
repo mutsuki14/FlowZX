@@ -56,6 +56,15 @@ describe('xrayRequirement', () => {
     expect(xrayRequirement(node({ encryption: 'NONE' }))).toBeNull();
   });
 
+  it('VLESS encryption 杂值（auto / None / zero）不视为 VLESS Encryption：仍走 sing-box（其忽略该字段）', () => {
+    expect(xrayRequirement(node({ encryption: 'auto' }))).toBeNull();
+    expect(xrayRequirement(node({ encryption: 'None' }))).toBeNull();
+    expect(xrayRequirement(node({ encryption: 'zero' }))).toBeNull();
+    expect(
+      xrayRequirement(node({ network: 'ws', security: 'tls', encryption: 'auto' }))
+    ).toBeNull();
+  });
+
   it('vision-udp443 / Reality ML-DSA-65 → Xray', () => {
     expect(xrayRequirement(node({ flow: 'xtls-rprx-vision-udp443' }))).toBe('vision-udp443');
     expect(
@@ -63,6 +72,48 @@ describe('xrayRequirement', () => {
         node({ security: 'reality', realitySettings: { publicKey: 'k', mldsa65Verify: 'pq' } })
       )
     ).toBe('reality-pqv');
+  });
+
+  it('TLS 证书钉扎（pinnedPeerCertSha256 / pcs）→ tls-pinned-cert：sing-box 无整证书钉扎', () => {
+    const pin = { pinnedPeerCertSha256: 'e3b0c442' };
+    expect(xrayRequirement(node({ security: 'tls', tlsSettings: pin }))).toBe('tls-pinned-cert');
+    // trojan 恒 TLS / vmess+ws：同一 TLS 判据
+    expect(
+      xrayRequirement(node({ protocol: 'trojan', password: 'p', network: 'tcp', tlsSettings: pin }))
+    ).toBe('tls-pinned-cert');
+    expect(
+      xrayRequirement(node({ protocol: 'vmess', security: 'tls', network: 'ws', tlsSettings: pin }))
+    ).toBe('tls-pinned-cert');
+    // 钉扎优先于手动勾选（开关置灰显示原因）；更高优先级的特性项照旧
+    expect(xrayRequirement(node({ security: 'tls', tlsSettings: pin, useXrayCore: true }))).toBe(
+      'tls-pinned-cert'
+    );
+    expect(xrayRequirement(node({ network: 'xhttp', security: 'tls', tlsSettings: pin }))).toBe(
+      'xhttp'
+    );
+  });
+
+  it('证书钉扎不触发：空白值 / Reality / 切不到 Xray 的节点（h2、Shadow-TLS、非结构化协议）', () => {
+    const pin = { pinnedPeerCertSha256: 'e3b0c442' };
+    expect(
+      xrayRequirement(node({ security: 'tls', tlsSettings: { pinnedPeerCertSha256: '  ' } }))
+    ).toBeNull();
+    expect(
+      xrayRequirement(
+        node({ security: 'reality', realitySettings: { publicKey: 'k' }, tlsSettings: pin })
+      )
+    ).toBeNull();
+    expect(
+      xrayRequirement(node({ security: 'tls', network: 'http', tlsSettings: pin }))
+    ).toBeNull();
+    expect(
+      xrayRequirement(
+        node({ security: 'tls', tlsSettings: pin, shadowTlsSettings: { password: 'p', sni: 's' } })
+      )
+    ).toBeNull();
+    expect(
+      xrayRequirement(node({ protocol: 'hysteria2', password: 'p', tlsSettings: pin }))
+    ).toBeNull();
   });
 
   it('XHTTP + Reality + ENC 组合：特性项优先于手动勾选', () => {
@@ -121,6 +172,9 @@ describe('辅助谓词', () => {
     expect(isVlessEncryptionEnabled(undefined)).toBe(false);
     expect(isVlessEncryptionEnabled(' none ')).toBe(false);
     expect(isVlessEncryptionEnabled('mlkem768x25519plus.xorpub.1rtt.k')).toBe(true);
+    expect(isVlessEncryptionEnabled(' MLKEM768X25519PLUS.native.0rtt.k ')).toBe(true);
+    expect(isVlessEncryptionEnabled('auto')).toBe(false);
+    expect(isVlessEncryptionEnabled('mlkem768x25519plus')).toBe(false);
     expect(isXhttpNetwork('XHTTP')).toBe(true);
     expect(isXhttpNetwork('ws')).toBe(false);
   });

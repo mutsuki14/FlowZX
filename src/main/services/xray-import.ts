@@ -58,7 +58,8 @@ function obj(v: unknown): Record<string, unknown> {
 
 /**
  * 该 outbound 是否需原样透传（结构化映射会丢语义）：未知传输、finalmask、mux 开启、除 dialerProxy 外的 sockopt、
- * 遗留 xtls 安全层。dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理）。
+ * 遗留 xtls 安全层。dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理），
+ * 导入时映射为 ServerConfig.detour（见 parseXrayOutbounds 第二遍）。
  */
 function needsPassthrough(o: Record<string, unknown>): string | null {
   const ss = obj(o.streamSettings);
@@ -111,7 +112,15 @@ function applyStreamSettings(server: ServerConfig, ss: Record<string, unknown> |
     server.network = 'xhttp';
     const xh = obj(ss.xhttpSettings ?? ss.splithttpSettings);
     const mode = str(xh.mode)?.toLowerCase();
-    const extra = obj(xh.extra);
+    // 高级项（downloadSettings / xPaddingBytes / xmux / headers…）Xray 也认在 xhttpSettings 顶层。Xray 语义：
+    // 有 extra 时整份以 extra 为准（仅 path/host/mode 取顶层，顶层其余键被忽略——xray run -test 实证）；
+    // 无 extra 时取顶层。FlowZ 只存 path/host/mode/extra → 无 extra 时把顶层其余键收进 extra，零语义丢失。
+    const extra =
+      xh.extra !== undefined
+        ? obj(xh.extra)
+        : Object.fromEntries(
+            Object.entries(xh).filter(([k]) => !['path', 'host', 'mode', 'extra'].includes(k))
+          );
     server.xhttpSettings = {
       path: str(xh.path) || '/',
       host: str(xh.host),
@@ -276,7 +285,20 @@ function makeXrayCustomNode(o: Record<string, unknown>, now: string): ServerConf
   };
 }
 
-/** xray outbounds[] → ServerConfig[]，逐条 try/catch，聚合 skipped/failed/warnings。 */
+/** 链式代理引用的前置 outbound tag：sockopt.dialerProxy 优先，其次旧式 proxySettings.tag。 */
+function chainRef(o: Record<string, unknown>): string | undefined {
+  return (
+    str(obj(obj(o.streamSettings).sockopt).dialerProxy)?.trim() ||
+    str(obj(o.proxySettings).tag)?.trim() ||
+    undefined
+  );
+}
+
+/**
+ * xray outbounds[] → ServerConfig[]，逐条 try/catch，聚合 skipped/failed/warnings。
+ * 两遍：先逐条映射并记 源 tag → 新节点 id；再把 dialerProxy / proxySettings 链映射为 ServerConfig.detour
+ *（生成期 Xray 侧的 dialerProxy / proxySettings 一律被 FlowZ 接管，不映射即静默变直连）。
+ */
 export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseResult {
   const servers: ServerConfig[] = [];
   let skipped = 0;
@@ -285,6 +307,15 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
   if (!Array.isArray(outbounds)) return { servers, skipped, failed, warnings };
 
   const passByReason = new Map<string, number>();
+  const idByTag = new Map<string, string>();
+  const chains: { server: ServerConfig; ref: string }[] = [];
+  const addServer = (o: Record<string, unknown>, server: ServerConfig): void => {
+    servers.push(server);
+    const tag = str(o.tag)?.trim();
+    if (tag && !idByTag.has(tag)) idByTag.set(tag, server.id);
+    const ref = chainRef(o);
+    if (ref) chains.push({ server, ref });
+  };
 
   for (const ob of outbounds) {
     if (!ob || typeof ob !== 'object') {
@@ -301,15 +332,27 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
     try {
       const reason = XRAY_SUPPORTED.has(proto) ? needsPassthrough(o) : `协议 ${proto}`;
       if (reason) {
-        servers.push(makeXrayCustomNode(o, now));
+        addServer(o, makeXrayCustomNode(o, now));
         passByReason.set(reason, (passByReason.get(reason) ?? 0) + 1);
         continue;
       }
       const server = mapXrayOutbound(o, proto, now);
-      if (server) servers.push(server);
+      if (server) addServer(o, server);
       else failed++;
     } catch {
       failed++;
+    }
+  }
+
+  // 第二遍：链式代理 → detour。前置 tag 不在已导入节点里（内部 outbound / 解析失败 / 拼写错）→ 告警而非静默丢链。
+  for (const { server, ref } of chains) {
+    const detour = idByTag.get(ref);
+    if (detour && detour !== server.id) {
+      server.detour = detour;
+    } else {
+      warnings.push(
+        `节点「${server.name}」的链式代理前置「${ref}」不是已导入的节点，该链未保留（将直连服务器）`
+      );
     }
   }
 

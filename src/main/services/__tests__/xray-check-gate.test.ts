@@ -36,7 +36,10 @@ import type { SingBoxConfig } from '../singbox-config-types';
 import { requiresXrayCore } from '../../../shared/xray';
 import {
   buildXrayConfig,
+  buildXrayOutbound,
   parseXrayFailedOutboundTag,
+  validateShadowsocks2022Password,
+  validateVlessEncryption,
   xrayOutboundTag,
 } from '../xray-config-builder';
 import { planXrayBridge } from '../xray-bridge';
@@ -370,6 +373,186 @@ describe('sing-box 侧：完整 generateSingBoxConfig + sing-box check', () => {
 
     const r = singboxCheck(sb, 'full');
     if (r.code !== 0) throw new Error(`sing-box check 未通过：\n${r.out}`);
+  });
+});
+
+describe('dialer 接管 / TLS 分片 / 预校验 × 真核', () => {
+  it('penetrate + echSockopt.dialerProxy：真 Xray 接受；XHTTP 下行腿与 ECH 查询均经 dialer', () => {
+    const servers = corpus(PQV);
+    const xrayNodes = servers.filter((s) => requiresXrayCore(s));
+    const plan = planXrayBridge({
+      candidates: xrayNodes,
+      allServers: servers,
+      ports: xrayNodes.map((_, i) => 32000 + i).concat(33000),
+      secret: () => 's3cret',
+    });
+    const cfg = buildXrayConfig({
+      servers: new Map(servers.map((s) => [s.id, s])),
+      nodes: plan.nodes,
+      dialers: plan.dialers,
+      logLevel: 'warning',
+    });
+    for (const ob of cfg.outbounds.filter((o) => o.tag.startsWith('n-'))) {
+      expect((ob.streamSettings as any).sockopt).toMatchObject({ penetrate: true });
+    }
+    const ech = cfg.outbounds.find((o) => o.tag === xrayOutboundTag('vless-xhttp-ech'))!;
+    expect((ech.streamSettings as any).tlsSettings.echSockopt).toEqual({
+      dialerProxy: 'flowz-dialer',
+    });
+    const r = xrayTest(cfg, 'penetrate-ech');
+    if (r.code !== 0) throw new Error(`xray run -test 未通过：\n${r.out}`);
+  });
+
+  it('全局 TLS 分片：-frag dialer 用户 + xray-dial-in 路由 tls_fragment，xray -test 与 sing-box check 均通过', () => {
+    const servers = corpus(PQV);
+    const xrayNodes = servers.filter((s) => requiresXrayCore(s));
+    const plan = planXrayBridge({
+      candidates: xrayNodes,
+      allServers: servers,
+      ports: xrayNodes.map((_, i) => 34000 + i).concat(35000),
+      secret: () => 's3cret',
+      tlsFragment: true,
+    });
+    expect(plan.dialers.map((d) => d.tag)).toContain('flowz-dialer-frag');
+    const xr = xrayTest(
+      buildXrayConfig({
+        servers: new Map(servers.map((s) => [s.id, s])),
+        nodes: plan.nodes,
+        dialers: plan.dialers,
+        logLevel: 'warning',
+      }),
+      'frag'
+    );
+    if (xr.code !== 0) throw new Error(`xray run -test 未通过：\n${xr.out}`);
+
+    const svc: any = new ProxyManager(
+      undefined,
+      undefined,
+      path.join(TMP, 'cfg-frag.json'),
+      '/fake/sing-box'
+    );
+    svc.coreVersion = '1.14.0';
+    const sb = svc.generateSingBoxConfig({
+      ...userConfig(servers),
+      tlsFragment: true,
+    }) as SingBoxConfig;
+    const fragRules = (sb.route?.rules ?? []).filter((r) => r.tls_fragment === true);
+    expect(fragRules.length).toBeGreaterThan(0);
+    for (const r of fragRules) {
+      expect(r.inbound).toEqual(['xray-dial-in']);
+      expect(r.action).toBe('route');
+      expect(r.auth_user?.[0]).toMatch(/-frag$/);
+    }
+    // 非 TLS 节点（ss2022-forced）不分片 → 仍走普通 flowz-dialer
+    const ssNode = plan.nodes.find((n) => n.serverId === 'ss2022-forced');
+    expect(ssNode?.dialerTag).toBe('flowz-dialer');
+    const r = singboxCheck(sb, 'frag');
+    if (r.code !== 0) throw new Error(`sing-box check 未通过：\n${r.out}`);
+  });
+
+  // 预校验与真核口径对齐：放行的串必须被 Xray 接受；拒收的串在真核上要么 panic 要么报无 tag 的错（正是要拦的）。
+  const KEY = 'QxKoobAnmyilC09GlvGiUCWXF1PrxmC7l2lR72ThGSE';
+  const vlessOb = (enc: string) => ({
+    tag: 'n-enc',
+    protocol: 'vless',
+    settings: {
+      vnext: [{ address: 'a.com', port: 443, users: [{ id: UUID, encryption: enc }] }],
+    },
+  });
+  const ssOb = (method: string, password: string) => ({
+    tag: 'n-ss',
+    protocol: 'shadowsocks',
+    settings: { servers: [{ address: 'a.com', port: 1, method, password }] },
+  });
+  const bare = (ob: Record<string, unknown>) => ({
+    log: { loglevel: 'error' },
+    inbounds: [],
+    outbounds: [ob, { tag: 'flowz-block', protocol: 'blackhole' }],
+  });
+
+  it('VLESS Encryption 预校验：放行 ⇒ 真核接受；拦截 ⇒ 真核 panic / 失败', () => {
+    const ok = [
+      ENC_X25519,
+      ENC_XORPUB_1RTT,
+      `mlkem768x25519plus.random.0rtt.${KEY}`,
+      `mlkem768x25519plus.native.0rtt.100-111-1111.75-0-111.50-0-3333.${KEY}`,
+      `mlkem768x25519plus.native.0rtt.${KEY}.${KEY}`,
+      `mlkem768x25519plus.native.1rtt.${Buffer.alloc(1184, 7).toString('base64url')}`,
+    ];
+    ok.forEach((e, i) => {
+      expect(() => validateVlessEncryption(e)).not.toThrow();
+      const r = xrayTest(bare(vlessOb(e)), `enc-ok-${i}`);
+      if (r.code !== 0) throw new Error(`放行的 ENC 被 Xray 拒收：${e}\n${r.out}`);
+    });
+    const bad = [
+      'mlkem768x25519plus.native.0rtt.',
+      'mlkem768x25519plus.native.0rtt.abc',
+      'mlkem768x25519plus.native.0rtt.100-111-1111',
+      `mlkem768x25519plus.native.0rtt.${KEY}.100-111-1111`,
+      `mlkem768x25519plus.native.0rtt.abc.${KEY}`,
+    ];
+    bad.forEach((e, i) => {
+      expect(() => validateVlessEncryption(e)).toThrow(/VLESS Encryption/);
+      expect(xrayTest(bare(vlessOb(e)), `enc-bad-${i}`).code).not.toBe(0);
+    });
+  });
+
+  it('Shadowsocks 2022 预校验：放行 ⇒ 真核接受；拦截 ⇒ 真核报无 tag 的 decode key / bad key', () => {
+    const k16 = Buffer.alloc(16, 1).toString('base64');
+    const k32 = Buffer.alloc(32, 2).toString('base64');
+    const ok: [string, string][] = [
+      ['2022-blake3-aes-128-gcm', k16],
+      ['2022-blake3-aes-128-gcm', k32],
+      ['2022-blake3-aes-128-gcm', `${k16}:${k16}`],
+      ['2022-blake3-aes-256-gcm', k32],
+      ['2022-blake3-chacha20-poly1305', k32],
+    ];
+    ok.forEach(([m, p], i) => {
+      expect(() => validateShadowsocks2022Password(m, p)).not.toThrow();
+      const r = xrayTest(bare(ssOb(m, p)), `ss-ok-${i}`);
+      if (r.code !== 0) throw new Error(`放行的 SS2022 密钥被 Xray 拒收：${m} ${p}\n${r.out}`);
+    });
+    const bad: [string, string][] = [
+      ['2022-blake3-aes-128-gcm', 'k'],
+      ['2022-blake3-aes-128-gcm', k16.replace(/=+$/, '')],
+      ['2022-blake3-aes-256-gcm', k16],
+      ['2022-blake3-chacha20-poly1305', `${k32}:${k32}`],
+    ];
+    bad.forEach(([m, p], i) => {
+      expect(() => validateShadowsocks2022Password(m, p)).toThrow(/Shadowsocks 2022/);
+      const r = xrayTest(bare(ssOb(m, p)), `ss-bad-${i}`);
+      expect(r.code).not.toBe(0);
+      expect(parseXrayFailedOutboundTag(r.out)).toBeNull(); // 无 tag → 正是需要预校验的原因
+    });
+  });
+
+  it('downloadSettings 缺 address/port：真核 -test 照样通过（故必须由构造期预校验拦截）', () => {
+    const ob = {
+      tag: 'n-ds',
+      protocol: 'vless',
+      settings: {
+        vnext: [{ address: 'a.com', port: 443, users: [{ id: UUID, encryption: 'none' }] }],
+      },
+      streamSettings: {
+        network: 'xhttp',
+        xhttpSettings: { path: '/', extra: { downloadSettings: { network: 'xhttp' } } },
+      },
+    };
+    expect(xrayTest(bare(ob), 'ds-missing').code).toBe(0);
+    expect(() =>
+      buildXrayOutbound(
+        {
+          id: 'ds',
+          name: 'ds',
+          protocol: 'custom',
+          address: '',
+          port: 0,
+          customSettings: { engine: 'xray', outbound: ob },
+        } as ServerConfig,
+        'n-ds',
+        { dialerTag: 'flowz-dialer' }
+      )
+    ).toThrow(/downloadSettings/);
   });
 });
 

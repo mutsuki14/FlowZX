@@ -212,6 +212,134 @@ describe('parseXrayOutbounds', () => {
     ]);
   });
 
+  it('XHTTP 顶层高级项（无 extra）→ 收进 extra，零语义丢失；path/host/mode 仍为结构化字段', () => {
+    const xhttpSettings = {
+      path: '/p',
+      host: 'cdn.example.com',
+      mode: 'auto',
+      xPaddingBytes: '1000-2000',
+      headers: { 'X-A': 'b' },
+      xmux: { maxConcurrency: '16-32' },
+      downloadSettings: {
+        address: 'dl.example.com',
+        port: 443,
+        network: 'xhttp',
+        xhttpSettings: { path: '/d' },
+      },
+    };
+    const r = parseXrayOutbounds(
+      [
+        {
+          protocol: 'vless',
+          settings: { vnext: [{ address: 'a.com', port: 443, users: [{ id: 'u' }] }] },
+          streamSettings: { network: 'xhttp', security: 'tls', xhttpSettings },
+        },
+      ],
+      NOW
+    );
+    expect(r.servers[0].protocol).toBe('vless');
+    expect(r.servers[0].xhttpSettings).toEqual({
+      path: '/p',
+      host: 'cdn.example.com',
+      mode: 'auto',
+      extra: {
+        xPaddingBytes: '1000-2000',
+        headers: { 'X-A': 'b' },
+        xmux: { maxConcurrency: '16-32' },
+        downloadSettings: xhttpSettings.downloadSettings,
+      },
+    });
+  });
+
+  it('XHTTP 有 extra → 以 extra 为准（Xray 语义：顶层其余键被忽略，不并入）', () => {
+    const r = parseXrayOutbounds(
+      [
+        {
+          protocol: 'vless',
+          settings: { vnext: [{ address: 'a.com', port: 443, users: [{ id: 'u' }] }] },
+          streamSettings: {
+            network: 'xhttp',
+            xhttpSettings: {
+              path: '/p',
+              xPaddingBytes: '1-2',
+              extra: { xmux: { maxConcurrency: '4' } },
+            },
+          },
+        },
+      ],
+      NOW
+    );
+    expect(r.servers[0].xhttpSettings?.extra).toEqual({ xmux: { maxConcurrency: '4' } });
+  });
+
+  it('链式代理（sockopt.dialerProxy / proxySettings.tag）→ detour 指向前置节点新 id（含前向引用、透传节点）', () => {
+    const r = parseXrayOutbounds(
+      [
+        {
+          protocol: 'vless',
+          tag: 'exit',
+          settings: { vnext: [{ address: 'e.com', port: 443, users: [{ id: 'u' }] }] },
+          streamSettings: { network: 'raw', security: 'tls', sockopt: { dialerProxy: 'front' } },
+        },
+        {
+          protocol: 'trojan',
+          tag: 'exit2',
+          settings: { servers: [{ address: 'e2.com', port: 443, password: 'p' }] },
+          proxySettings: { tag: 'front' },
+        },
+        {
+          protocol: 'wireguard',
+          tag: 'warp',
+          settings: {
+            secretKey: 'k',
+            peers: [{ publicKey: 'pk', endpoint: 'engage.example.com:2408' }],
+          },
+          streamSettings: { sockopt: { dialerProxy: 'front' } },
+        },
+        {
+          protocol: 'shadowsocks',
+          tag: 'front',
+          settings: {
+            servers: [{ address: 'f.com', port: 8388, method: 'aes-128-gcm', password: 'p' }],
+          },
+        },
+      ],
+      NOW
+    );
+    const byName = Object.fromEntries(r.servers.map((s) => [s.name, s]));
+    const frontId = byName.front.id;
+    expect(byName.exit.detour).toBe(frontId);
+    expect(byName.exit2.detour).toBe(frontId);
+    expect(byName.warp.protocol).toBe('custom');
+    expect(byName.warp.detour).toBe(frontId);
+    expect(byName.front.detour).toBeUndefined();
+    expect(r.warnings.some((w) => w.includes('链式代理'))).toBe(false);
+  });
+
+  it('链式代理前置不可导入（freedom 分片 / 不存在 / 自引用）→ 不设 detour 并告警，不静默丢链', () => {
+    const vless = (tag: string, dialerProxy: string) => ({
+      protocol: 'vless',
+      tag,
+      settings: { vnext: [{ address: `${tag}.com`, port: 443, users: [{ id: 'u' }] }] },
+      streamSettings: { network: 'raw', sockopt: { dialerProxy } },
+    });
+    const r = parseXrayOutbounds(
+      [
+        vless('a', 'fragment'),
+        vless('b', 'missing'),
+        vless('c', 'c'),
+        { protocol: 'freedom', tag: 'fragment', settings: { fragment: { packets: 'tlshello' } } },
+      ],
+      NOW
+    );
+    expect(r.servers.map((s) => s.detour)).toEqual([undefined, undefined, undefined]);
+    const chainWarnings = r.warnings.filter((w) => w.includes('链式代理'));
+    expect(chainWarnings).toHaveLength(3);
+    expect(chainWarnings[0]).toContain('「a」');
+    expect(chainWarnings[0]).toContain('「fragment」');
+    expect(chainWarnings[1]).toContain('「missing」');
+  });
+
   it('Xray 25+ 扁平 settings（address/port/id 直接在 settings）', () => {
     const r = parseXrayOutbounds(
       [

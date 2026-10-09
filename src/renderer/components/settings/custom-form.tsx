@@ -35,7 +35,9 @@ const XRAY_PLACEHOLDER = `{
     "network": "xhttp",
     "security": "reality",
     "realitySettings": { "serverName": "www.example.com", "publicKey": "…" },
-    "xhttpSettings": { "path": "/", "extra": { "downloadSettings": {} } }
+    "xhttpSettings": { "path": "/", "extra": { "downloadSettings": {
+      "address": "5.6.7.8", "port": 443, "network": "xhttp",
+      "xhttpSettings": { "path": "/" } } } }
   }
 }`;
 

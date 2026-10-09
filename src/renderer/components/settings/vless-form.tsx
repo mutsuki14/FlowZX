@@ -43,6 +43,7 @@ import {
   xraySchemaShape,
   xrayDefaults,
   readXrayDefaults,
+  refineXhttpExtra,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -88,7 +89,8 @@ interface VlessFormProps {
 
 export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
   const { t } = useTranslation();
-  const vlessFormSchema = createVlessSchema(t);
+  // xhttpExtra 的 JSON 校验挂对象级（仅 XHTTP 时生效，见 refineXhttpExtra）。
+  const vlessFormSchema = createVlessSchema(t).superRefine(refineXhttpExtra);
 
   const normalizeSecurity = (s: string | undefined): 'None' | 'Tls' | 'Reality' => {
     const lower = (s || 'tls').toLowerCase();
@@ -206,7 +208,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
     watchedNetwork === 'Ws' || watchedNetwork === 'HttpUpgrade' || watchedNetwork === 'Http';
   const isGrpcEnabled = watchedNetwork === 'Grpc';
   const isXhttpEnabled = watchedNetwork === 'Xhttp';
-  // 内核判定（与主进程生成期同一谓词）：XHTTP / VLESS Encryption / vision-udp443 / pqv / 手动勾选 → Xray。
+  // 内核判定（与主进程生成期同一谓词）：XHTTP / VLESS Encryption / vision-udp443 / pqv / 证书钉扎 / 手动勾选 → Xray。
   const xrayReq = formXrayRequirement({
     protocol: 'vless',
     network: watchedNetwork,
@@ -214,6 +216,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
     flow: form.watch('flow'),
     security: form.watch('security'),
     mldsa65Verify: isRealityEnabled ? form.watch('realityMldsa65') : undefined,
+    pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
   const xraySupported = formCanUseXray({ protocol: 'vless', network: watchedNetwork });
@@ -384,7 +387,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           />
 
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} />}
-          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
+          {/* 证书钉扎（仅 Xray 消费）：TLS 下恒显示——填写即改走 Xray（tls-pinned-cert），不能只在已需 Xray 时露出。 */}
+          {isTlsEnabled && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>

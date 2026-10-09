@@ -76,17 +76,53 @@ function bindUdp(port: number): Promise<dgram.Socket | null> {
   });
 }
 
-/** TCP 连得上即视为就绪（只握手、立即断开）。 */
-export function probeLoopbackPort(port: number, timeoutMs = 500): Promise<boolean> {
+/**
+ * 127.0.0.1:port 上是否是**持有这组凭据**的 SOCKS5 服务：RFC 1928 方法协商 + RFC 1929 用户名/密码认证，
+ * 认证通过即断开（不发 CONNECT）。比「TCP 连得上」严格——端口若被别的进程抢先监听，裸 TCP 照样连通（误判就绪），
+ * 凭据握手则必失败。user 缺省 → 协商「无认证」（0x00）。
+ */
+export function probeSocks5Auth(
+  port: number,
+  user?: string,
+  pass?: string,
+  timeoutMs = 500
+): Promise<boolean> {
   return new Promise((resolve) => {
+    const method = user === undefined ? 0x00 : 0x02;
     const sock = net.connect({ host: '127.0.0.1', port });
+    let settled = false;
+    let buf = Buffer.alloc(0);
+    let authSent = false;
     const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       sock.removeAllListeners();
+      sock.on('error', () => {}); // destroy 后的迟到错误不冒泡
       sock.destroy();
       resolve(ok);
     };
-    sock.setTimeout(timeoutMs, () => done(false));
-    sock.once('connect', () => done(true));
+    const timer = setTimeout(() => done(false), timeoutMs);
     sock.once('error', () => done(false));
+    sock.once('close', () => done(false));
+    sock.once('connect', () => sock.write(Buffer.from([0x05, 0x01, method])));
+    sock.on('data', (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (!authSent) {
+        if (buf.length < 2) return;
+        // 方法协商应答：VER=5，METHOD=所请求的方法（0xFF=无可接受方法）。
+        if (buf[0] !== 0x05 || buf[1] !== method) return done(false);
+        if (method === 0x00) return done(true);
+        const u = Buffer.from(user ?? '', 'utf8');
+        const p = Buffer.from(pass ?? '', 'utf8');
+        if (u.length > 255 || p.length > 255) return done(false);
+        buf = buf.subarray(2);
+        authSent = true;
+        sock.write(Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]));
+      }
+      // 认证应答：VER=1，STATUS=0 为通过。
+      if (buf.length < 2) return;
+      done(buf[0] === 0x01 && buf[1] === 0x00);
+    });
   });
 }

@@ -857,7 +857,10 @@ export function buildOutbounds(
       // 整个代理启动 FATAL（连非 naive 节点也用不了）。跳过后，路由层对该节点 tag 的死引用会在
       // generateSingBoxConfig 末尾被统一修正为 selector（见 H2 修复）。
       if (!isNodeUsable(server)) {
-        deps.log('warn', `跳过不可用节点「${server.name}」：NaiveProxy 缺少 libcronet 核心库`);
+        const why = requiresXrayCore(server)
+          ? '需要 Xray 内核，但未找到 Xray 内核'
+          : 'NaiveProxy 缺少 libcronet 核心库';
+        deps.log('warn', `跳过不可用节点「${server.name}」：${why}`);
         continue;
       }
       // 启动前配置校验 gate 已标记为非法的节点：跳过、不进 outbounds/selector（防 onRetry 重生成复活）。
@@ -1053,6 +1056,9 @@ export function buildOutbounds(
     // 机制选型：用 outbound 的 `tls.fragment`（按 TCP 段切分代理自身 ClientHello）而非 route action
     // `route-options.tls_fragment`——后者作用于被嗅探出的流量（切内层），非代理自身握手入口。默认仅注入
     // fragment=true，不注入 fragment_fallback_delay（用核心默认 500ms）/record_fragment（保持纯开关）。
+    // Xray 节点例外：其 sing-box 出站只是无 tls 的 socks 桥，ClientHello 由 Xray 生成、经 xray-dial-in 回环交
+    // sing-box 拨出——那条流量的「内层」恰是 Xray 的 ClientHello，故改用路由级 tls_fragment，挂在需分片节点专属
+    // dialer 用户的回环路由上（全局开关或节点 fragment，仅 TLS/REALITY；见 xray-bridge.xrayNodeWantsTlsFragment）。
     if (config.tlsFragment) {
       for (const ob of outbounds) {
         if (ob.tls && ob.type !== 'hysteria2' && ob.type !== 'tuic' && ob.type !== 'naive') {
@@ -1208,9 +1214,21 @@ export function buildOutbounds(
 
     while (true) {
       const validTags = new Set(outbounds.map((o) => o.tag).filter((t): t is string => !!t));
-      const dead = outbounds.find(
+      let dead = outbounds.find(
         (ob) => ob.detour !== undefined && !validTags.has(ob.detour) && ob.tag !== 'proxy-selector'
       );
+      // Xray 节点的前置代理不在 ob.detour 上（经 xray-dial-in 路由实现）→ 按桥规划 detourOf 判活：前置节点在本循环
+      // 中被剔（其自身 detour 失效）时，依赖它的 Xray 节点同样是死引用，一并收敛（否则选中仍是它、回环路由却 reject）。
+      if (!dead) {
+        for (const [xid, did] of deps.xrayBridge?.detourOf ?? []) {
+          const xtag = idToTagMap.get(xid);
+          if (!xtag) continue;
+          const dtag = idToTagMap.get(did);
+          if (dtag && validTags.has(dtag)) continue;
+          dead = outbounds.find((o) => o.tag === xtag);
+          if (dead) break;
+        }
+      }
       if (!dead) break;
       if (dead.tag === selectedTag) {
         throw new Error(

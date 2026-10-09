@@ -40,6 +40,7 @@ import {
   xraySchemaShape,
   xrayDefaults,
   readXrayDefaults,
+  refineXhttpExtra,
 } from './shared/field-schemas';
 import type { ServerConfig } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
@@ -74,7 +75,8 @@ interface TrojanFormProps {
 
 export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
   const { t } = useTranslation();
-  const trojanFormSchema = createTrojanSchema(t);
+  // xhttpExtra 的 JSON 校验挂对象级（仅 XHTTP 时生效，见 refineXhttpExtra）。
+  const trojanFormSchema = createTrojanSchema(t).superRefine(refineXhttpExtra);
 
   const normalizeSecurity = (s: string | undefined): 'none' | 'tls' => {
     const lower = (s || 'tls').toLowerCase();
@@ -169,6 +171,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
     protocol: 'trojan',
     network: watchedNetwork,
     security: form.watch('security'),
+    pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
   const xraySupported = formCanUseXray({ protocol: 'trojan', network: watchedNetwork });
@@ -268,7 +271,8 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
             supported={xraySupported}
           />
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} alpn="http/1.1" />}
-          {isTlsEnabled && xrayReq && <PinnedCertField control={form.control} t={t} />}
+          {/* 证书钉扎（仅 Xray 消费）：TLS 下恒显示——填写即改走 Xray（tls-pinned-cert），不能只在已需 Xray 时露出。 */}
+          {isTlsEnabled && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>

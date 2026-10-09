@@ -28,9 +28,11 @@ export const XRAY_STRUCTURED_PROTOCOLS: readonly string[] = [
  * 节点需要 Xray 内核的原因（null = 走 sing-box）。
  *  - custom-xray     ：自定义协议且 engine='xray'（Xray outbound JSON 透传）
  *  - xhttp           ：XHTTP 传输（含旧名 splithttp）
- *  - vless-encryption：VLESS Encryption（encryption ≠ none，如 mlkem768x25519plus.*）
+ *  - vless-encryption：VLESS Encryption（encryption 为 mlkem768x25519plus.* 串；none / 杂值不算）
  *  - vision-udp443   ：flow=xtls-rprx-vision-udp443（sing-box 仅支持 xtls-rprx-vision）
  *  - reality-pqv     ：Reality 启用 ML-DSA-65 验证（mldsa65Verify / 分享链 pqv）
+ *  - tls-pinned-cert ：TLS 证书 SHA-256 钉扎（pinnedPeerCertSha256 / 分享链 pcs；sing-box 无整证书钉扎，
+ *                      走 sing-box 会按 CA 校验——自签证书连不上、CA 证书则钉扎静默失效）
  *  - forced          ：用户在节点上手动勾选「使用 Xray 内核」
  */
 export type XrayRequirement =
@@ -39,6 +41,7 @@ export type XrayRequirement =
   | 'vless-encryption'
   | 'vision-udp443'
   | 'reality-pqv'
+  | 'tls-pinned-cert'
   | 'forced';
 
 /** network 值是否为 XHTTP（兼容 Xray 旧名 splithttp）。 */
@@ -47,10 +50,12 @@ export function isXhttpNetwork(network: string | undefined): boolean {
   return n === 'xhttp' || n === 'splithttp';
 }
 
-/** VLESS encryption 是否启用了 VLESS Encryption（空 / none = 未启用）。 */
+/**
+ * VLESS encryption 是否启用了 VLESS Encryption：仅认 Xray 的 `mlkem768x25519plus.*` 语法。空 / none / 其它杂值
+ *（如分享链里的 `encryption=auto`）一律视为未启用——sing-box 忽略该字段、Xray 侧按 none 下发，不因杂值把节点改走 Xray。
+ */
 export function isVlessEncryptionEnabled(encryption: string | undefined): boolean {
-  const e = (encryption || '').trim().toLowerCase();
-  return e !== '' && e !== 'none';
+  return /^mlkem768x25519plus\./i.test((encryption || '').trim());
 }
 
 /** 自定义协议节点是否为 Xray outbound JSON（engine='xray'）。 */
@@ -91,6 +96,16 @@ export function xrayRequirement(server: ServerConfig): XrayRequirement | null {
     !!server.realitySettings?.mldsa65Verify?.trim()
   ) {
     return 'reality-pqv';
+  }
+  // 证书钉扎只有 Xray 消费（sing-box 无整证书钉扎）。钉扎存于 tlsSettings → 按两侧 builder 的 TLS 判据
+  //（security=tls / 存在 tlsSettings / trojan）TLS 必开；Reality 不走证书链，钉扎无意义。
+  // h2 / Shadow-TLS 等切不到 Xray 的节点仍归 sing-box（钉扎无从生效）。
+  if (
+    (server.security || '').toLowerCase() !== 'reality' &&
+    !!server.tlsSettings?.pinnedPeerCertSha256?.trim() &&
+    canUseXrayCore(server)
+  ) {
+    return 'tls-pinned-cert';
   }
   if (server.useXrayCore === true && canUseXrayCore(server)) return 'forced';
   return null;

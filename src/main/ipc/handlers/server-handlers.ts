@@ -73,10 +73,17 @@ export function registerServerHandlers(
       if (list.length === 0) return { added: 0 };
       const config = await configManager.loadConfig();
       const now = new Date().toISOString();
-      for (const s of list) {
+      // 批内 detour（Xray JSON 导入的 dialerProxy 链）引用的是解析期 id → 随 id 重生成一并改写（重复 id 取首个）。
+      const newIds = list.map(() => randomUUID());
+      const idMap = new Map<string, string>();
+      list.forEach((s, i) => {
+        if (s.id && !idMap.has(s.id)) idMap.set(s.id, newIds[i]);
+      });
+      for (const [i, s] of list.entries()) {
         config.servers.push({
           ...s,
-          id: randomUUID(),
+          id: newIds[i],
+          detour: (s.detour && idMap.get(s.detour)) || s.detour,
           subscriptionId: undefined,
           providerName: undefined,
           createdAt: s.createdAt ?? now,

@@ -9,6 +9,7 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 | VLESS / VMess / Trojan + XHTTP + TLS | XHTTP 走 CDN（packet-up / stream-up / stream-one / auto），支持 `extra`（xmux、`downloadSettings` 上下行分离…） |
 | REALITY + ML-DSA-65 | 后量子 REALITY 证书验证（分享链 `pqv`） |
 | `xtls-rprx-vision-udp443` | sing-box 仅支持 `xtls-rprx-vision` |
+| TLS + 证书 SHA-256 钉扎（`pcs`） | sing-box 无整证书钉扎：填了「证书 SHA-256 指纹」的 TLS 节点自动由 Xray 承载（自签证书方案） |
 | 任意 Xray outbound JSON | 「自定义出站 JSON」选 **Xray** 内核：mKCP + finalmask、hysteria、wireguard… 原样运行 |
 
 其余节点（含普通 VLESS-REALITY-Vision、Hysteria2、TUIC、WireGuard…）照旧由 sing-box 承载，行为不变。

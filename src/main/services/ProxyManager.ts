@@ -340,6 +340,19 @@ export function connectionMatchesSwitchedPairs(
   return pairs.some((p) => chainList.includes(p.selectorTag) && chainList.includes(p.oldMemberTag));
 }
 
+/** `xray run -test` 输出中最能说明失败原因的一行（末条含 failed/error/invalid/unknown 的行，否则末行）。 */
+function xrayTestErrorLine(stderr: string): string {
+  return (
+    stderr
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => /failed|error|invalid|unknown/i.test(l))
+      .pop() ||
+    stderr.split(/\r?\n/).pop() ||
+    'xray -test failed'
+  );
+}
+
 export class ProxyManager extends EventEmitter implements IProxyManager {
   private singboxProcess: ChildProcess | null = null;
   private startTime: Date | null = null;
@@ -749,6 +762,11 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   private xrayBridge: XrayBridgePlan | null = null;
   // 实际随 sidecar 运行的 Xray 节点数（sing-box gate 剔除后的子集；状态展示用）。
   private xrayRunningNodes = 0;
+  // 本会话已跑过 prepareXrayBridge（起核路径，停核/起核失败清除）：置位时 generateSingBoxConfig 只认 xrayBridge
+  //（null = 本会话无 Xray 节点），绝不回落占位桥——占位端口/凭据不对应任何 Xray 进程。
+  private xrayPrepared = false;
+  // 进行中的测速临时 Xray 会话（pidPath → dispose）：退出时 teardownForQuit 统一回收；启动期回收孤儿时跳过。
+  private readonly xraySpeedTestSessions = new Map<string, () => Promise<void>>();
 
   private get xrayManager(): XrayCoreManager {
     if (!this._xrayManager) {
@@ -831,6 +849,9 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       // 启动失败终态收口：① 清进程引用——否则 singboxProcess/pid 仍指向已死进程，下次 start 的内部 stop() 会对
       //   死进程挂 once('exit')（exit 早发过、永不再触发）→ 永挂 → UI 恒「启动中」（修「二次点击卡死」根因 A）。
       //   cleanup 在此只在「最终失败」执行，不影响 retry 成功路径的探针端口。② 清可能残留的系统代理（L-2′）。
+      //   ③ 回收本次已起的 Xray sidecar（先于 sing-box 起，sing-box 起不来它就成了无主进程）。仅当本次 start 仍是
+      //   当前 start（timeline 未被更新的 start 换掉）——否则 sidecar 已属接管方。
+      if (this.startTimeline === timeline) await this.stopXraySidecar().catch(() => {});
       this.cleanup();
       await this.ensureSystemProxyCleared();
       throw e;
@@ -1197,12 +1218,24 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     //   Released 门控）；② 恒定 3s × N 次重试给内核留足异步回收双 utun/适配器的时间 → start 自愈。次数/间隔以 Mac
     //   真机释放时序为准（Task #6 校准）。
     const startRetryBudget = resolveStartRetryBudget(isTunMode, config.servers, process.platform);
+    // 端口被占的修正（onRetry 发起）由下一条起核腿开头 await：onRetry 是同步回调、retry 不等它，而 Xray 回环拨号端口
+    // 的修正要重起 Xray（就绪等待最长 8s），fire-and-forget 会让下一腿带着旧端口/半起的 Xray 起核。
+    let pendingBindFix: Promise<void> | null = null;
+    // 修正本身失败（重起 Xray 失败且选中 Xray 节点）→ 终态，不再重试（再起 sing-box 也只是带着死桥起来）。
+    let bindFixError: Error | null = null;
+    const startLeg = async (): Promise<void> => {
+      const fix = pendingBindFix;
+      pendingBindFix = null;
+      if (fix) await fix;
+      if (bindFixError) throw bindFixError;
+      return this.startSingBoxProcess(startGen);
+    };
     const runStartWithRetry = (): Promise<void> =>
-      retry(() => this.startSingBoxProcess(startGen), {
+      retry(startLeg, {
         maxRetries: startRetryBudget.maxRetries,
         delay: startRetryBudget.delay,
         exponentialBackoff: startRetryBudget.exponentialBackoff,
-        shouldRetry: (error) => this.shouldRetryStartError(error),
+        shouldRetry: (error) => error !== bindFixError && this.shouldRetryStartError(error),
         onRetry: (error, attempt) => {
           readyRetries = attempt; // issue #176 诊断：累计就绪重试次数
           // issue #176：软化文案——多数是「起核较慢/争用」而非真失败，避免「启动失败」吓到用户（#176 即因此报 bug）。
@@ -1211,9 +1244,17 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
             `sing-box 起核较慢，正在自动重试（第 ${attempt} 次）: ${error.message}`
           );
           // 端口被占（含探针端口在 osascript 授权窗口内被抢占）→ 重分配探针端口并重写配置。
-          // retry 在 onRetry 后有 2s+ 退避，足够这段 ms 级异步完成。
-          if (/address already in use|in use|bind|eaddrinuse/i.test(error.message)) {
-            void (async () => {
+          // 由下一腿开头 await（见 pendingBindFix）。
+          // Xray 回环拨号入站（xray-dial-in）被抢占另需重分配其端口并重起 Xray（Xray dialer 指着它）。判据除错误文案外
+          // 也看本腿捞到的 FATAL 原文（helper 路径的可重试错误不拼 FATAL 原文）。
+          const xrayDialConflict = this.isXrayDialPortConflict(
+            `${error.message}\n${this.lastStartupFatal?.raw ?? ''}`
+          );
+          if (
+            xrayDialConflict ||
+            /address already in use|in use|bind|eaddrinuse/i.test(error.message)
+          ) {
+            pendingBindFix = (async () => {
               try {
                 await this.allocateProbePorts(config);
                 // T9：用已 prune 的 singboxConfig（捕获 startInternal :746 外层变量），不重新 generateSingBoxConfig
@@ -1239,6 +1280,12 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
                 await this.writeSingBoxConfig(singboxConfig);
               } catch {
                 /* 忽略：下次尝试用现有配置 */
+              }
+              // 失败只记下、不让 promise reject（下一腿 await 前无人接手 → 未处理的 rejection）。
+              if (xrayDialConflict) {
+                await this.reallocXrayDialPort(singboxConfig, config).catch((e: unknown) => {
+                  bindFixError = e instanceof Error ? e : new Error(String(e));
+                });
               }
             })();
           }
@@ -1662,9 +1709,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     // F1：作废缓存里各 TS 帧的 authURL（跨核会话失效），防下次会话首帧前 startTailscaleLogin 回传死 URL。
     this.invalidateCachedAuthUrls();
     // Xray sidecar 随主核停（早于下方「主核不在」早退：sing-box 崩溃后停核也要回收 Xray）。
-    if (this._xrayManager) await this._xrayManager.stop();
-    this.xrayBridge = null;
-    this.xrayRunningNodes = 0;
+    await this.stopXraySidecar();
     // issue #147：本地 race DNS server 随核停（绑主核生命周期）。
     this.nodeDnsRaceServer.stop();
     this.raceServerPort = 0;
@@ -1745,6 +1790,10 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     } catch (e) {
       this.logToManager('warn', `退出停止代理失败: ${e instanceof Error ? e.message : String(e)}`);
     }
+    // 测速临时 Xray 会话：退出时 SpeedTestService 的 finally（dispose）来不及跑 → 在此回收，不留无主 xray。
+    await Promise.all(
+      [...this.xraySpeedTestSessions.values()].map((dispose) => dispose().catch(() => {}))
+    );
     if (process.platform === 'darwin') {
       // sing-box 由 root helper 托管（非 GUI 子进程）→ 显式让 helper 停 child + 扫孤儿（覆盖跨会话残留）。
       try {
@@ -3911,6 +3960,7 @@ done
       allServers: config.servers,
       ports,
       secret: () => 'placeholder',
+      tlsFragment: config.tlsFragment === true,
     });
   }
 
@@ -3928,14 +3978,39 @@ done
   }
 
   /**
-   * 起核前规划 Xray 桥 + `xray run -test` 校验 gate（逐个剔除报错节点，至多 min(50,n) 轮）。
+   * 停 Xray sidecar 并清本会话桥状态（幂等）。停核 / 起核前 / 起核失败与 sing-box 终态退出时调用。
+   * **不进 cleanup()**：cleanup 也在起核重试腿之间跑，那时 sidecar 须保持运行供下一腿使用。
+   * 状态先于 await 同步清掉：void 调用方（退出回调）不会在之后覆写新一轮 prepareXrayBridge 的产出。
+   */
+  private async stopXraySidecar(): Promise<void> {
+    this.xrayBridge = null;
+    this.xrayRunningNodes = 0;
+    this.xrayPrepared = false;
+    if (this._xrayManager) await this._xrayManager.stop();
+  }
+
+  /** 本机已占用 / 本会话已分配的回环端口（Xray 端口分配须避开）。 */
+  private reservedLoopbackPorts(config: UserConfig): number[] {
+    return [
+      controlApiPort(config),
+      localProxyPort(config),
+      this.tailscaleApiPort,
+      this.probeDirectPort ?? 0,
+      this.probeProxyPort ?? 0,
+      this.updateInPort ?? 0,
+      ...this.probePoolPorts,
+    ].filter((p) => p > 0);
+  }
+
+  /**
+   * 起核前规划 Xray 桥 + `xray run -test` 校验 gate（每轮剔除至少一个报错节点，直到通过或剔空）。
    * 产出 this.xrayBridge（无 Xray 节点 / 内核缺失 / 全部失败 → null）。不启动进程（见 startXraySidecar）。
    */
   private async prepareXrayBridge(config: UserConfig): Promise<void> {
     // 上一会话残留（sing-box 崩溃后 start 不经 stop）：先停，保证端口/配置整体替换。
-    if (this._xrayManager) await this._xrayManager.stop();
-    this.xrayBridge = null;
-    this.xrayRunningNodes = 0;
+    await this.stopXraySidecar();
+    // 自此 generateSingBoxConfig 只认真实规划（含 null），不再回落占位桥。
+    this.xrayPrepared = true;
     let live = config.servers.filter(
       (s) => requiresXrayCore(s) && !this.gateInvalidNodes.has(s.id)
     );
@@ -3964,17 +4039,7 @@ done
 
     let ports: number[];
     try {
-      const exclude = new Set<number>(
-        [
-          controlApiPort(config),
-          localProxyPort(config),
-          this.tailscaleApiPort,
-          this.probeDirectPort ?? 0,
-          this.probeProxyPort ?? 0,
-          this.updateInPort ?? 0,
-          ...this.probePoolPorts,
-        ].filter((p) => p > 0)
-      );
+      const exclude = new Set<number>(this.reservedLoopbackPorts(config));
       ports = await allocateLoopbackPorts(live.length + 1, exclude, { udp: true });
     } catch (e) {
       const why = (e as Error)?.message ?? String(e);
@@ -3990,13 +4055,13 @@ done
       warned.add(msg);
       this.logToManager('warn', msg);
     };
-    const maxRounds = Math.min(50, live.length);
-    for (let round = 0; round <= maxRounds && live.length > 0; round++) {
+    const testNodes = async (candidates: ServerConfig[]) => {
       const plan = planXrayBridge({
-        candidates: live,
+        candidates,
         allServers: config.servers,
         ports,
         secret,
+        tlsFragment: config.tlsFragment === true,
         warn: warnOnce,
       });
       const xcfg = buildXrayConfig({
@@ -4006,7 +4071,12 @@ done
         logLevel: this.xrayLogLevel(config),
         warn: warnOnce,
       });
-      const res = await this.xrayManager.test(xcfg);
+      return { plan, res: await this.xrayManager.test(xcfg) };
+    };
+    // 不设轮数上限：每个失败轮至少剔除一个节点（或全局失败直接返回），循环必然在 live.length+1 轮内结束。
+    // 曾经的 min(50,n) 上限会在 >51 个报错节点时带着未归因、未入 gate 的残余节点退出 → 起核路径无桥。
+    while (live.length > 0) {
+      const { plan, res } = await testNodes(live);
       if ('ok' in res) {
         this.xrayBridge = plan;
         return;
@@ -4016,23 +4086,40 @@ done
         this.xrayBridge = plan;
         return;
       }
-      const firstLine =
-        res.stderr
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter((l) => /failed|error|invalid|unknown/i.test(l))
-          .pop() ||
-        res.stderr.split(/\r?\n/).pop() ||
-        'xray -test failed';
+      const firstLine = xrayTestErrorLine(res.stderr);
       const badTag = parseXrayFailedOutboundTag(res.stderr);
       const bad = badTag ? live.find((s) => xrayOutboundTag(s.id) === badTag) : undefined;
-      if (!bad) {
-        // 归因不到具体节点（如全局字段错误）→ 本轮全部 Xray 节点不可用（选中则 throw）。
+      if (bad) {
+        this.markXrayInvalid(bad, `Xray 配置校验失败：${firstLine}`, config);
+        live = live.filter((s) => s.id !== bad.id);
+        continue;
+      }
+      // 归因不到具体节点（handler 实例化期错误不带 tag，如 SS-2022 密钥 / VLESS Encryption 串非法，或 -test 自身 panic）
+      // → 多节点时逐个单独校验，只剔失败者；逐个全部通过才按全局错误处理（本轮全部 Xray 节点不可用，选中则 throw）。
+      const failed: { server: ServerConfig; line: string }[] = [];
+      if (live.length > 1) {
+        for (const s of live) {
+          const { res: single } = await testNodes([s]);
+          if ('stderr' in single) {
+            failed.push({ server: s, line: xrayTestErrorLine(single.stderr) });
+          }
+        }
+      }
+      if (failed.length === 0) {
         for (const s of live) this.markXrayInvalid(s, `Xray 配置校验失败：${firstLine}`, config);
         return;
       }
-      this.markXrayInvalid(bad, `Xray 配置校验失败：${firstLine}`, config);
-      live = live.filter((s) => s.id !== bad.id);
+      for (const f of failed) {
+        this.markXrayInvalid(f.server, `Xray 配置校验失败：${f.line}`, config);
+      }
+      live = live.filter((s) => !failed.some((f) => f.server.id === s.id));
+    }
+    // 防御：循环只在设桥 / 全局失败 / 剔空时结束。若将来改动让循环带着残余节点退出，残余节点既未入桥也未进 gate，
+    // 起核配置会给它们发射指向无进程端口的 socks 桥 → 一律记失败（选中则 throw）。
+    if (!this.xrayBridge && live.length > 0) {
+      for (const s of live) {
+        this.markXrayInvalid(s, 'Xray 配置校验失败：未能逐个排查完毕', config);
+      }
     }
   }
 
@@ -4098,10 +4185,77 @@ done
     }
   }
 
-  /** 启动期回收上次会话残留的 Xray sidecar（PID 文件 + 进程名确认）。运行中的本会话 sidecar 不受影响。 */
+  /** 起核失败信息是否点名 Xray 回环拨号入站（xray-dial-in 的 tag 或其端口）的 bind 冲突。 */
+  private isXrayDialPortConflict(text: string): boolean {
+    const port = this.xrayBridge?.dialInbound.port;
+    if (!port || !/address already in use|bind|eaddrinuse/i.test(text)) return false;
+    return (
+      text.includes(XRAY_DIAL_INBOUND_TAG) ||
+      new RegExp(`127\\.0\\.0\\.1:${port}(?!\\d)`).test(text)
+    );
+  }
+
+  /**
+   * sing-box 绑 xray-dial-in 失败（该端口在 prepareXrayBridge 分配后即释放，到 sing-box 真正 bind 之间隔着 check、
+   * Xray 就绪等待、TUN 授权弹框——期间可被别的进程抢占）：重分配回环拨号端口，就地改桥规划（dialInbound + 全部
+   * dialer）与 sing-box 配置的 xray-dial-in 入站，按新 dialer 端口重起 Xray（复用 startXraySidecar 的降级 / 选中节点
+   * throw 语义），最后重写盘。由 runStartWithRetry 的下一条起核腿 await。
+   */
+  private async reallocXrayDialPort(
+    singboxConfig: SingBoxConfig,
+    config: UserConfig
+  ): Promise<void> {
+    const plan = this.xrayBridge;
+    const inbound = singboxConfig.inbounds.find((ib) => ib.tag === XRAY_DIAL_INBOUND_TAG);
+    if (!plan || !inbound) return;
+    const exclude = new Set<number>([
+      ...this.reservedLoopbackPorts(config),
+      ...plan.nodes.map((n) => n.port),
+      plan.dialInbound.port,
+    ]);
+    const [port] = await allocateLoopbackPorts(1, exclude, { udp: true });
+    if (this.xrayBridge !== plan) return; // 期间被更新的 start/stop 接管（桥已换/已清）→ 让位
+    plan.dialInbound.port = port;
+    for (const d of plan.dialers) d.port = port;
+    inbound.listen_port = port;
+    this.logToManager('warn', `Xray 回环拨号端口被占用，已重新分配为 ${port} 并重启 Xray 内核`);
+    await this.startXraySidecar(singboxConfig, config);
+    await this.writeSingBoxConfig(singboxConfig);
+  }
+
+  /**
+   * 启动期回收上次会话残留的 Xray（PID 文件 + 进程名确认）：主 sidecar（xray.pid）+ 测速临时会话
+   *（xray_speedtest_<stamp>.pid——每会话独立文件，XrayCoreManager.start 只查自己新起的那份 → 只能在此按目录扫），
+   * 并删掉残留会话含节点凭据的 xray_speedtest_<stamp>.json。运行中的本会话 sidecar / 测速会话不受影响。
+   */
   async reapOrphanedXray(): Promise<void> {
-    if (this.xrayManager.isRunning()) return;
-    await this.xrayManager.killOrphan();
+    if (!this.xrayManager.isRunning()) await this.xrayManager.killOrphan();
+    const dir = getUserDataPath();
+    let names: string[];
+    try {
+      names = await fs.readdir(dir);
+    } catch {
+      return;
+    }
+    const stamps = new Set<string>();
+    for (const name of names) {
+      const m = /^xray_speedtest_(.+)\.(?:pid|json)$/.exec(name);
+      if (m) stamps.add(m[1]);
+    }
+    for (const stamp of stamps) {
+      const pidPath = path.join(dir, `xray_speedtest_${stamp}.pid`);
+      if (this.xraySpeedTestSessions.has(pidPath)) continue;
+      const configPath = path.join(dir, `xray_speedtest_${stamp}.json`);
+      // 一次性管理器只借用 killOrphan（进程名确认后才杀、删 PID 文件；PID 文件缺失 → no-op）。
+      await new XrayCoreManager({
+        getXrayPath: () => resourceManager.getXrayPath(),
+        hasXrayCore: () => resourceManager.hasXrayCore(),
+        configPath,
+        pidPath,
+        log: (level, message) => this.logToManager(level, message),
+      }).killOrphan();
+      await fs.unlink(configPath).catch(() => {});
+    }
   }
 
   /** Xray 内核状态（设置页内核卡 / 诊断报告）。 */
@@ -4162,13 +4316,22 @@ done
     });
     const tmpDir = getUserDataPath();
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const configPath = path.join(tmpDir, `xray_speedtest_${stamp}.json`);
+    const pidPath = path.join(tmpDir, `xray_speedtest_${stamp}.pid`);
     const mgr = new XrayCoreManager({
       getXrayPath: () => resourceManager.getXrayPath(),
       hasXrayCore: () => resourceManager.hasXrayCore(),
-      configPath: path.join(tmpDir, `xray_speedtest_${stamp}.json`),
-      pidPath: path.join(tmpDir, `xray_speedtest_${stamp}.pid`),
+      configPath,
+      pidPath,
       log: (level, message) => this.logToManager(level === 'info' ? 'debug' : level, message),
     });
+    const dispose = async () => {
+      this.xraySpeedTestSessions.delete(pidPath);
+      await mgr.stop();
+      await fs.unlink(configPath).catch(() => {});
+    };
+    // 先登记再起：起核期间退出（teardownForQuit）同样能回收；启动期孤儿回收据此跳过本会话的文件。
+    this.xraySpeedTestSessions.set(pidPath, dispose);
     try {
       await mgr.start(
         buildXrayConfig({
@@ -4180,8 +4343,7 @@ done
       );
     } catch (e) {
       this.logToManager('warn', `测速临时 Xray 内核启动失败: ${(e as Error)?.message ?? e}`);
-      await mgr.stop();
-      await fs.unlink(path.join(tmpDir, `xray_speedtest_${stamp}.json`)).catch(() => {});
+      await dispose();
       return null;
     }
     const byId = new Map(plan.nodes.map((n) => [n.serverId, n]));
@@ -4199,10 +4361,7 @@ done
             }
           : null;
       },
-      dispose: async () => {
-        await mgr.stop();
-        await fs.unlink(path.join(tmpDir, `xray_speedtest_${stamp}.json`)).catch(() => {});
-      },
+      dispose,
     };
   }
 
@@ -4282,7 +4441,7 @@ done
 
     // outbounds 须先于 route/endpoints 生成：其产出的两载体（pendingEndpoints / pendingRuleSelectors）
     // 由下方 route deps + endpoints 注入 + 末尾 currentRuleTargetMap 回填消费。回写 this.* 维持原时序。
-    const xrayBridge = this.xrayBridge ?? this.placeholderXrayBridge(config);
+    const xrayBridge = this.xrayPrepared ? this.xrayBridge : this.placeholderXrayBridge(config);
     const outboundsResult = buildOutbounds(selectedServer, cfg, idToTagMap, {
       gateInvalidNodes: this.gateInvalidNodes,
       log: (level, message) => this.logToManager(level, message),
@@ -4295,8 +4454,9 @@ done
         cfg.proxyModeType === 'tun' && meshSystemSupportedOnPlatform(process.platform),
       // §15 主核测速探测池：注入 K 个 probe-selector-k（成员=全量 nodeTags）。空=不注入。
       probePoolPorts: this.probePoolPorts,
-      // Xray sidecar 桥：起核路径为 prepareXrayBridge 的真实规划；预检/快照/诊断路径用占位规划（端口为占位值，
-      // 仅供 sing-box check 验配置形态——check 不 bind 端口），保证这些路径下 Xray 节点同样在配置里、形态被校验。
+      // Xray sidecar 桥：起核路径（xrayPrepared）只用 prepareXrayBridge 的真实规划（null = 本会话无 Xray 节点，绝不回落
+      // 占位）；未起核的预检/快照/诊断路径用占位规划（端口为占位值，仅供 sing-box check 验配置形态——check 不 bind 端口），
+      // 保证这些路径下 Xray 节点同样在配置里、形态被校验。
       xrayBridge: xrayBridge,
     });
     this.pendingEndpoints = outboundsResult.pendingEndpoints;
@@ -4310,9 +4470,16 @@ done
     const xrayDialRoutes =
       xrayBridge && xrayBridge.dialInbound.port > 0
         ? xrayBridge.dialRoutes.map((r) => {
-            if (!r.detourServerId) return { username: r.username, outbound: XRAY_DIAL_DIRECT_TAG };
+            const tlsFragment = r.tlsFragment;
+            if (!r.detourServerId) {
+              return { username: r.username, outbound: XRAY_DIAL_DIRECT_TAG, tlsFragment };
+            }
             const t = idToTagMap.get(r.detourServerId);
-            return { username: r.username, outbound: t && emittedTags.has(t) ? t : undefined };
+            return {
+              username: r.username,
+              outbound: t && emittedTags.has(t) ? t : undefined,
+              tlsFragment,
+            };
           })
         : [];
     this.pendingRuleSelectors = outboundsResult.pendingRuleSelectors;
@@ -7143,6 +7310,7 @@ rm -f "$STOPFLAG"
         this.emit('stopped');
         this.sendEventToRenderer(IPC_CHANNELS.EVENT_PROXY_STOPPED, {});
         void this.ensureSystemProxyCleared();
+        void this.stopXraySidecar();
         this.cleanup();
         return;
       }
@@ -7168,6 +7336,7 @@ rm -f "$STOPFLAG"
 
         // 终态：清掉曾指向我们的系统代理，避免进程已死但系统代理仍指向死端口致全网断（marker 门控、单飞）。
         void this.ensureSystemProxyCleared();
+        void this.stopXraySidecar(); // sing-box 不再拉起 → Xray sidecar 无主，回收
 
         // 完全清理
         this.cleanup();
@@ -7366,6 +7535,8 @@ rm -f "$STOPFLAG"
     this.emit('stopped');
     this.sendEventToRenderer(IPC_CHANNELS.EVENT_PROXY_STOPPED, {});
     void this.ensureSystemProxyCleared();
+    // 自动重启腿可能在用户停止后才起了 Xray sidecar（stop 早于它）→ 终态一并回收。
+    void this.stopXraySidecar();
     this.cleanup();
   }
 
@@ -7387,6 +7558,7 @@ rm -f "$STOPFLAG"
     // 场景 B：TUN 自动重启（非交互、无法弹引导框）因提权助手被系统「后台活动」关闭而终态失败 →
     // 桌面通知引导用户恢复（native Notification 无窗口依赖，托盘态/窗口关闭也能送达）。
     await this.maybeNotifyHelperBackgroundDisabled();
+    await this.stopXraySidecar().catch(() => {}); // sing-box 不再拉起 → Xray sidecar 无主，回收
     this.cleanup();
   }
 
@@ -9094,6 +9266,9 @@ rm -f "$STOPFLAG"
     // 终态收口（自动重启分支已在上方 return，到此即进程不再拉起）：清掉曾指向我们的系统代理。
     // 覆盖「外部 SIGKILL / OOM / 达上限异常退出」——主动停止已由 IPC/托盘前置 disable（marker 门控下此处幂等 no-op）。
     void this.ensureSystemProxyCleared();
+    // Xray sidecar 随 sing-box 终态回收（否则无主进程占回环端口、状态卡仍报运行中）。主动停止（stopping）时
+    // stopInner 已先停过，此处跳过。
+    if (!this.stopping) void this.stopXraySidecar();
     this.cleanup();
   }
 

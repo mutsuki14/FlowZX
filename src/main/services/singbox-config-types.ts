@@ -361,6 +361,9 @@ export interface SingBoxRouteRule {
   // 内核：tls_spoof_method 非空时 tls_spoof 必须非空（否则 FATAL）；方法非法 → `tls_spoof: unknown method`。
   tls_spoof?: string;
   tls_spoof_method?: string;
+  // TLS 分片（route action 选项，1.12+）：切分经本规则流量的 TLS ClientHello。Xray 回环拨号（xray-dial-in）用它切
+  // Xray 自身的 ClientHello（见 singbox-route-builder A0 / xray-bridge）。
+  tls_fragment?: boolean;
   // logical 规则（多条件跨维度 OR / AND）：type:'logical' + mode + rules(纯 matcher 子规则，无 action/outbound)
   type?: string;
   mode?: string;

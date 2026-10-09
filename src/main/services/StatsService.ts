@@ -12,8 +12,10 @@ import type {
   SingBoxApiClient,
   SingBoxStatus,
   SingBoxConnection,
+  SingBoxConnectionEvent,
   SingBoxConnectionEvents,
 } from './singbox-api-client';
+import { XRAY_DIAL_INBOUND_TAG } from './xray-bridge';
 
 // 流推送间隔：1s（纳秒，int64）。对齐旧轮询 1s 节奏（首页速率/连接数体感）。
 const STATUS_INTERVAL_NS = 1_000_000_000;
@@ -26,6 +28,10 @@ const MAX_CONN_MAP_SIZE = 50_000;
 // HTTP/2 会话/通道对象可能缓慢保留（grpc-node #2068 ServerHttp2Session/channelz 类已知问题）。周期性 cancel +
 // 重订阅（复用 resubscribe）使流对象不长期驻留，重连瞬断 < 1s（首帧到达即恢复），换取长会话内存稳定。
 const STREAM_RESUBSCRIBE_INTERVAL_MS = 30 * 60 * 1000; // 30 分钟
+// Xray 回环拨号速率的有效期：UPDATE 帧每周期（1s）一帧、无流量时不发 → 超过此时长未再收到即视为 0（防陈旧值误扣）。
+const DIAL_IN_RATE_TTL_MS = 1_500;
+// 已扣完的回环连接 id 记忆上限：重订阅初始帧会重放「已关闭连接历史环」（≤1000 条），据此跳过已扣过的、补扣断流期间的。
+const DIAL_IN_CLOSED_MEMORY = 2_048;
 
 /** 数值规整：string/number → number，非有限值 → undefined（避免 NaN 进 UI 差分）。 */
 function num(v: unknown): number | undefined {
@@ -134,6 +140,18 @@ export class StatsService {
   private connectionsEnabled = true;
   // 长流周期重建定时器（issue #210 根因 #3）：见 STREAM_RESUBSCRIBE_INTERVAL_MS。null=未运行。
   private resubscribeTimer: ReturnType<typeof setInterval> | null = null;
+  // Xray 回环拨号连接（入站 xray-dial-in）：Xray 节点的每个字节在 sing-box 里过两遍（应用→socks 桥出站；Xray 拨号
+  // →xray-dial-in→直连/前置），Status 的速率/总量两遍都算。这些内部连接不进 connMap（连接页/计数/拓扑不显示），
+  // 其字节从 Status 总量/速率里扣除。key=活跃回环连接 id → 该连接已扣字节（按快照累计值补差，不重复扣）。
+  private dialIn = new Map<string, { up: number; down: number }>();
+  // 已关闭且扣完的回环连接 id（插入序，上限 DIAL_IN_CLOSED_MEMORY）：重订阅初始帧重放历史环时据此不重复扣。
+  private dialInClosed = new Set<string>();
+  // 本核会话累计已扣字节（Status 总量是核生命周期累计）：resubscribe（新核）/ stop 归零；30min 周期重建与连接流开关不归零。
+  private dialInTotal = { up: 0, down: 0 };
+  // 最近一个 UPDATE 帧里回环连接的增量（UPDATE 每周期 1s 一帧 ≈ 字节/秒）+ 收到时刻 → 从 Status 速率扣除（过期作 0）。
+  private dialInRate = { up: 0, down: 0, at: 0 };
+  // CLOSED 快照补差的末段字节（短连接常不足一周期、根本没有 UPDATE）：下一 Status 帧从速率扣一次即清。
+  private dialInBurst = { up: 0, down: 0 };
 
   /**
    * @param onUpdate 每次拿到新 Status 时回调（广播给渲染端）
@@ -208,6 +226,7 @@ export class StatsService {
       totalDownload: 0,
       activeConnections: 0,
     };
+    this.resetDialIn(); // 新核：Status 总量从 0 起，已扣字节同步归零
     this.onUpdate({ ...this.snapshot });
     this.onConnections?.({ connections: [], at: Date.now() });
     this.subscribeStatusStream();
@@ -250,6 +269,7 @@ export class StatsService {
     this.onUpdate({ ...this.snapshot }); // 停止即清零广播
     this.connMap.clear();
     this.connections = [];
+    this.resetDialIn();
     this.onConnections?.({ connections: [], at: Date.now() }); // 停止即广播空连接快照
   }
 
@@ -303,10 +323,23 @@ export class StatsService {
    * 窗口不可见 → 跳过 broadcast（无 UI 消费者；快照仍更新，可见后下一帧即广播最新）。
    */
   private onStatus(status: SingBoxStatus): void {
-    this.snapshot.uploadSpeed = num(status?.uplink) ?? 0;
-    this.snapshot.downloadSpeed = num(status?.downlink) ?? 0;
-    this.snapshot.totalUpload = num(status?.uplinkTotal) ?? 0;
-    this.snapshot.totalDownload = num(status?.downlinkTotal) ?? 0;
+    // 扣除 Xray 回环拨号（xray-dial-in）重复计入的字节（见 dialIn）；钳 ≥0 防两条流相位差致负值。
+    const rate =
+      Date.now() - this.dialInRate.at <= DIAL_IN_RATE_TTL_MS ? this.dialInRate : { up: 0, down: 0 };
+    this.snapshot.uploadSpeed = Math.max(
+      0,
+      (num(status?.uplink) ?? 0) - rate.up - this.dialInBurst.up
+    );
+    this.snapshot.downloadSpeed = Math.max(
+      0,
+      (num(status?.downlink) ?? 0) - rate.down - this.dialInBurst.down
+    );
+    this.dialInBurst = { up: 0, down: 0 };
+    this.snapshot.totalUpload = Math.max(0, (num(status?.uplinkTotal) ?? 0) - this.dialInTotal.up);
+    this.snapshot.totalDownload = Math.max(
+      0,
+      (num(status?.downlinkTotal) ?? 0) - this.dialInTotal.down
+    );
     // activeConnections 不取 Status 的 connectionsIn/Out——sing-box 1.14 SubscribeStatus 实测不填这俩（真机首页
     // 恒 0 而连接信息页正常）；改由 Connections 流的 connMap.size 维护（见 onConnectionEvents），此处只更速率/总量。
     if (this.isWindowVisible && !this.isWindowVisible()) return; // 无 UI 消费者 → 跳过广播
@@ -330,6 +363,71 @@ export class StatsService {
     this.connectionsStop = this.clearStop(this.connectionsStop);
     this.connMap.clear();
     this.connections = [];
+    // 回环连接的扣除记账（dialIn / dialInClosed / dialInTotal）保留：同核重订阅后初始帧按累计值补差；仅速率失效。
+    this.dialInRate = { up: 0, down: 0, at: 0 };
+    this.dialInBurst = { up: 0, down: 0 };
+  }
+
+  /** 回环拨号扣除状态归零（新核 / 停核）。 */
+  private resetDialIn(): void {
+    this.dialIn.clear();
+    this.dialInClosed.clear();
+    this.dialInTotal = { up: 0, down: 0 };
+    this.dialInRate = { up: 0, down: 0, at: 0 };
+    this.dialInBurst = { up: 0, down: 0 };
+  }
+
+  /**
+   * Xray 回环拨号连接（inbound=xray-dial-in）的事件：记字节供 Status 扣除，不进 connMap。返回 true = 已处理。
+   * sing-box 1.14 实测：NEW / CLOSED 即时单发且带连接快照（CLOSED 快照含终值——不足一周期的末段字节只在这里），
+   * UPDATE 每周期一帧只带 delta。故 NEW/CLOSED 按快照累计值补差、UPDATE 按 delta 记：补差使同核重订阅后再见同一
+   * 连接只扣期间增量。初始帧重放的历史环（NEW 且 closedAt>0）：扣完过的（dialInClosed）跳过，没见过的（断流期间
+   * 开且关）按终值补扣。
+   */
+  private trackDialIn(
+    ev: SingBoxConnectionEvent,
+    id: string,
+    seen: Set<string> | null,
+    rate: { up: number; down: number }
+  ): boolean {
+    const known = this.dialIn.get(id);
+    const c = ev?.connection;
+    if (!known && c?.inbound !== XRAY_DIAL_INBOUND_TAG) return false;
+    if (!known && this.dialInClosed.has(id)) return true; // 已扣完的连接被历史环重放
+    const e = known ?? { up: 0, down: 0 };
+    let up: number;
+    let down: number;
+    if (ev?.type === 'UPDATE' || !c) {
+      up = Number(ev?.uplinkDelta) || 0;
+      down = Number(ev?.downlinkDelta) || 0;
+      if (ev?.type === 'UPDATE') {
+        rate.up += up;
+        rate.down += down;
+      }
+    } else {
+      up = Math.max(0, (Number(c.uplinkTotal) || 0) - e.up);
+      down = Math.max(0, (Number(c.downlinkTotal) || 0) - e.down);
+      // 实时 CLOSED 的末段字节刚流过 → 计入速率扣除；NEW 补差（含历史环重放）是断流期间的旧字节，只扣总量。
+      if (ev?.type === 'CLOSED') {
+        this.dialInBurst.up += up;
+        this.dialInBurst.down += down;
+      }
+    }
+    e.up += up;
+    e.down += down;
+    this.dialInTotal.up += up;
+    this.dialInTotal.down += down;
+    if (ev?.type === 'CLOSED' || Number(c?.closedAt) > 0) {
+      this.dialIn.delete(id);
+      this.dialInClosed.add(id);
+      if (this.dialInClosed.size > DIAL_IN_CLOSED_MEMORY) {
+        this.dialInClosed.delete(this.dialInClosed.values().next().value as string);
+      }
+    } else {
+      this.dialIn.set(id, e);
+      seen?.add(id);
+    }
+    return true;
   }
 
   /**
@@ -338,9 +436,16 @@ export class StatsService {
    */
   private onConnectionEvents(events: SingBoxConnectionEvents): void {
     if (events?.reset) this.connMap.clear();
+    // reset 帧 = 全量（含历史环）：本帧未出现的活跃回环连接已关闭且滚出历史环 → 停止跟踪（末段字节无从得知）。
+    const seenDialIn = events?.reset ? new Set<string>() : null;
+    const rate = { up: 0, down: 0 };
+    let hasUpdate = false;
     for (const ev of events?.events ?? []) {
       const id = ev?.id ?? ev?.connection?.id;
       if (!id) continue;
+      if (ev?.type === 'UPDATE') hasUpdate = true;
+      // Xray 回环拨号连接：只记字节供 Status 扣除，不进 connMap（不计连接数、不进连接页/拓扑）。
+      if (this.trackDialIn(ev, id, seenDialIn, rate)) continue;
       switch (ev?.type) {
         case 'CLOSED':
           this.connMap.delete(id);
@@ -389,6 +494,17 @@ export class StatsService {
       if (oldest === undefined) break;
       this.connMap.delete(oldest);
     }
+    if (seenDialIn) {
+      for (const id of this.dialIn.keys()) if (!seenDialIn.has(id)) this.dialIn.delete(id);
+    }
+    // 同一 OOM 安全网（漏发 CLOSED 的回环连接）：按插入序驱逐最旧。
+    while (this.dialIn.size > MAX_CONN_MAP_SIZE) {
+      const oldest = this.dialIn.keys().next().value;
+      if (oldest === undefined) break;
+      this.dialIn.delete(oldest);
+    }
+    // 速率只认 UPDATE 帧（每周期一帧、含全部有流量连接的 delta）；NEW/CLOSED 单发帧不覆盖。
+    if (hasUpdate) this.dialInRate = { ...rate, at: Date.now() };
     // 活动连接数由本流的 connMap.size 维护（Status 的 connectionsIn/Out 核不填 → 首页恒 0 的根因）；在可见性
     // 短路前更新，使下一次 Status onUpdate 广播到的计数恒为真实活跃连接数。
     this.snapshot.activeConnections = this.connMap.size;

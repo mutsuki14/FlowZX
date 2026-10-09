@@ -12,6 +12,8 @@
  *   使首解析结果即不动点；这些「单向丢弃」由特征断言单独覆盖。
  */
 import { ProtocolParser } from '../ProtocolParser';
+import { toXrayEchConfigList } from '../xray-config-builder';
+import { xrayRequirement } from '../../../shared/xray';
 import type { ServerConfig } from '../../../shared/types';
 
 const parser = new ProtocolParser();
@@ -799,6 +801,41 @@ describe('传输层归一化与白名单（issue #263）', () => {
     const bad = parser.parseUrl('vless://u@a.com:443?type=xhttp&extra=%7Bnope#b');
     expect(bad.network).toBe('xhttp');
     expect(bad.xhttpSettings?.extra).toBeUndefined();
+  });
+
+  it('ech 值里未编码的字面 +（表单解码成空格）被还原：base64 体与 `<domain>+https://` 两种形态', () => {
+    const b64 = expectRoundTripStable(
+      'vless://u@a.com:443?security=tls&type=ws&sni=a.com&ech=AEX+DQ+R8x#n'
+    );
+    expect(b64.tlsSettings?.echConfig).toBe(
+      '-----BEGIN ECH CONFIGS-----\nAEX+DQ+R8x\n-----END ECH CONFIGS-----'
+    );
+    expect(toXrayEchConfigList(b64.tlsSettings?.echConfig)).toBe('AEX+DQ+R8x');
+
+    const dns = expectRoundTripStable(
+      'vless://u@a.com:443?security=tls&type=ws&sni=a.com&ech=cloudflare-ech.com+https://1.1.1.1/dns-query#d'
+    );
+    expect(dns.tlsSettings?.echConfig).toBe('cloudflare-ech.com+https://1.1.1.1/dns-query');
+    expect(toXrayEchConfigList(dns.tlsSettings?.echConfig)).toBe(
+      'cloudflare-ech.com+https://1.1.1.1/dns-query'
+    );
+  });
+
+  it('toXrayEchConfigList：存量里分隔符被解成空白的 `<domain> https://…` 归一回 +', () => {
+    expect(toXrayEchConfigList('cloudflare-ech.com https://1.1.1.1/dns-query')).toBe(
+      'cloudflare-ech.com+https://1.1.1.1/dns-query'
+    );
+    expect(toXrayEchConfigList('https://1.1.1.1/dns-query')).toBe('https://1.1.1.1/dns-query');
+  });
+
+  it('pcs 证书钉扎的 TLS 节点（非 XHTTP / 非 ENC）→ 走 Xray（sing-box 不认钉扎）', () => {
+    const c = parser.parseUrl(
+      'vless://u@self.example.com:443?security=tls&type=tcp&sni=self.example.com&pcs=e3b0c442#p'
+    );
+    expect(c.tlsSettings?.pinnedPeerCertSha256).toBe('e3b0c442');
+    expect(xrayRequirement(c)).toBe('tls-pinned-cert');
+    const t = parser.parseUrl('trojan://pw@self.example.com:443?type=ws&path=%2Fw&pcs=ab12#t');
+    expect(xrayRequirement(t)).toBe('tls-pinned-cert');
   });
 
   it('vmess net 未知（kcp/quic）→ 拒绝；net=raw → tcp（与 vless/trojan 统一口径）', () => {

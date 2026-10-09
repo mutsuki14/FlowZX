@@ -195,6 +195,70 @@ describe('redactDeep — Xray 节点（VLESS Encryption / 自定义 Xray outboun
     expect(out.customSettings.outbound.settings.vnext[0].address).toBe('a.com');
     expect(JSON.stringify(out)).not.toContain('UUID-SECRET');
   });
+
+  it('自定义 Xray outbound：WireGuard secretKey / hysteria auth / mKCP·finalmask seed 无需声明即打码', () => {
+    const xray = (outbound: Record<string, unknown>) => ({
+      id: 'node-x',
+      protocol: 'custom',
+      customSettings: { engine: 'xray', outbound },
+    });
+    const out = redactDeep({
+      servers: [
+        xray({
+          protocol: 'wireguard',
+          settings: {
+            secretKey: 'WG_PRIVATE_KEY_SECRET=',
+            address: ['172.16.0.2/32'],
+            peers: [{ publicKey: 'WG_PEER_PUB', endpoint: 'engage.example.com:2408' }],
+          },
+        }),
+        xray({
+          protocol: 'hysteria',
+          settings: { version: 2, address: 'hy.example.com', port: 443 },
+          streamSettings: {
+            network: 'hysteria',
+            hysteriaSettings: { version: 2, auth: 'HY2_AUTH_SECRET' },
+          },
+        }),
+        xray({
+          protocol: 'vless',
+          settings: { address: 'kcp.example.com', port: 443, id: 'UUID-SECRET' },
+          streamSettings: {
+            network: 'kcp',
+            kcpSettings: { seed: 'KCP_SEED_SECRET' },
+            finalmask: { udp: [{ type: 'mkcp-aes128gcm', settings: { seed: 'FM_SEED_SECRET' } }] },
+          },
+        }),
+      ],
+    }) as any;
+    const text = JSON.stringify(out);
+    for (const secret of [
+      'WG_PRIVATE_KEY_SECRET',
+      'HY2_AUTH_SECRET',
+      'KCP_SEED_SECRET',
+      'FM_SEED_SECRET',
+      'UUID-SECRET',
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+    expect(out.servers[0].customSettings.outbound.settings.secretKey).toBe(REDACTED);
+    expect(out.servers[1].customSettings.outbound.streamSettings.hysteriaSettings.auth).toBe(
+      REDACTED
+    );
+    expect(out.servers[2].customSettings.outbound.streamSettings.kcpSettings.seed).toBe(REDACTED);
+    // 公开/结构字段保留（判形态）：公钥、endpoint、节点结构 id。
+    expect(out.servers[0].customSettings.outbound.settings.peers[0].publicKey).toBe('WG_PEER_PUB');
+    expect(out.servers[0].id).toBe('node-x');
+  });
+
+  it('Xray 专属键只在 engine=xray 子树生效：sing-box 侧同名 auth / seed 不受影响', () => {
+    const out = redactDeep({
+      auth: 'not-a-secret-here',
+      servers: [{ id: 'n', customSettings: { outbound: { type: 'x', seed: 'kept' } } }],
+    }) as any;
+    expect(out.auth).toBe('not-a-secret-here');
+    expect(out.servers[0].customSettings.outbound.seed).toBe('kept');
+  });
 });
 
 describe('redactUrlValue', () => {
@@ -693,6 +757,73 @@ describe('collectNodeIdentifiers — 节点标识符提取 + 类型化占位（P
     const ids = collectNodeIdentifiers({ servers: [{ address: '999.1.1.1' }] });
     expect(ids).toHaveLength(1);
     expect(ids[0].placeholder).toBe('<domain-1>');
+  });
+
+  it('XHTTP：host 与 extra.downloadSettings 的 address / host / serverName 均被收集并在报告文本里打码', () => {
+    const config = {
+      servers: [
+        {
+          address: '104.16.1.1',
+          name: 'xhttp-node',
+          tlsSettings: { serverName: 'sni.example.net' },
+          xhttpSettings: {
+            path: '/x',
+            host: 'front.example.org',
+            extra: {
+              xmux: { maxConcurrency: '16-32' },
+              downloadSettings: {
+                address: '203.0.113.7',
+                port: 443,
+                network: 'xhttp',
+                tlsSettings: { serverName: 'dl-sni.example.net' },
+                xhttpSettings: { host: 'dl.example.org', path: '/d' },
+              },
+            },
+          },
+        },
+      ],
+    };
+    const ids = collectNodeIdentifiers(config);
+    const vals = ids.map((i) => i.value);
+    for (const v of ['front.example.org', '203.0.113.7', 'dl.example.org', 'dl-sni.example.net']) {
+      expect(vals).toContain(v);
+    }
+    // 与 DiagnosticService 同一管线：redactDeep → JSON → redactIdentifiers。
+    const text = redactIdentifiers(JSON.stringify(redactDeep(config)), ids);
+    for (const v of [
+      '104.16.1.1',
+      'sni.example.net',
+      'front.example.org',
+      '203.0.113.7',
+      'dl.example.org',
+      'dl-sni.example.net',
+    ]) {
+      expect(text).not.toContain(v);
+    }
+  });
+
+  it('自定义 Xray outbound 另收 address（vnext / downloadSettings）；sing-box 自定义不收 address', () => {
+    const ids = collectNodeIdentifiers({
+      servers: [
+        {
+          customSettings: {
+            engine: 'xray',
+            outbound: {
+              protocol: 'vless',
+              settings: { vnext: [{ address: 'xray.real.io', port: 443, users: [] }] },
+              streamSettings: {
+                xhttpSettings: { extra: { downloadSettings: { address: '198.51.100.9' } } },
+              },
+            },
+          },
+        },
+        { customSettings: { outbound: { type: 'wireguard', address: '10.0.0.2' } } },
+      ],
+    });
+    const vals = ids.map((i) => i.value);
+    expect(vals).toContain('xray.real.io');
+    expect(vals).toContain('198.51.100.9');
+    expect(vals).not.toContain('10.0.0.2');
   });
 
   it('#57 resolve-ahead：extraAddresses（预解析节点 IP）按 <ip-N> 一并收集、去重', () => {

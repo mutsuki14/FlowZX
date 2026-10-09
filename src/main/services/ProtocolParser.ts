@@ -1055,7 +1055,7 @@ export class ProtocolParser implements IProtocolParser {
       settings.fingerprint = fingerprint;
     }
 
-    // Xray 证书指纹钉扎（Xray 26 移除 allowInsecure 后的替代；sing-box 节点忽略）。
+    // Xray 证书指纹钉扎（Xray 26 移除 allowInsecure 后的替代；sing-box 无此能力 → 节点改由 Xray 承载，见 shared/xray）。
     const pcs = params.get('pcs') || params.get('pinnedPeerCertSha256');
     if (pcs) {
       settings.pinnedPeerCertSha256 = pcs;
@@ -1063,7 +1063,9 @@ export class ProtocolParser implements IProtocolParser {
 
     // ECH（Xray 分享链 ech=）：base64 ECHConfigList → 包成 PEM（sing-box/Xray 两侧 builder 均可消费）；
     // DNS 查询地址形态（https://… / udp://… / domain+https://…）原样保留（Xray 直接消费；sing-box 侧自动 DNS 获取）。
-    const ech = params.get('ech');
+    // URLSearchParams 按表单编码把字面 '+' 解成空格 → 先还原：base64 的 '+' 与 `<domain>+https://` 的分隔符都靠它
+    //（ECH 值本身不含空格；规范生成器编码为 %2B 的不受影响）。
+    const ech = params.get('ech')?.replace(/ /g, '+');
     if (ech) {
       settings.ech = true;
       settings.echConfig = /:\/\//.test(ech)

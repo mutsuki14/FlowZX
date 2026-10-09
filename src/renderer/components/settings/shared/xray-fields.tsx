@@ -17,8 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { FormField, FormMessage } from '@/components/ui/form';
-import type { ServerConfig } from '@/bridge/types';
-import { xrayRequirement, canUseXrayCore, type XrayRequirement } from '@shared/xray';
+import type { XrayRequirement } from '@shared/xray';
 import { InfoTooltip } from './info-tooltip';
 import { FieldGrid, FieldSpan } from './form-layout';
 import { SwitchField } from './switch-field';
@@ -38,6 +37,8 @@ export function xrayReasonLabel(reason: XrayRequirement, t: TFn): string {
       return t('servers.xrayReasonVisionUdp443', 'xtls-rprx-vision-udp443 flow');
     case 'reality-pqv':
       return t('servers.xrayReasonPqv', 'REALITY ML-DSA-65 verification');
+    case 'tls-pinned-cert':
+      return t('servers.xrayReasonPinnedCert', 'certificate SHA-256 pin');
     case 'custom-xray':
       return t('servers.xrayReasonCustom', 'custom Xray outbound JSON');
     case 'forced':
@@ -46,32 +47,8 @@ export function xrayReasonLabel(reason: XrayRequirement, t: TFn): string {
   }
 }
 
-/** 以表单当前值构造最小 ServerConfig，求内核判定（与主进程生成期同一谓词）。 */
-export function formXrayRequirement(v: {
-  protocol: string;
-  network?: string;
-  encryption?: string;
-  flow?: string;
-  security?: string;
-  mldsa65Verify?: string;
-  useXrayCore?: boolean;
-}): XrayRequirement | null {
-  return xrayRequirement({
-    id: '',
-    name: '',
-    address: '',
-    port: 0,
-    protocol: v.protocol as ServerConfig['protocol'],
-    network: (v.network || 'tcp').toLowerCase() as ServerConfig['network'],
-    encryption: v.encryption,
-    flow: v.flow,
-    security: (v.security || '').toLowerCase() as ServerConfig['security'],
-    realitySettings: v.mldsa65Verify
-      ? { publicKey: '', mldsa65Verify: v.mldsa65Verify }
-      : undefined,
-    useXrayCore: v.useXrayCore,
-  });
-}
+// 内核判定 / 可切 Xray 谓词的纯逻辑在 xray-form-logic.ts（jest 可直测），此处 re-export 保持调用方不变。
+export { formXrayRequirement, formCanUseXray } from './xray-form-logic';
 
 export function XhttpFields({ control, t }: { control: AnyControl; t: TFn }) {
   return (
@@ -218,7 +195,7 @@ export function XrayCoreField({
   );
 }
 
-/** 证书 SHA256 指纹（仅 Xray 内核消费）。 */
+/** 证书 SHA256 指纹（仅 Xray 内核消费 → 填写即改由 Xray 承载，见 shared/xray 的 tls-pinned-cert）。 */
 export function PinnedCertField({ control, t }: { control: AnyControl; t: TFn }) {
   return (
     <FormField
@@ -232,7 +209,7 @@ export function PinnedCertField({ control, t }: { control: AnyControl; t: TFn })
             <InfoTooltip
               content={t(
                 'servers.pinnedCertDesc',
-                'Xray 26 removed "allow insecure". For self-signed servers, paste the certificate SHA-256 (hex, comma-separated for several; `xray tls hash --cert cert.pem`).'
+                'Xray 26 removed "allow insecure". For self-signed servers paste the certificate SHA-256 in hex (comma-separate several; get it with `xray tls hash --cert cert.pem`). sing-box cannot pin certificates, so filling this runs the node on the Xray core.'
               )}
             />
           </span>
@@ -285,16 +262,4 @@ export function RealityXrayFields({ control, t }: { control: AnyControl; t: TFn 
       </FieldSpan>
     </>
   );
-}
-
-/** 表单「当前协议是否允许手动切 Xray」：结构化协议 + 无 sing-box 独有附加层（复用 shared 谓词）。 */
-export function formCanUseXray(v: { protocol: string; network?: string }): boolean {
-  return canUseXrayCore({
-    id: '',
-    name: '',
-    address: '',
-    port: 0,
-    protocol: v.protocol as ServerConfig['protocol'],
-    network: (v.network || 'tcp').toLowerCase() as ServerConfig['network'],
-  });
 }

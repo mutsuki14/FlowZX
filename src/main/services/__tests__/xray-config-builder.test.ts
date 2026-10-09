@@ -9,6 +9,8 @@ import {
   parseXrayFailedOutboundTag,
   toXrayEchConfigList,
   toXrayLogLevel,
+  validateShadowsocks2022Password,
+  validateVlessEncryption,
   xrayInboundTag,
   xrayOutboundTag,
 } from '../xray-config-builder';
@@ -16,6 +18,8 @@ import {
 const UUID = '8a502aeb-b677-4fc6-bdbf-0b11435a99ec';
 const ENC = 'mlkem768x25519plus.native.0rtt.QxKoobAnmyilC09GlvGiUCWXF1PrxmC7l2lR72ThGSE';
 const PBK = 'e5pKf8zQy_I1P-H_GcWVubf9EYtWT6gX_6Q5exYFvi0';
+const SS16 = Buffer.alloc(16, 1).toString('base64'); // 2022-blake3-aes-128-gcm 合法密钥
+const SS32 = Buffer.alloc(32, 2).toString('base64');
 
 const vless = (over: Partial<ServerConfig> = {}): ServerConfig =>
   ({
@@ -70,7 +74,7 @@ describe('buildXrayOutbound — VLESS-XHTTP-REALITY-ENC', () => {
           spiderX: '/s',
           mldsa65Verify: 'pq',
         },
-        sockopt: { dialerProxy: 'flowz-dialer' },
+        sockopt: { dialerProxy: 'flowz-dialer', penetrate: true },
       },
     });
   });
@@ -258,10 +262,10 @@ describe('buildXrayOutbound — 其它传输 / 协议', () => {
         protocol: 'shadowsocks',
         address: 'a',
         port: 1,
-        shadowsocksSettings: { method: '2022-blake3-aes-128-gcm', password: 'k', plugin },
+        shadowsocksSettings: { method: '2022-blake3-aes-128-gcm', password: SS16, plugin },
       }) as ServerConfig;
     expect(buildXrayOutbound(ss(), 't').settings).toEqual({
-      servers: [{ address: 'a', port: 1, method: '2022-blake3-aes-128-gcm', password: 'k' }],
+      servers: [{ address: 'a', port: 1, method: '2022-blake3-aes-128-gcm', password: SS16 }],
     });
     expect(() => buildXrayOutbound(ss('obfs-local'), 't')).toThrow(/插件/);
   });
@@ -295,7 +299,7 @@ describe('buildXrayOutbound — 自定义 Xray JSON 透传', () => {
       settings: { vnext: [] },
       streamSettings: {
         network: 'kcp',
-        sockopt: { dialerProxy: 'flowz-dialer', tcpFastOpen: true },
+        sockopt: { dialerProxy: 'flowz-dialer', tcpFastOpen: true, penetrate: true },
       },
       mux: { enabled: true, concurrency: 8 },
     });
@@ -324,6 +328,299 @@ describe('buildXrayOutbound — 自定义 Xray JSON 透传', () => {
         't'
       )
     ).toThrow();
+  });
+});
+
+describe('buildXrayOutbound — dialer 接管覆盖 XHTTP 下行腿 / ECH 查询（不旁路直拨）', () => {
+  const custom = (outbound: Record<string, unknown>): ServerConfig =>
+    ({
+      id: 'c',
+      name: 'c',
+      protocol: 'custom',
+      address: '',
+      port: 0,
+      customSettings: { outbound, engine: 'xray' },
+    }) as ServerConfig;
+  const down = (over: Record<string, unknown> = {}): Record<string, any> => ({
+    address: 'down.example.com',
+    port: 443,
+    network: 'xhttp',
+    ...over,
+  });
+
+  it('有 dialer：sockopt.penetrate=true（下行腿继承主 sockopt）；echConfigList → echSockopt.dialerProxy（含下行腿）', () => {
+    const extra = {
+      downloadSettings: down({
+        security: 'tls',
+        tlsSettings: { serverName: 'down.example.com', echConfigList: 'https://1.1.1.1/dns-query' },
+      }),
+    };
+    const ob = buildXrayOutbound(
+      vless({
+        network: 'xhttp',
+        security: 'tls',
+        xhttpSettings: { path: '/x', extra },
+        tlsSettings: { serverName: 's.com', ech: true, echConfig: 'https://1.1.1.1/dns-query' },
+      }),
+      't',
+      { dialerTag: 'flowz-dialer-via-0' }
+    );
+    const ss = ob.streamSettings as any;
+    expect(ss.sockopt).toEqual({ dialerProxy: 'flowz-dialer-via-0', penetrate: true });
+    expect(ss.tlsSettings).toEqual({
+      serverName: 's.com',
+      echConfigList: 'https://1.1.1.1/dns-query',
+      echSockopt: { dialerProxy: 'flowz-dialer-via-0' },
+    });
+    expect(ss.xhttpSettings.extra.downloadSettings.tlsSettings.echSockopt).toEqual({
+      dialerProxy: 'flowz-dialer-via-0',
+    });
+    // 不污染用户配置对象（结构化 extra 是引用）
+    expect(extra.downloadSettings.tlsSettings.echSockopt).toBeUndefined();
+  });
+
+  it('无 ECH → 不生成 echSockopt；自定义 JSON 的既有 echSockopt 字段保留、dialerProxy 被接管', () => {
+    const plain = buildXrayOutbound(
+      vless({ network: 'xhttp', security: 'tls', tlsSettings: { serverName: 's.com' } }),
+      't',
+      { dialerTag: 'flowz-dialer' }
+    );
+    expect((plain.streamSettings as any).tlsSettings).toEqual({ serverName: 's.com' });
+
+    const ob = buildXrayOutbound(
+      custom({
+        protocol: 'vless',
+        streamSettings: {
+          network: 'xhttp',
+          security: 'tls',
+          tlsSettings: {
+            echConfigList: 'udp://1.1.1.1',
+            echSockopt: { dialerProxy: 'user-chain', mark: 7 },
+          },
+          sockopt: { penetrate: false, mark: 3 },
+        },
+      }),
+      't',
+      { dialerTag: 'flowz-dialer' }
+    );
+    expect(ob.streamSettings).toEqual({
+      network: 'xhttp',
+      security: 'tls',
+      tlsSettings: {
+        echConfigList: 'udp://1.1.1.1',
+        echSockopt: { dialerProxy: 'flowz-dialer', mark: 7 },
+      },
+      sockopt: { penetrate: true, mark: 3, dialerProxy: 'flowz-dialer' },
+    });
+  });
+
+  it('无 dialer（临时测速直拨）：主 sockopt / echSockopt / 两处 downloadSettings.sockopt 的 dialerProxy 全部剥离', () => {
+    const raw = {
+      protocol: 'vless',
+      streamSettings: {
+        network: 'xhttp',
+        security: 'tls',
+        tlsSettings: { echConfigList: 'udp://1.1.1.1', echSockopt: { dialerProxy: 'x', mark: 1 } },
+        sockopt: { dialerProxy: 'x' },
+        xhttpSettings: {
+          downloadSettings: down({ sockopt: { dialerProxy: 'y', tcpFastOpen: true } }),
+          extra: { downloadSettings: down({ sockopt: { dialerProxy: 'z' } }) },
+        },
+      },
+    };
+    const snapshot = JSON.parse(JSON.stringify(raw));
+    const ss = buildXrayOutbound(custom(raw), 't').streamSettings as any;
+    expect(ss.sockopt).toEqual({});
+    expect(ss.tlsSettings.echSockopt).toEqual({ mark: 1 });
+    expect(ss.xhttpSettings.downloadSettings.sockopt).toEqual({ tcpFastOpen: true });
+    expect(ss.xhttpSettings.extra.downloadSettings.sockopt).toEqual({});
+    expect(raw).toEqual(snapshot);
+
+    // 结构化节点：extra 原对象不被剥离改写
+    const extra = { downloadSettings: down({ sockopt: { dialerProxy: 'q' } }) };
+    const ob = buildXrayOutbound(vless({ network: 'xhttp', xhttpSettings: { extra } }), 't');
+    expect((ob.streamSettings as any).xhttpSettings.extra.downloadSettings.sockopt).toEqual({});
+    expect(extra.downloadSettings.sockopt).toEqual({ dialerProxy: 'q' });
+  });
+});
+
+describe('buildXrayOutbound — XHTTP downloadSettings 结构预检（缺 address/port 会让 Xray 首次拨号 panic）', () => {
+  const xh = (extra: Record<string, unknown>) =>
+    vless({ network: 'xhttp', xhttpSettings: { path: '/', extra } });
+  const custom = (xhttpSettings: Record<string, unknown>): ServerConfig =>
+    ({
+      id: 'c',
+      name: 'c',
+      protocol: 'custom',
+      address: '',
+      port: 0,
+      customSettings: {
+        engine: 'xray',
+        outbound: { protocol: 'vless', streamSettings: { network: 'xhttp', xhttpSettings } },
+      },
+    }) as ServerConfig;
+
+  it.each([
+    ['空对象', {}],
+    ['缺 address', { port: 443, network: 'xhttp' }],
+    ['空 address', { address: ' ', port: 443 }],
+    ['缺 port', { address: 'd.com', network: 'xhttp', xhttpSettings: { path: '/d' } }],
+    ['port 为字符串', { address: 'd.com', port: '443' }],
+    ['port 越界 0', { address: 'd.com', port: 0 }],
+    ['port 越界 65536', { address: 'd.com', port: 65536 }],
+    ['port 非整数', { address: 'd.com', port: 1.5 }],
+    ['非对象', 'down.example.com'],
+  ])(
+    '%s → throw（结构化 extra / 自定义 extra / 自定义 xhttpSettings.downloadSettings）',
+    (_n, ds) => {
+      expect(() => buildXrayOutbound(xh({ downloadSettings: ds }), 't')).toThrow(
+        /downloadSettings/
+      );
+      expect(() =>
+        buildXrayOutbound(custom({ extra: { downloadSettings: ds } }), 't', { dialerTag: 'd' })
+      ).toThrow(/downloadSettings/);
+      expect(() => buildXrayOutbound(custom({ downloadSettings: ds }), 't')).toThrow(
+        /downloadSettings/
+      );
+    }
+  );
+
+  it('合法 / 缺省 / null → 通过', () => {
+    const ok = { address: 'd.com', port: 443, network: 'xhttp' };
+    expect(() => buildXrayOutbound(xh({ downloadSettings: ok }), 't')).not.toThrow();
+    expect(() => buildXrayOutbound(xh({ downloadSettings: null }), 't')).not.toThrow();
+    expect(() => buildXrayOutbound(xh({ xmux: {} }), 't')).not.toThrow();
+    expect(() =>
+      buildXrayOutbound(custom({ downloadSettings: { address: '1.2.3.4', port: 65535 } }), 't')
+    ).not.toThrow();
+  });
+});
+
+describe('VLESS encryption 口径（仅 mlkem768x25519plus.* 视为 VLESS Encryption）', () => {
+  const enc = (e: string | undefined, over: Partial<ServerConfig> = {}) =>
+    (buildXrayOutbound(vless({ network: 'xhttp', encryption: e, ...over }), 't').settings as any)
+      .vnext[0].users[0].encryption;
+
+  it('杂值（auto / None / zero / 空）一律下发 none；真 ENC 串 trim 后原样下发', () => {
+    expect(enc('auto')).toBe('none');
+    expect(enc('None')).toBe('none');
+    expect(enc('zero')).toBe('none');
+    expect(enc(undefined)).toBe('none');
+    expect(enc(`  ${ENC}  `)).toBe(ENC);
+  });
+
+  const KEY = 'QxKoobAnmyilC09GlvGiUCWXF1PrxmC7l2lR72ThGSE'; // 43 字符 = 32 字节
+  const MLKEM_KEY = Buffer.alloc(1184, 7).toString('base64url');
+  it.each(
+    [
+      `mlkem768x25519plus.native.0rtt.${KEY}`,
+      `mlkem768x25519plus.xorpub.1rtt.${KEY}`,
+      `mlkem768x25519plus.random.0rtt.${KEY}`,
+      `mlkem768x25519plus.native.0rtt.100-111-1111.75-0-111.50-0-3333.${KEY}`,
+      `mlkem768x25519plus.native.0rtt.${KEY}.${KEY}`,
+      `mlkem768x25519plus.native.0rtt..${KEY}`, // 单个空 padding = 无 padding（Xray 接受）
+      `mlkem768x25519plus.native.1rtt.${MLKEM_KEY}`,
+    ].map((e) => [e.length > 120 ? `${e.slice(0, 60)}…(${e.length})` : e, e])
+  )('合法串通过：%s', (_t, e) => {
+    expect(() => validateVlessEncryption(e)).not.toThrow();
+  });
+
+  it.each([
+    ['无公钥段（Xray -test 直接 panic）', 'mlkem768x25519plus.native.0rtt.'],
+    ['短公钥（Xray -test 直接 panic）', 'mlkem768x25519plus.native.0rtt.abc'],
+    ['仅 padding 无公钥（panic）', 'mlkem768x25519plus.native.0rtt.100-111-1111'],
+    ['段数不足', 'mlkem768x25519plus.native.0rtt'],
+    ['前缀大小写不符', `MLKEM768X25519PLUS.native.0rtt.${KEY}`],
+    ['未知模式', `mlkem768x25519plus.Native.0rtt.${KEY}`],
+    ['未知握手', `mlkem768x25519plus.native.600s.${KEY}`],
+    ['公钥长度不对', `mlkem768x25519plus.native.0rtt.${KEY}x`],
+    ['公钥截短', `mlkem768x25519plus.native.0rtt.${KEY.slice(0, 42)}`],
+    ['公钥带 = 填充', `mlkem768x25519plus.native.0rtt.${KEY}=`],
+    ['公钥含非 url 字符', `mlkem768x25519plus.native.0rtt.+${KEY.slice(1)}`],
+    ['padding 在公钥之后', `mlkem768x25519plus.native.0rtt.${KEY}.100-111-1111`],
+    ['padding 格式错', `mlkem768x25519plus.native.0rtt.abc.${KEY}`],
+    ['首段 padding 过小', `mlkem768x25519plus.native.0rtt.50-10-10.${KEY}`],
+    ['多个空 padding', `mlkem768x25519plus.native.0rtt...${KEY}`],
+  ])('非法串 throw：%s', (_n, e) => {
+    expect(() => validateVlessEncryption(e)).toThrow(/VLESS Encryption/);
+  });
+
+  it('构造期预校验：非法 ENC 节点 buildXrayOutbound throw（只 gate 本节点）', () => {
+    expect(() => enc('mlkem768x25519plus.native.0rtt.abc')).toThrow(/VLESS Encryption/);
+  });
+});
+
+describe('Shadowsocks 2022 密钥预校验', () => {
+  it.each([
+    ['2022-blake3-aes-128-gcm', SS16],
+    ['2022-blake3-aes-128-gcm', SS32], // 更长的密钥被派生截断（sing-shadowsocks 同口径，Xray -test 通过）
+    ['2022-blake3-aes-128-gcm', `${SS16}:${SS16}`],
+    ['2022-blake3-aes-256-gcm', SS32],
+    ['2022-blake3-aes-256-gcm', `${SS32}:${SS32}`],
+    ['2022-blake3-chacha20-poly1305', SS32],
+    ['aes-128-gcm', 'anything'], // 非 2022 方法不校验
+  ])('%s %s → 通过', (m, p) => {
+    expect(() => validateShadowsocks2022Password(m, p)).not.toThrow();
+  });
+
+  it.each([
+    ['2022-blake3-aes-128-gcm', 'k'],
+    ['2022-blake3-aes-128-gcm', SS16.replace(/=+$/, '')], // Go StdEncoding 要求填充
+    ['2022-blake3-aes-128-gcm', Buffer.alloc(16, 0xfb).toString('base64url')],
+    ['2022-blake3-aes-256-gcm', SS16], // 过短 → bad key
+    ['2022-blake3-aes-128-gcm', `${SS16}:`],
+    ['2022-blake3-chacha20-poly1305', `${SS32}:${SS32}`], // chacha20 不支持多段
+    ['2022-blake3-aes-256-gcm', ` ${SS32}`],
+  ])('%s %j → throw', (m, p) => {
+    expect(() => validateShadowsocks2022Password(m, p)).toThrow(/Shadowsocks 2022/);
+  });
+
+  it('构造期预校验：坏密钥 SS2022 节点 buildXrayOutbound throw', () => {
+    expect(() =>
+      buildXrayOutbound(
+        {
+          id: 's',
+          name: 's',
+          protocol: 'shadowsocks',
+          address: 'a',
+          port: 1,
+          useXrayCore: true,
+          shadowsocksSettings: { method: '2022-blake3-aes-256-gcm', password: SS16 },
+        } as ServerConfig,
+        't'
+      )
+    ).toThrow(/Shadowsocks 2022/);
+  });
+});
+
+describe('buildXrayOutbound — sing-box 独有 TLS 选项告警', () => {
+  it('spoof / 非 go 引擎 → 告警（不下发）；go 引擎 / 无 TLS → 不告警', () => {
+    const warns: string[] = [];
+    const w = { warn: (m: string) => warns.push(m) };
+    const ob = buildXrayOutbound(
+      vless({
+        network: 'xhttp',
+        security: 'tls',
+        tlsSettings: { serverName: 's.com', spoofSni: 'decoy.com', spoofMethod: 'wrong-ack' },
+      }),
+      't',
+      w
+    );
+    expect((ob.streamSettings as any).tlsSettings).toEqual({ serverName: 's.com' });
+    buildXrayOutbound(
+      vless({ network: 'xhttp', security: 'tls', tlsSettings: { engine: 'apple' } }),
+      't',
+      w
+    );
+    expect(warns).toHaveLength(2);
+    expect(warns.every((m) => /Xray 内核不支持/.test(m))).toBe(true);
+    buildXrayOutbound(
+      vless({ network: 'xhttp', security: 'tls', tlsSettings: { engine: 'go' } }),
+      't',
+      w
+    );
+    buildXrayOutbound(vless({ network: 'xhttp', security: 'none' }), 't', w);
+    expect(warns).toHaveLength(2);
   });
 });
 

@@ -14,7 +14,7 @@
  *  - HTTP/2(h2) 传输已移除 → 结构化映射拒绝（canUseXrayCore 亦不允许强制）。
  */
 import type { ServerConfig, LogLevel } from '../../shared/types';
-import { isXhttpNetwork } from '../../shared/xray';
+import { isVlessEncryptionEnabled, isXhttpNetwork } from '../../shared/xray';
 
 export type XrayLogLevel = 'debug' | 'info' | 'warning' | 'error' | 'none';
 
@@ -107,9 +107,10 @@ export function toXrayLogLevel(level: LogLevel | undefined): XrayLogLevel {
 export function toXrayEchConfigList(raw: string | undefined): string | null {
   const s = (raw || '').trim();
   if (!s) return null;
-  if (/^(udp|https|h2c|tcp|tls|quic):\/\//i.test(s) || /\+(https|udp|h2c):\/\//i.test(s)) {
-    return s;
-  }
+  if (/^(udp|https|h2c|tcp|tls|quic):\/\//i.test(s)) return s;
+  // `<domain>+https://…`：分隔符 '+' 可能已被表单解码成空白（旧版分享链解析存量）→ 归一回 '+'。
+  if (/[+\s](https|udp|h2c):\/\//i.test(s))
+    return s.replace(/[+\s]+(?=(https|udp|h2c):\/\/)/i, '+');
   if (s.includes('-----BEGIN')) {
     const body = s
       .split(/\r?\n/)
@@ -142,6 +143,110 @@ function splitHostHeader(headers: Record<string, string> | undefined): {
     else rest[k] = v;
   }
   return { host, rest: Object.keys(rest).length > 0 ? rest : undefined };
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * VLESS Encryption 串预校验（镜像 Xray 26 infra/conf/vless.go + encryption.ParsePadding）：
+ *   mlkem768x25519plus.<native|xorpub|random>.<1rtt|0rtt>[.<padding>…].<公钥>[.<公钥>…]
+ * Xray 以「段长 < 20」区分 padding 段（须在公钥之前）与公钥段（base64url 无填充，32 字节 X25519 / 1184 字节 ML-KEM-768）。
+ * 畸形串在 Xray 侧要么让 `xray run -test` 直接 panic（无公钥段，如 `…0rtt.` / `…0rtt.abc`），要么在起 handler 时报
+ * **不带 tag** 的错（padding / 公钥位置错）——无法归因到节点会拖垮全部 Xray 节点，故在此抛错、只 gate 本节点。
+ */
+export function validateVlessEncryption(enc: string): void {
+  const bad = (why: string) => new Error(`VLESS Encryption 参数无效：${why}`);
+  const s = enc.split('.');
+  if (s.length < 4 || s[0] !== 'mlkem768x25519plus') {
+    throw bad('格式应为 mlkem768x25519plus.<模式>.<1rtt|0rtt>.<公钥>');
+  }
+  if (!['native', 'xorpub', 'random'].includes(s[1])) throw bad(`未知模式「${s[1]}」`);
+  if (!['1rtt', '0rtt'].includes(s[2])) throw bad(`未知握手「${s[2]}」`);
+  const rest = s.slice(3);
+  const firstKey = rest.findIndex((r) => r.length >= 20);
+  if (firstKey < 0) throw bad('缺少公钥');
+  for (const k of rest.slice(firstKey)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(k) || ![32, 1184].includes(Buffer.from(k, 'base64url').length)) {
+      throw bad(
+        '公钥须为 base64url 编码的 32 字节（X25519）或 1184 字节（ML-KEM-768），且位于 padding 之后'
+      );
+    }
+  }
+  // padding（公钥前的短段，`.` 连接；空串 = 无 padding）：每段「概率-最小-最大」三个整数，首段 ≥100-35-35，
+  // 长度段（偶数位）最大值之和 ≤ 18+65535。
+  const padding = rest.slice(0, firstKey).join('.');
+  if (!padding) return;
+  let total = 0;
+  padding.split('.').forEach((seg, i) => {
+    const x = seg.split('-');
+    if (x.length < 3 || !x.slice(0, 3).every((v) => /^\d+$/.test(v))) {
+      throw bad(`padding 段「${seg}」格式应为 概率-最小-最大`);
+    }
+    const [p, lo, hi] = x.slice(0, 3).map(Number);
+    if (i === 0 && (p < 100 || lo < 35 || hi < 35)) throw bad('首段 padding 不得小于 100-35-35');
+    if (i % 2 === 0) total += Math.max(lo, hi);
+  });
+  if (total > 18 + 65535) throw bad('padding 总长度超过 65553');
+}
+
+/**
+ * Shadowsocks 2022 密钥预校验（镜像 sing-shadowsocks shadowaead_2022.NewWithPassword，Xray 同用）：`:` 分隔的每段
+ * 须为标准 base64（带填充），解码长度 ≥ 方法密钥长度（aes-128 为 16，其余 32；更长的会被派生截断，可用）；
+ * chacha20-poly1305 不支持多段（EIH）。不合法时 Xray 在起 handler 时报**不带 tag** 的「decode key / bad key」，
+ * 无法归因到节点 → 在此抛错、只 gate 本节点。非 2022 方法不校验。
+ */
+export function validateShadowsocks2022Password(method: string, password: string): void {
+  const m = method.toLowerCase();
+  if (!m.startsWith('2022-')) return;
+  const keyLen = m === '2022-blake3-aes-128-gcm' ? 16 : 32;
+  const parts = password.replace(/[\r\n]/g, '').split(':');
+  if (m === '2022-blake3-chacha20-poly1305' && parts.length > 1) {
+    throw new Error('Shadowsocks 2022（chacha20-poly1305）不支持多段密钥');
+  }
+  for (const p of parts) {
+    if (
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(p) ||
+      p.length % 4 !== 0 ||
+      Buffer.from(p, 'base64').length < keyLen
+    ) {
+      throw new Error(`Shadowsocks 2022 密钥无效：须为 base64 编码的 ${keyLen} 字节密钥`);
+    }
+  }
+}
+
+/** XHTTP 上下行分离的下行腿配置原值（xhttpSettings.downloadSettings / xhttpSettings.extra.downloadSettings）。 */
+function xhttpDownloadSettings(ss: Record<string, unknown>): unknown[] {
+  const x = ss.xhttpSettings;
+  if (!isPlainObject(x)) return [];
+  return [x.downloadSettings, isPlainObject(x.extra) ? x.extra.downloadSettings : undefined];
+}
+
+/**
+ * downloadSettings 结构预检：须含非空 address 与 1..65535 整数 port。缺失时 `xray run -test` 照样通过，但首次拨号
+ * 解引用空 Destination 直接 panic（Xray 源码注释「just panic」）——所有 Xray 节点共用一个 sidecar，一个坏节点会拖垮全部，
+ * 故在此抛错、只 gate 本节点。
+ */
+function validateXhttpDownloadSettings(ss: Record<string, unknown>): void {
+  for (const ds of xhttpDownloadSettings(ss)) {
+    if (ds === undefined || ds === null) continue;
+    const ok =
+      isPlainObject(ds) &&
+      typeof ds.address === 'string' &&
+      ds.address.trim() !== '' &&
+      typeof ds.port === 'number' &&
+      Number.isInteger(ds.port) &&
+      ds.port >= 1 &&
+      ds.port <= 65535;
+    if (!ok) {
+      throw new Error('XHTTP downloadSettings 缺少 address/port（需填写下行服务器地址与端口）');
+    }
+  }
+}
+
+/** 删除对象上的 dialerProxy（对象不存在 / 无此键 → 无操作）。 */
+function dropDialerProxy(o: unknown): void {
+  if (isPlainObject(o)) delete o.dialerProxy;
 }
 
 /** 去掉值为 undefined / 空串 的键（Xray 对空串字段多为「显式设置」语义，保持配置精简与稳定快照）。 */
@@ -258,6 +363,18 @@ function buildStreamSettings(
   } else {
     ss.security = 'none';
   }
+  // sing-box 独有的 TLS 选项（spoof / 系统原生 TLS 引擎）Xray 无对应实现 → 告警后忽略（不静默）。
+  //（TLS 分片另经 sing-box 的 xray-dial-in 路由选项实现，见 xray-bridge。）
+  const t = server.tlsSettings;
+  if (
+    ss.security !== 'none' &&
+    t &&
+    ((t.spoofMethod && t.spoofSni?.trim()) || (t.engine && t.engine !== 'go'))
+  ) {
+    warn(
+      `节点「${server.name}」设置了 TLS 伪装（spoof）或系统 TLS 引擎，Xray 内核不支持这些选项，已忽略。`
+    );
+  }
   return ss;
 }
 
@@ -269,7 +386,12 @@ function buildProtocolSettings(server: ServerConfig): {
   const p = server.protocol.toLowerCase();
   if (p === 'vless') {
     if (!server.uuid?.trim()) throw new Error('VLESS 节点缺少 UUID');
-    const encryption = server.encryption?.trim() || 'none';
+    // 仅真正的 VLESS Encryption 串原样下发（先做语法预校验）；none / 空 / 杂值（auto、None…）一律 none——Xray 对
+    // 非 none 的杂值直接拒收，而 sing-box 时代这些节点是忽略该字段照常可用的。
+    const encryption = isVlessEncryptionEnabled(server.encryption)
+      ? (server.encryption || '').trim()
+      : 'none';
+    if (encryption !== 'none') validateVlessEncryption(encryption);
     return {
       protocol: 'vless',
       settings: {
@@ -317,6 +439,7 @@ function buildProtocolSettings(server: ServerConfig): {
     const ssCfg = server.shadowsocksSettings;
     if (!ssCfg?.method || !ssCfg.password) throw new Error('Shadowsocks 节点缺少加密方法或密码');
     if (ssCfg.plugin) throw new Error('Xray 内核不支持 Shadowsocks 插件');
+    validateShadowsocks2022Password(ssCfg.method, ssCfg.password);
     return {
       protocol: 'shadowsocks',
       settings: {
@@ -336,7 +459,8 @@ function buildProtocolSettings(server: ServerConfig): {
 
 /**
  * 单节点 → Xray outbound。dialerTag 非空时把 streamSettings.sockopt.dialerProxy 接管为 FlowZ 的 dialer
- *（覆盖用户 JSON 里的同名字段，与 sing-box 自定义协议剥离 detour 同理：链路统一由 FlowZ 的 detour 管理）。
+ *（覆盖用户 JSON 里的同名字段，与 sing-box 自定义协议剥离 detour 同理：链路统一由 FlowZ 的 detour 管理），
+ * 并以 sockopt.penetrate / tlsSettings.echSockopt 让 XHTTP 下行腿与 ECH 查询同样经 dialer（绝不旁路直拨）。
  */
 export function buildXrayOutbound(
   server: ServerConfig,
@@ -363,24 +487,40 @@ export function buildXrayOutbound(
     const { protocol, settings } = buildProtocolSettings(server);
     ob = { tag, protocol, settings, streamSettings: buildStreamSettings(server, warn) };
   }
+  if (isPlainObject(ob.streamSettings)) validateXhttpDownloadSettings(ob.streamSettings);
 
+  // 深拷贝后再就地改写：结构化节点的 xhttpSettings.extra 是用户配置对象的引用，不得污染。
+  const stream = isPlainObject(ob.streamSettings)
+    ? (JSON.parse(JSON.stringify(ob.streamSettings)) as Record<string, unknown>)
+    : undefined;
   if (opts.dialerTag) {
-    const ss =
-      ob.streamSettings && typeof ob.streamSettings === 'object' ? { ...ob.streamSettings } : {};
-    const sockopt =
-      ss.sockopt && typeof ss.sockopt === 'object' ? { ...(ss.sockopt as object) } : {};
-    (sockopt as Record<string, unknown>).dialerProxy = opts.dialerTag;
-    ss.sockopt = sockopt;
-    ob.streamSettings = ss;
-  } else if (ob.streamSettings && typeof ob.streamSettings === 'object') {
-    // 无 dialer（临时测速直拨）：用户 JSON 里残留的 dialerProxy 指向不存在的 tag 会致 Xray 拒启 → 剥离。
-    const sockopt = (ob.streamSettings as Record<string, unknown>).sockopt as
-      | Record<string, unknown>
-      | undefined;
-    if (sockopt && 'dialerProxy' in sockopt) {
-      const { dialerProxy: _drop, ...rest } = sockopt;
-      (ob.streamSettings as Record<string, unknown>).sockopt = rest;
+    const ss = stream ?? {};
+    // penetrate：XHTTP 上下行分离的下行腿（downloadSettings）只在 penetrate=true 时继承主 sockopt，否则 Xray 直拨
+    //（绕过 dialer：不走前置代理、不经 sing-box 节点解析器）。对非 XHTTP 传输无副作用。
+    ss.sockopt = {
+      ...(isPlainObject(ss.sockopt) ? ss.sockopt : {}),
+      dialerProxy: opts.dialerTag,
+      penetrate: true,
+    };
+    // ECH 的 DNS 查询（echConfigList 为 DoH 等地址时）走 tlsSettings.echSockopt，同样接管到 dialer（含下行腿）。
+    for (const leg of [ss, ...xhttpDownloadSettings(ss).filter(isPlainObject)]) {
+      const tls = leg.tlsSettings;
+      if (isPlainObject(tls) && tls.echConfigList) {
+        tls.echSockopt = {
+          ...(isPlainObject(tls.echSockopt) ? tls.echSockopt : {}),
+          dialerProxy: opts.dialerTag,
+        };
+      }
     }
+    ob.streamSettings = ss;
+  } else if (stream) {
+    // 无 dialer（临时测速直拨）：用户 JSON 里残留的 dialerProxy（主 sockopt / ECH echSockopt / XHTTP 下行腿）
+    // 指向本配置里不存在的 tag → 剥离。
+    for (const leg of [stream, ...xhttpDownloadSettings(stream).filter(isPlainObject)]) {
+      dropDialerProxy(leg.sockopt);
+      if (isPlainObject(leg.tlsSettings)) dropDialerProxy(leg.tlsSettings.echSockopt);
+    }
+    ob.streamSettings = stream;
   }
   return ob;
 }

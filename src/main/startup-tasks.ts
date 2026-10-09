@@ -51,8 +51,8 @@ export function scheduleStartupTasks(deps: StartupTaskDeps): void {
         logManager.addLog('warn', `启动期落位 staged 内核异常: ${stagedErr}`, 'Main');
       }
 
-      // 上次会话崩溃残留的 Xray sidecar（普通用户进程，PID 文件 + 进程名双重确认后回收）：不回收会占着 xray[.exe]，
-      // 令随后的应用更新覆盖失败。best-effort，绝不阻断启动。
+      // 上次会话崩溃残留的 Xray sidecar 与测速临时 Xray（普通用户进程，PID 文件 + 进程名双重确认后回收，并删残留的
+      // 测速临时配置）：不回收会占着 xray[.exe]，令随后的应用更新覆盖失败。best-effort，绝不阻断启动。
       try {
         await proxyManager?.reapOrphanedXray();
       } catch (xrayErr) {

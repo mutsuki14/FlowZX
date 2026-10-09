@@ -89,9 +89,10 @@ export interface RouteConfigDeps {
   defaultInterface?: string;
   /**
    * Xray sidecar 回环拨号路由（xray-dial-in 入站按 auth_user 钉死）：outbound 缺省 = 前置代理已不可用 → reject
-   *（fail-closed，绝不改直连泄露真实 IP）。缺省/空 = 无 Xray 节点，零注入。
+   *（fail-closed，绝不改直连泄露真实 IP）。tlsFragment = 该用户的拨号流量挂 tls_fragment（切分 Xray 自身的
+   * TLS/REALITY ClientHello，见 xray-bridge）。缺省/空 = 无 Xray 节点，零注入。
    */
-  xrayDialRoutes?: { username: string; outbound?: string }[];
+  xrayDialRoutes?: { username: string; outbound?: string; tlsFragment?: boolean }[];
   /** Xray 内核二进制路径：TUN 下 Xray 自身的旁路连接（如 ECH 的 DoH 查询）按进程直连，防回环。 */
   xrayProcessPath?: string;
 }
@@ -181,6 +182,7 @@ export function buildRouteConfig(
   // A0. Xray sidecar 回环拨号钉死路由（**先于 sniff**：回环拨号目标就是节点服务器，无需嗅探，且须先于一切分流）。
   //   auth_user 精确匹配 → 该用户对应的 direct / 前置代理；兜底规则把 xray-dial-in 的其余流量 reject（凭据外的用户
   //   连不进入站，此为纵深防御）。outbound 缺省 = 前置代理不可用 → reject（不静默改直连）。
+  //   tls_fragment：xray-dial-in 上的内层流量正是 Xray 自身发出的 TLS/REALITY ClientHello，路由级分片即切它（无需 sniff）。
   if (deps.xrayDialRoutes && deps.xrayDialRoutes.length > 0) {
     for (const r of deps.xrayDialRoutes) {
       rules.push(
@@ -190,6 +192,7 @@ export function buildRouteConfig(
               auth_user: [r.username],
               action: 'route',
               outbound: r.outbound,
+              ...(r.tlsFragment ? { tls_fragment: true } : {}),
             }
           : { inbound: ['xray-dial-in'], auth_user: [r.username], action: 'reject' }
       );

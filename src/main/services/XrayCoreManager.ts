@@ -14,9 +14,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import type { LogLevel } from '../../shared/types';
-import type { XrayConfig } from './xray-config-builder';
-import { probeLoopbackPort } from '../utils/loopback-ports';
+import type { XrayConfig, XrayInbound } from './xray-config-builder';
+import { probeSocks5Auth } from '../utils/loopback-ports';
 import { writeFileAtomic } from '../utils/atomic-write';
+import { system32 } from '../utils/win-system32';
 
 type Log = (level: LogLevel, message: string) => void;
 
@@ -28,7 +29,8 @@ export interface XrayCoreManagerDeps {
   log: Log;
   spawnFn?: typeof nodeSpawn;
   execFileFn?: typeof nodeExecFile;
-  probePort?: (port: number) => Promise<boolean>;
+  /** 就绪探测：首个入站端口上是否是持有该凭据的 SOCKS5 服务（缺省 = RFC 1928/1929 握手）。 */
+  probeReady?: (port: number, user?: string, pass?: string) => Promise<boolean>;
   /** 就绪等待上限（ms）。 */
   readyTimeoutMs?: number;
 }
@@ -73,13 +75,13 @@ export class XrayCoreManager {
 
   private readonly spawnFn: typeof nodeSpawn;
   private readonly execFileFn: typeof nodeExecFile;
-  private readonly probePort: (port: number) => Promise<boolean>;
+  private readonly probeReady: (port: number, user?: string, pass?: string) => Promise<boolean>;
   private readonly readyTimeoutMs: number;
 
   constructor(private readonly deps: XrayCoreManagerDeps) {
     this.spawnFn = deps.spawnFn ?? nodeSpawn;
     this.execFileFn = deps.execFileFn ?? nodeExecFile;
-    this.probePort = deps.probePort ?? ((p) => probeLoopbackPort(p));
+    this.probeReady = deps.probeReady ?? ((p, u, pw) => probeSocks5Auth(p, u, pw));
     this.readyTimeoutMs = deps.readyTimeoutMs ?? 8000;
   }
 
@@ -155,7 +157,7 @@ export class XrayCoreManager {
   }
 
   /**
-   * 写配置（0600，含节点凭据）→ 起 Xray → 等首个入站端口可连。失败 throw（调用方决定降级/终止）。
+   * 写配置（0600，含节点凭据）→ 起 Xray → 等首个入站 SOCKS5 凭据握手通过。失败 throw（调用方决定降级/终止）。
    * 已有在跑实例先停（配置整体替换，无热加载）。
    */
   async start(config: XrayConfig): Promise<void> {
@@ -189,6 +191,10 @@ export class XrayCoreManager {
     };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
+    let stdioClosed = false;
+    child.once('close', () => {
+      stdioClosed = true;
+    });
     child.on('exit', (code, signal) => this.handleExit(child, code, signal));
     child.on('error', (err) => this.deps.log('error', `[xray] 进程错误: ${err.message}`));
     if (child.pid) {
@@ -197,13 +203,30 @@ export class XrayCoreManager {
         .catch(() => {});
     }
 
-    const firstPort = config.inbounds[0]?.port;
+    // 就绪判据须证明是**本子进程**在服务：首个入站的 SOCKS5 凭据握手（裸 TCP 连通会被抢先监听该端口的外部进程骗过，
+    // 随后 Xray bind 失败退出却已被当成「就绪」→ 走崩溃自愈原配置重拉，调用方的端口重分配永远轮不到）。
+    const first = config.inbounds[0];
+    const firstPort = first?.port;
+    const account = firstAccount(first);
     const deadline = Date.now() + this.readyTimeoutMs;
     while (Date.now() < deadline) {
       if (child.exitCode !== null || child.killed) {
+        // 退出原因（如 bind: address already in use）的输出可能晚于 exit 到达：等 stdio 关闭（封顶 500ms）再取尾巴，
+        // 调用方据此判端口冲突并重分配。
+        if (!stdioClosed) {
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 500);
+            child.once('close', () => {
+              clearTimeout(t);
+              resolve();
+            });
+          });
+        }
         throw new Error(`Xray 内核启动失败（退出码 ${child.exitCode}）：${lastLines(tail)}`);
       }
-      if (!firstPort || (await this.probePort(firstPort))) {
+      if (!firstPort || (await this.probeReady(firstPort, account?.user, account?.pass))) {
+        // 探测期间子进程已退出 → 不算就绪（回到循环顶部按启动失败收口）。
+        if (child.exitCode !== null || child.killed) continue;
         this.readyChildren.add(child);
         this.deps.log(
           'info',
@@ -289,7 +312,8 @@ export class XrayCoreManager {
         }
       });
     }
-    await fs.unlink(this.deps.pidPath).catch(() => {});
+    // 等退出期间可能已有新一轮 start 起了新进程并写了 PID 文件（void 调用的停止与紧随的起核交错）→ 那份不归本次删。
+    if (!this.proc) await fs.unlink(this.deps.pidPath).catch(() => {});
   }
 
   /**
@@ -324,7 +348,7 @@ export class XrayCoreManager {
     return new Promise((resolve) => {
       if (process.platform === 'win32') {
         this.execFileFn(
-          'tasklist',
+          system32('tasklist.exe'),
           ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
           { timeout: 5000, windowsHide: true },
           (err, stdout) => {
@@ -346,6 +370,17 @@ export class XrayCoreManager {
       }
     });
   }
+}
+
+/** 入站的首个 socks 账号（buildXrayConfig 恒为 auth:'password' + 单账号）；无账号 → undefined（无认证握手）。 */
+function firstAccount(
+  inbound: XrayInbound | undefined
+): { user: string; pass: string } | undefined {
+  const accounts = inbound?.settings?.accounts;
+  const a = Array.isArray(accounts) ? (accounts[0] as { user?: unknown; pass?: unknown }) : null;
+  return a && typeof a.user === 'string' && typeof a.pass === 'string'
+    ? { user: a.user, pass: a.pass }
+    : undefined;
 }
 
 function sleep(ms: number): Promise<void> {

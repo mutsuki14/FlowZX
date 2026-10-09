@@ -40,8 +40,12 @@ export const SECRET_KEYS: ReadonlySet<string> = new Set([
   'userkey', // snell 多用户服务器鉴权 key（一等公民 snellSettings.userkey / 自定义 JSON 兜底）
 ]);
 
-/** Xray 自定义 outbound 子树内额外打码的键（归一化后）：VLESS/VMess 用户 id、socks/http 的 pass。 */
-const XRAY_SECRET_KEYS: readonly string[] = ['id', 'pass'];
+/**
+ * Xray 自定义 outbound 子树内额外打码的键（归一化后）：VLESS/VMess 用户 id、socks/http 的 pass、
+ * WireGuard 私钥 secretKey、hysteria 的 auth（hysteriaSettings.auth）、mKCP / finalmask 的 seed。
+ * 仅作用于 engine='xray' 的 customSettings 子树，不影响全局结构键。
+ */
+const XRAY_SECRET_KEYS: readonly string[] = ['id', 'pass', 'secretkey', 'auth', 'seed'];
 
 /**
  * VLESS Encryption 串脱敏：保留握手方案前缀（mlkem768x25519plus.native.0rtt 之类，供判形态），打码密钥段。
@@ -94,7 +98,8 @@ export function redactDeep(value: unknown, extraSecretKeys?: ReadonlySet<string>
 
     // custom 协议：outbound 内按该节点声明的 secretKeys 额外打码（归一化后并入黑名单传给子层）。
     // Xray 自定义 outbound（engine='xray'）的凭据键名与 sing-box 不同（VLESS/VMess 用户 id、socks/http 的 pass、
-    // VLESS Encryption 的 encryption）→ 无需用户声明即叠加。'id' 不能进全局黑名单（ServerConfig.id 等结构 id 要保留）。
+    // WireGuard secretKey、hysteria auth、mKCP seed、VLESS Encryption 的 encryption）→ 无需用户声明即叠加。
+    // 'id' 不能进全局黑名单（ServerConfig.id 等结构 id 要保留）。
     let childExtra = extraSecretKeys;
     const cs = src.customSettings as { secretKeys?: unknown; engine?: unknown } | undefined;
     if (cs && (Array.isArray(cs.secretKeys) || cs.engine === 'xray')) {
@@ -153,7 +158,8 @@ type ServerLike = {
   shadowTlsSettings?: { sni?: unknown } | null;
   tailscaleSettings?: { hostname?: unknown; exitNode?: unknown } | null;
   httpSettings?: { host?: unknown; headers?: Record<string, unknown> | null } | null;
-  customSettings?: { outbound?: Record<string, unknown> | null } | null;
+  xhttpSettings?: { host?: unknown; extra?: unknown } | null;
+  customSettings?: { outbound?: Record<string, unknown> | null; engine?: unknown } | null;
 };
 
 /** 主机类键名（归一：小写去 _）：custom 透传 outbound 里这些键的字符串值是节点身份。 */
@@ -166,20 +172,31 @@ const HOST_KEY_SET: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Xray JSON 子树（engine='xray' 的 outbound、XHTTP extra）的主机类键：另含 Xray 的服务端地址键 `address`
+ *（vnext[].address / servers[].address / 扁平 settings.address / downloadSettings.address——上下行分离的
+ * 下行常是 CDN 背后的真实源站）。不并入 HOST_KEY_SET：sing-box 侧 JSON 的 address 多为本地接口地址。
+ */
+const XRAY_HOST_KEY_SET: ReadonlySet<string> = new Set([...HOST_KEY_SET, 'address']);
+
+/**
  * 递归收集对象里主机类键的字符串值。custom 协议（raw-JSON 透传）的 outbound 原样下发到生成 config，
  * 身份字段可能嵌套（如 `tls.server_name` 伪装 SNI、`transport.headers.Host`），只扫顶层会漏 → 全深度遍历。
  */
-function collectHostsDeep(obj: unknown, add: (v: unknown) => void): void {
+function collectHostsDeep(
+  obj: unknown,
+  add: (v: unknown) => void,
+  keys: ReadonlySet<string> = HOST_KEY_SET
+): void {
   if (Array.isArray(obj)) {
-    for (const x of obj) collectHostsDeep(x, add);
+    for (const x of obj) collectHostsDeep(x, add, keys);
     return;
   }
   if (!obj || typeof obj !== 'object') return;
   for (const [k, v] of Object.entries(obj)) {
     if (typeof v === 'string') {
-      if (HOST_KEY_SET.has(k.toLowerCase().replace(/_/g, ''))) add(v);
+      if (keys.has(k.toLowerCase().replace(/_/g, ''))) add(v);
     } else if (v && typeof v === 'object') {
-      collectHostsDeep(v, add);
+      collectHostsDeep(v, add, keys);
     }
   }
 }
@@ -199,7 +216,8 @@ function addHostHeaders(headers: unknown, add: (v: unknown) => void): void {
 
 /**
  * 从 config.servers 收集本用户节点标识符 + 稳定占位符。涵盖一切会进生成 config / 日志的节点身份字段：
- * 地址/SNI/WS-Host/ShadowTLS-sni/Tailscale-hostname·exitNode/HTTP-host[]·headers.Host/custom outbound 的 server·sni·host。
+ * 地址/SNI/WS-Host/ShadowTLS-sni/Tailscale-hostname·exitNode/HTTP-host[]·headers.Host/XHTTP host·extra/
+ * custom outbound 的 server·sni·host（Xray outbound 另含 address）。
  * 地址类：域名→`<domain-N>`、IP→`<ip-N>`（保留"域名 vs IP"诊断信号）；节点名→`<node-N>`。去重（同值一占位）。
  * 节点名 <4 字符跳过（防误伤日志普通词）；地址类不设长度阈值（靠 redactIdentifiers 的主机边界锚定防误替）。
  */
@@ -246,8 +264,17 @@ export function collectNodeIdentifiers(
     add(s?.tailscaleSettings?.exitNode, 'addr');
     const httpHost = s?.httpSettings?.host;
     if (Array.isArray(httpHost)) for (const h of httpHost) add(h, 'addr');
-    // custom 透传 outbound 原样下发 → 递归收主机类键（含嵌套 tls.server_name / transport.headers.Host）
-    collectHostsDeep(s?.customSettings?.outbound, (v) => add(v, 'addr'));
+    // XHTTP：host 同 ws Host（伪装域名）；extra 是原样下发的 Xray JSON（downloadSettings 的 address / host /
+    // serverName 等可能是另一台真实服务器）→ 按 Xray 键集递归收。
+    add(s?.xhttpSettings?.host, 'addr');
+    collectHostsDeep(s?.xhttpSettings?.extra, (v) => add(v, 'addr'), XRAY_HOST_KEY_SET);
+    // custom 透传 outbound 原样下发 → 递归收主机类键（含嵌套 tls.server_name / transport.headers.Host）；
+    // Xray outbound 另收 address（vnext / servers / downloadSettings）。
+    collectHostsDeep(
+      s?.customSettings?.outbound,
+      (v) => add(v, 'addr'),
+      s?.customSettings?.engine === 'xray' ? XRAY_HOST_KEY_SET : HOST_KEY_SET
+    );
     add(s?.name, 'name');
   }
   // resolve-ahead 预解析得到的节点 IP（在 config.servers 之外）：按 IP 身份打码，杜绝真实节点 IP 漏进报告。
