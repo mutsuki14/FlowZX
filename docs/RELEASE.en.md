@@ -42,7 +42,8 @@ This document describes how to ship a new FlowZ release. The single trigger for 
    On a `v*` tag push, `release.yml`:
    - runs `npm run package:<platform>` in parallel on `windows-2022` / `macos-14` / `ubuntu-latest`;
    - fetches the core and dashboard at build time (see "Build-time external artifacts"); on macOS it also packs both the arm64 and x64 `.app` into DMGs;
-   - collects each platform's artifacts, generates Release Notes, and creates the GitHub Release via `softprops/action-gh-release`, uploading all installers.
+   - collects each platform's artifacts and publishes the GitHub Release (not a draft) via `softprops/action-gh-release`, uploading all installers;
+     the body comes from `docs/releases/v<version>.md` when present, followed by GitHub's auto-generated Release Notes.
 
 5. **Verify the Release**
 
@@ -65,7 +66,7 @@ The core and dashboard are **no longer committed to the repo**; they are fetched
 
 | Script | Fetches |
 |--------|---------|
-| `fetch:core` | sing-box core (`coreArchiveSha256` verifies the archive == official release digest, zero post-processing) |
+| `fetch:core` | sing-box core (`coreArchiveSha256` verifies the archive == official release digest, zero post-processing) + Xray core (verified by both `xrayArchiveSha256` and `xrayBinarySha256`) |
 | `fetch:cronet` | cronet library (dlopen external lib on Windows/Linux; statically linked on macOS, not needed) |
 | `fetch:dashboard` | clash dashboard static assets |
 

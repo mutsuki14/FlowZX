@@ -42,7 +42,8 @@
    推送 `v*` tag 后，`release.yml` 自动：
    - 在 `windows-2022` / `macos-14` / `ubuntu-latest` 三平台并行 `npm run package:<platform>`；
    - 构建期拉取内核与面板（见下「构建期外部产物」），mac 额外把 arm64/x64 两份 `.app` 打成 DMG；
-   - 汇总各平台产物，生成 Release Notes，经 `softprops/action-gh-release` 创建 GitHub Release 并上传全部安装包。
+   - 汇总各平台产物，经 `softprops/action-gh-release` 直接发布 GitHub Release（非 draft）并上传全部安装包；
+     正文取 `docs/releases/v<版本>.md`（存在时），其后接 GitHub 自动生成的 Release Notes。
 
 5. **检查 Release**
 
@@ -65,7 +66,7 @@ npm run dist:linux        # Linux（AppImage + deb，x64）
 
 | 脚本 | 拉取内容 |
 |------|----------|
-| `fetch:core` | sing-box 内核（`coreArchiveSha256` 校验压缩包 = 官方 release digest，零后处理） |
+| `fetch:core` | sing-box 内核（`coreArchiveSha256` 校验压缩包 = 官方 release digest，零后处理）+ Xray 内核（`xrayArchiveSha256` / `xrayBinarySha256` 双校验） |
 | `fetch:cronet` | cronet 库（Windows/Linux dlopen 外部库；macOS 静态编入不需要） |
 | `fetch:dashboard` | clash 面板静态资源 |
 
