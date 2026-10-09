@@ -30,6 +30,7 @@ import { api } from '@/ipc/api-client';
 import { cn } from '@/lib/utils';
 import type { ServerConfig, ImportParseResult } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
+import { isXrayCustomNode } from '../../../shared/xray';
 
 interface LocalImportDialogProps {
   open: boolean;
@@ -131,9 +132,11 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
     setIsImporting(true);
     try {
       let added = 0;
+      let droppedChains: string[] = [];
       if (nodes.length > 0) {
         const r = await api.server.addBulk(nodes);
         added = r.added;
+        droppedChains = r.droppedChains ?? [];
       }
       let addedSubs = 0;
       for (const s of subs) {
@@ -158,12 +161,24 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
         })
       );
       // 用实际将导入的节点统计（用户可能在预览里删过 custom 节点），不用解析时的固定值。
-      const unsupported = nodes.filter((n) => n.protocol === 'custom').length;
+      // Xray 自定义节点（Xray JSON 透传）由 Xray 内核承载，不算「不支持」。
+      const unsupported = nodes.filter(
+        (n) => n.protocol === 'custom' && !isXrayCustomNode(n)
+      ).length;
       if (unsupported > 0) {
         toast.warning(
           t('localImport.resultUnsupported', {
             defaultValue: '{{count}} node(s) use protocols unsupported by the core and are dimmed',
             count: unsupported,
+          })
+        );
+      }
+      if (droppedChains.length > 0) {
+        // 链式前置节点在预览里被删 → 该链未保留（节点直连服务器），明确告知而非静默。
+        toast.warning(
+          t('localImport.chainDropped', {
+            defaultValue: 'Front proxy not imported, chain removed (connects directly): {{names}}',
+            names: droppedChains.join(', '),
           })
         );
       }
@@ -319,7 +334,12 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
                     <Badge variant="outline" className="shrink-0 text-xs">
                       {node.protocol.toUpperCase()}
                     </Badge>
-                    {node.protocol === 'custom' && (
+                    {isXrayCustomNode(node) && (
+                      <Badge variant="secondary" className="shrink-0 text-xs">
+                        Xray
+                      </Badge>
+                    )}
+                    {node.protocol === 'custom' && !isXrayCustomNode(node) && (
                       <Badge
                         variant="destructive"
                         className="shrink-0 text-xs"

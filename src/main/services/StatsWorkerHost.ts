@@ -102,6 +102,12 @@ export interface StatsWorkerHostOptions {
    * （connectionsStream = aggregate||detail 有订阅；detail = detail 有订阅）。无订阅者 → 逐级停机。
    */
   hasSubscribers: (topic: StatsTopic) => boolean;
+  /**
+   * 本会话有 Xray 回环拨号（xray-dial-in）时为 true。Xray 节点的字节在 sing-box 里过两遍，worker 靠 Connections 流
+   * 识别回环连接并从 Status 速率/总量里扣除——故此时只要有 'stats' 订阅者（全局状态栏）就须开上游 Connections 流，
+   * 否则离开首页/连接页后速率翻倍。无 Xray 节点（false/缺省）维持原按需停流省 CPU。
+   */
+  xrayDialInActive?: () => boolean;
   /** 取运行期管理 API 端点（核未起返回 null → worker 不开流）。 */
   getEndpoint: () => StatsApiEndpoint | null;
   /** 可选日志钩子（接 logManager）。 */
@@ -191,7 +197,9 @@ export class StatsWorkerHost implements StatsHost {
    */
   syncDemand(): void {
     const connectionsStream =
-      this.opts.hasSubscribers('aggregate') || this.opts.hasSubscribers('detail');
+      this.opts.hasSubscribers('aggregate') ||
+      this.opts.hasSubscribers('detail') ||
+      (this.opts.hasSubscribers('stats') && this.opts.xrayDialInActive?.() === true);
     const detail = this.opts.hasSubscribers('detail');
     const prev = this.lastDemandSent;
     if (!prev || prev.connectionsStream !== connectionsStream || prev.detail !== detail) {

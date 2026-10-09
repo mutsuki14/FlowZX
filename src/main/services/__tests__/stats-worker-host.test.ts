@@ -67,7 +67,7 @@ const SAMPLE_AGG: ConnectionsAggregate = {
   at: 123,
 };
 
-function makeHost() {
+function makeHost(opts: { xrayDialInActive?: () => boolean } = {}) {
   const onStats = jest.fn();
   const onAggregate = jest.fn();
   const onDetail = jest.fn();
@@ -82,6 +82,7 @@ function makeHost() {
     isUiActive: () => state.active,
     hasSubscribers: (topic) => subs[topic],
     getEndpoint: () => state.endpoint,
+    ...opts,
   });
   return { host, onStats, onAggregate, onDetail, state, subs };
 }
@@ -264,6 +265,38 @@ describe('StatsWorkerHost demand 由订阅集派生 (batch3 §3.7)', () => {
 
     // detail 也退订 → {stream:false, detail:false}
     subs.detail = false;
+    host.syncDemand();
+    expect(w.postMessage).toHaveBeenCalledWith({
+      type: 'setDemand',
+      connectionsStream: false,
+      detail: false,
+    });
+  });
+
+  it('有 Xray 回环拨号时，仅 stats 订阅（全局状态栏）也开 Connections 流（扣除回环重复字节）；无 Xray 维持停流', () => {
+    let xray = false;
+    const { host, subs } = makeHost({ xrayDialInActive: () => xray });
+    host.resubscribe();
+    const w = lastWorker();
+    subs.stats = true;
+    w.emit('message', { type: 'stats', payload: SAMPLE_STATS });
+    expect(w.postMessage).toHaveBeenCalledWith({
+      type: 'setDemand',
+      connectionsStream: false,
+      detail: false,
+    });
+    w.postMessage.mockClear();
+
+    xray = true; // Xray sidecar 起来：下一个 status 帧惰性同步即开流
+    w.emit('message', { type: 'stats', payload: SAMPLE_STATS });
+    expect(w.postMessage).toHaveBeenCalledWith({
+      type: 'setDemand',
+      connectionsStream: true,
+      detail: false,
+    });
+    w.postMessage.mockClear();
+
+    subs.stats = false; // 无任何订阅者（窗口隐藏）→ 停流
     host.syncDemand();
     expect(w.postMessage).toHaveBeenCalledWith({
       type: 'setDemand',

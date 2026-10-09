@@ -1659,6 +1659,7 @@
     "importing": "匯入中...",
     "submit": "匯入 {{count}} 項",
     "resultOk": "已匯入 {{imported}} 個節點、{{subs}} 個訂閱",
+    "chainDropped": "前置節點未匯入，已移除鏈式代理（將直連伺服器）：{{names}}",
     "resultUnsupported": "其中 {{count}} 個協定目前核心不支援，已變灰",
     "resultSkipped": "{{count}} 項解析失敗已略過",
     "errFormat": "無法辨識檔案格式，請確認是 sing-box / Xray / Clash 設定或有效的分享連結",

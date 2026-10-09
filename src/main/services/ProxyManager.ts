@@ -4258,6 +4258,16 @@ done
     }
   }
 
+  /** 本会话是否有 Xray 回环拨号入站（xray-dial-in）在用：stats 据此保持 Connections 流以扣除回环重复计入的字节。 */
+  hasXrayDialIn(): boolean {
+    return (
+      this.xrayPrepared &&
+      !!this.xrayBridge &&
+      this.xrayBridge.dialInbound.port > 0 &&
+      this.xrayRunningNodes > 0
+    );
+  }
+
   /** Xray 内核状态（设置页内核卡 / 诊断报告）。 */
   async getXrayStatus(): Promise<{
     available: boolean;
@@ -7558,7 +7568,10 @@ rm -f "$STOPFLAG"
     // 场景 B：TUN 自动重启（非交互、无法弹引导框）因提权助手被系统「后台活动」关闭而终态失败 →
     // 桌面通知引导用户恢复（native Notification 无窗口依赖，托盘态/窗口关闭也能送达）。
     await this.maybeNotifyHelperBackgroundDisabled();
-    await this.stopXraySidecar().catch(() => {}); // sing-box 不再拉起 → Xray sidecar 无主，回收
+    // sing-box 不再拉起 → Xray sidecar 无主，回收。但须在上方 await 之后**同步**判归属：若期间已有更新的
+    // start/stop/restart 在飞（lifecycleDepth>0），sidecar 已属接管方（或即将被其替换）→ 不动；depth=0 时才回收
+    //（含「接管方已早早失败退出、本腿随后又起了自己的 Xray 再失败」的孤儿情形——start() 的 timeline 守卫漏掉它）。
+    if (this.lifecycleDepth === 0) await this.stopXraySidecar().catch(() => {});
     this.cleanup();
   }
 

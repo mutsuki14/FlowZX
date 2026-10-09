@@ -215,32 +215,44 @@ export function validateShadowsocks2022Password(method: string, password: string
   }
 }
 
-/** XHTTP 上下行分离的下行腿配置原值（xhttpSettings.downloadSettings / xhttpSettings.extra.downloadSettings）。 */
+/** XHTTP 传输块：xhttpSettings 优先，缺省时 Xray 仍认旧名 splithttpSettings（StreamConfig.Build 同口径）。 */
+function xhttpTransportSettings(ss: Record<string, unknown>): Record<string, unknown> | null {
+  const x = ss.xhttpSettings ?? ss.splithttpSettings;
+  return isPlainObject(x) ? x : null;
+}
+
+/** XHTTP 上下行分离的下行腿配置原值（<xhttp>.downloadSettings / <xhttp>.extra.downloadSettings）。 */
 function xhttpDownloadSettings(ss: Record<string, unknown>): unknown[] {
-  const x = ss.xhttpSettings;
-  if (!isPlainObject(x)) return [];
+  const x = xhttpTransportSettings(ss);
+  if (!x) return [];
   return [x.downloadSettings, isPlainObject(x.extra) ? x.extra.downloadSettings : undefined];
 }
 
 /**
- * downloadSettings 结构预检：须含非空 address 与 1..65535 整数 port。缺失时 `xray run -test` 照样通过，但首次拨号
- * 解引用空 Destination 直接 panic（Xray 源码注释「just panic」）——所有 Xray 节点共用一个 sidecar，一个坏节点会拖垮全部，
- * 故在此抛错、只 gate 本节点。
+ * downloadSettings 结构预检：须含非空 address、1..65535 整数 port，且 network 为 xhttp/splithttp。`xray run -test`
+ * 对这些缺失照样放行，但首次拨号即 panic（缺 address：解引用空 Destination，源码注释「just panic」；network 非 XHTTP：
+ * 下行腿对 *splithttp.Config 做不带 ok 的类型断言）——所有 Xray 节点共用一个 sidecar，一个坏节点会拖垮全部，故在此抛错、
+ * 只 gate 本节点。只校验生效的那条：有 extra 时 Xray 以 extra 整体替换（外层 downloadSettings 被忽略）。
  */
 function validateXhttpDownloadSettings(ss: Record<string, unknown>): void {
-  for (const ds of xhttpDownloadSettings(ss)) {
-    if (ds === undefined || ds === null) continue;
-    const ok =
-      isPlainObject(ds) &&
-      typeof ds.address === 'string' &&
-      ds.address.trim() !== '' &&
-      typeof ds.port === 'number' &&
-      Number.isInteger(ds.port) &&
-      ds.port >= 1 &&
-      ds.port <= 65535;
-    if (!ok) {
-      throw new Error('XHTTP downloadSettings 缺少 address/port（需填写下行服务器地址与端口）');
-    }
+  const x = xhttpTransportSettings(ss);
+  if (!x) return;
+  const ds = isPlainObject(x.extra) ? x.extra.downloadSettings : x.downloadSettings;
+  if (ds === undefined || ds === null) return;
+  const ok =
+    isPlainObject(ds) &&
+    typeof ds.address === 'string' &&
+    ds.address.trim() !== '' &&
+    typeof ds.port === 'number' &&
+    Number.isInteger(ds.port) &&
+    ds.port >= 1 &&
+    ds.port <= 65535 &&
+    typeof ds.network === 'string' &&
+    isXhttpNetwork(ds.network);
+  if (!ok) {
+    throw new Error(
+      'XHTTP downloadSettings 缺少 address/port 或 network 不是 xhttp（需填写下行服务器地址、端口，network 为 xhttp）'
+    );
   }
 }
 

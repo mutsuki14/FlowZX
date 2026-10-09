@@ -1659,6 +1659,7 @@
     "importing": "导入中...",
     "submit": "导入 {{count}} 项",
     "resultOk": "已导入 {{imported}} 个节点、{{subs}} 个订阅",
+    "chainDropped": "前置节点未导入，已移除链式代理（将直连服务器）：{{names}}",
     "resultUnsupported": "其中 {{count}} 个协议当前内核不支持，已置灰",
     "resultSkipped": "{{count}} 项解析失败已跳过",
     "errFormat": "无法识别文件格式，请确认是 sing-box / Xray / Clash 配置或有效的分享链接",

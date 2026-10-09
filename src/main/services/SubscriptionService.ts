@@ -1359,6 +1359,16 @@ export class SubscriptionService {
       if (isServerComplete(n) && portOk && nameOk) nodes.push(n);
       else failed++;
     }
+    // 链式前置（Xray JSON 的 dialerProxy / proxySettings 映射成的 detour，指向批内解析期 id）没过 gate → 断链并告警，
+    // 否则落盘成悬空 detour、运行时静默直连服务器。
+    const candidateIds = new Set(candidates.map((c) => c.id));
+    const keptIds = new Set(nodes.map((n) => n.id));
+    for (const n of nodes) {
+      if (n.detour && candidateIds.has(n.detour) && !keptIds.has(n.detour)) {
+        n.detour = undefined;
+        warnings.push(`节点「${n.name}」的链式前置节点未通过校验，该链未保留（将直连服务器）`);
+      }
+    }
 
     return {
       nodes,

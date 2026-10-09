@@ -223,6 +223,17 @@ describe('Xray sidecar 随 sing-box 终态回收', () => {
     expectDisarmed(svc, xray);
   });
 
+  it('放弃自动重启时已有更新的 start 在飞（lifecycleDepth>0）→ sidecar 属接管方，不停', async () => {
+    const xray = fakeXray();
+    const svc = makeSvc(xray);
+    arm(svc);
+    svc.maybeNotifyHelperBackgroundDisabled = jest.fn(async () => {});
+    svc.lifecycleDepth = 1; // 用户新起的 start 正在飞，已 prepare/起了自己的 Xray
+    await svc.giveUpAutoRestart('boom');
+    expect(xray.stop).not.toHaveBeenCalled();
+    expect(svc.xrayBridge).not.toBeNull();
+  });
+
   it('用户中止自动重启 → 停 sidecar', () => {
     const xray = fakeXray();
     const svc = makeSvc(xray);

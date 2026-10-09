@@ -1700,6 +1700,8 @@ if (gotTheLock) {
       isUiActive: isUiBroadcastActive,
       // demand 源（取代 isUiActive）：某 topic 是否有渲染端订阅者。
       hasSubscribers: (topic) => statsSubscriptionRegistry.hasSubscribers(topic),
+      // 有 Xray 回环拨号时状态栏也需 Connections 流（扣除回环重复计入的字节，见 StatsWorkerHostOptions）。
+      xrayDialInActive: () => proxyManager?.hasXrayDialIn() ?? false,
       getEndpoint: () => proxyManager?.getStatsApiEndpoint() ?? null,
       log: (level, message) => logManager.addLog(level, message, 'StatsWorker'),
     };

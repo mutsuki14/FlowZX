@@ -1659,6 +1659,7 @@
     "importing": "Importing...",
     "submit": "Import {{count}} item(s)",
     "resultOk": "Imported {{imported}} node(s), {{subs}} subscription(s)",
+    "chainDropped": "Front proxy not imported, chain removed (connects directly): {{names}}",
     "resultUnsupported": "{{count}} node(s) use protocols unsupported by the core and are dimmed",
     "resultSkipped": "{{count}} node(s) failed to parse and were skipped",
     "errFormat": "Unrecognized format. Expect a sing-box / Xray / Clash config or valid share links.",

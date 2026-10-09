@@ -1659,6 +1659,7 @@
     "importing": "در حال ورود...",
     "submit": "ورود {{count}} مورد",
     "resultOk": "{{imported}} نود و {{subs}} اشتراک وارد شد",
+    "chainDropped": "پروکسی پیشین وارد نشد؛ زنجیره حذف شد (اتصال مستقیم): {{names}}",
     "resultUnsupported": "{{count}} نود با پروتکل پشتیبانی‌نشده توسط هسته، کم‌رنگ شدند",
     "resultSkipped": "{{count}} نود تجزیه نشد و رد شد",
     "errFormat": "قالب شناسایی نشد. پیکربندی sing-box / Xray / Clash یا لینک‌های معتبر لازم است.",

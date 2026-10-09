@@ -52,7 +52,7 @@ describe('SERVER_ADD_BULK', () => {
       {},
       { servers: [node('p-exit', 'exit', 'p-front'), node('p-front', 'front')] }
     );
-    expect(r).toEqual({ added: 2 });
+    expect(r).toEqual({ added: 2, droppedChains: [] });
     const [exit, front] = config.servers;
     expect(exit.id).not.toBe('p-exit');
     expect(front.id).not.toBe('p-front');
@@ -66,5 +66,12 @@ describe('SERVER_ADD_BULK', () => {
     const [, a, b] = config.servers;
     expect(a.detour).toBe('keep-1');
     expect(a.id).not.toBe(b.id);
+  });
+
+  it('前置既不在本批（预览里被删）也不是存量节点 → 断链并回传节点名（不留悬空 detour 静默直连）', async () => {
+    const { config, addBulk } = setup([node('keep-1', 'old')]);
+    const r = await addBulk({}, { servers: [node('p-exit', 'exit', 'p-front-removed')] });
+    expect(r).toEqual({ added: 1, droppedChains: ['exit'] });
+    expect(config.servers[1].detour).toBeUndefined();
   });
 });

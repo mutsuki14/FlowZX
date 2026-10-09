@@ -179,8 +179,11 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                   : undefined,
               ech: values.ech ? true : undefined,
               echConfig: values.echConfig?.trim() || undefined,
+              // 钉扎只有 Xray 消费：传输切不到 Xray（如 HTTP/2）时不保存，免留一个静默无效的「安全设置」。
               pinnedPeerCertSha256:
-                security === 'tls' ? values.tlsPinnedSha256?.trim() || undefined : undefined,
+                security === 'tls' && formCanUseXray({ protocol: 'vless', network: values.network })
+                  ? values.tlsPinnedSha256?.trim() || undefined
+                  : undefined,
               ...(security === 'tls' ? buildTlsSpoofSettings(values) : {}),
             }
           : null,
@@ -387,8 +390,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           />
 
           {isTlsEnabled && <TlsAdvancedFields control={form.control} t={t} />}
-          {/* 证书钉扎（仅 Xray 消费）：TLS 下恒显示——填写即改走 Xray（tls-pinned-cert），不能只在已需 Xray 时露出。 */}
-          {isTlsEnabled && <PinnedCertField control={form.control} t={t} />}
+          {/* 证书钉扎（仅 Xray 消费）：TLS 且传输能走 Xray 时显示——填写即改走 Xray（tls-pinned-cert），不能只在已需 Xray 时露出；HTTP/2 等切不到 Xray 的传输上钉扎无从生效，不显示。 */}
+          {isTlsEnabled && xraySupported && <PinnedCertField control={form.control} t={t} />}
 
           {showPathHostFields && (
             <FieldGrid cols={2}>

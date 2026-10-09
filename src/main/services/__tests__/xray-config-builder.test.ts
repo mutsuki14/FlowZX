@@ -469,6 +469,8 @@ describe('buildXrayOutbound — XHTTP downloadSettings 结构预检（缺 addres
     ['port 越界 0', { address: 'd.com', port: 0 }],
     ['port 越界 65536', { address: 'd.com', port: 65536 }],
     ['port 非整数', { address: 'd.com', port: 1.5 }],
+    ['缺 network（下行腿按 tcp 建、首拨类型断言 panic）', { address: 'd.com', port: 443 }],
+    ['network 非 XHTTP', { address: 'd.com', port: 443, network: 'raw' }],
     ['非对象', 'down.example.com'],
   ])(
     '%s → throw（结构化 extra / 自定义 extra / 自定义 xhttpSettings.downloadSettings）',
@@ -491,8 +493,45 @@ describe('buildXrayOutbound — XHTTP downloadSettings 结构预检（缺 addres
     expect(() => buildXrayOutbound(xh({ downloadSettings: null }), 't')).not.toThrow();
     expect(() => buildXrayOutbound(xh({ xmux: {} }), 't')).not.toThrow();
     expect(() =>
-      buildXrayOutbound(custom({ downloadSettings: { address: '1.2.3.4', port: 65535 } }), 't')
+      buildXrayOutbound(
+        custom({ downloadSettings: { address: '1.2.3.4', port: 65535, network: 'splithttp' } }),
+        't'
+      )
     ).not.toThrow();
+  });
+
+  it('旧名 splithttpSettings（无 xhttpSettings 时 Xray 照认）同样预检', () => {
+    const legacy = (downloadSettings: unknown): ServerConfig =>
+      ({
+        id: 'c',
+        name: 'c',
+        protocol: 'custom',
+        address: '',
+        port: 0,
+        customSettings: {
+          engine: 'xray',
+          outbound: {
+            protocol: 'vless',
+            streamSettings: { network: 'splithttp', splithttpSettings: { downloadSettings } },
+          },
+        },
+      }) as ServerConfig;
+    expect(() =>
+      buildXrayOutbound(legacy({ network: 'xhttp', xhttpSettings: { path: '/' } }), 't')
+    ).toThrow(/downloadSettings/);
+    expect(() =>
+      buildXrayOutbound(legacy({ address: 'd.com', port: 443, network: 'xhttp' }), 't')
+    ).not.toThrow();
+  });
+
+  it('有 extra 时只校验 extra 里那条（Xray 以 extra 整体替换，外层 downloadSettings 被忽略）', () => {
+    const ok = { address: 'd.com', port: 443, network: 'xhttp' };
+    expect(() =>
+      buildXrayOutbound(custom({ downloadSettings: {}, extra: { downloadSettings: ok } }), 't')
+    ).not.toThrow();
+    expect(() =>
+      buildXrayOutbound(custom({ downloadSettings: ok, extra: { downloadSettings: {} } }), 't')
+    ).toThrow(/downloadSettings/);
   });
 });
 

@@ -265,7 +265,7 @@ export const serverApi = {
   /**
    * 批量添加自建节点（本地导入，一次写盘）
    */
-  async addBulk(servers: ServerConfig[]): Promise<{ added: number }> {
+  async addBulk(servers: ServerConfig[]): Promise<{ added: number; droppedChains?: string[] }> {
     return ipcClient.invoke(IPC_CHANNELS.SERVER_ADD_BULK, { servers });
   },
 

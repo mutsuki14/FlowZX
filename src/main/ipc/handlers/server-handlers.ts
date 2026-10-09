@@ -66,11 +66,12 @@ export function registerServerHandlers(
   // 批量添加自建节点（本地导入）：一次 loadConfig → push 全部 → 一次 saveConfig（避免 N 次原子写 + N 次广播）。
   // 每条强制重新生成 id（杜绝与存量/批内 id 撞）+ 剥离 subscriptionId/providerName（恒为自建，可编辑可删除）。
   // 入参节点已在 parseLocalContent 经 isServerComplete 过滤，validateConfig 不会因协议/字段 throw。
-  registerIpcHandler<{ servers: ServerConfig[] }, { added: number }>(
+  // droppedChains：链式前置不在本批（预览里被删）也不是存量节点 → 断链（不留悬空 detour 静默直连），回传节点名供提示。
+  registerIpcHandler<{ servers: ServerConfig[] }, { added: number; droppedChains: string[] }>(
     IPC_CHANNELS.SERVER_ADD_BULK,
     async (_event: IpcMainInvokeEvent, args: { servers: ServerConfig[] }) => {
       const list = Array.isArray(args.servers) ? args.servers : [];
-      if (list.length === 0) return { added: 0 };
+      if (list.length === 0) return { added: 0, droppedChains: [] };
       const config = await configManager.loadConfig();
       const now = new Date().toISOString();
       // 批内 detour（Xray JSON 导入的 dialerProxy 链）引用的是解析期 id → 随 id 重生成一并改写（重复 id 取首个）。
@@ -79,11 +80,18 @@ export function registerServerHandlers(
       list.forEach((s, i) => {
         if (s.id && !idMap.has(s.id)) idMap.set(s.id, newIds[i]);
       });
+      const existingIds = new Set(config.servers.map((s) => s.id));
+      const droppedChains: string[] = [];
       for (const [i, s] of list.entries()) {
+        let detour = s.detour ? (idMap.get(s.detour) ?? s.detour) : undefined;
+        if (detour && !idMap.has(s.detour as string) && !existingIds.has(detour)) {
+          droppedChains.push(s.name);
+          detour = undefined;
+        }
         config.servers.push({
           ...s,
           id: newIds[i],
-          detour: (s.detour && idMap.get(s.detour)) || s.detour,
+          detour,
           subscriptionId: undefined,
           providerName: undefined,
           createdAt: s.createdAt ?? now,
@@ -91,7 +99,7 @@ export function registerServerHandlers(
         });
       }
       await configManager.saveConfig(config);
-      return { added: list.length };
+      return { added: list.length, droppedChains };
     }
   );
 

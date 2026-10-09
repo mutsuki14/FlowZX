@@ -486,6 +486,35 @@ describe('parseLocalContent — 本地导入（不联网）', () => {
     expect(r.nodes.every((n) => n.subscriptionId === undefined)).toBe(true);
   });
 
+  it('Xray JSON 链式前置没过最终 gate → 断链并告警（不留悬空 detour）', async () => {
+    const svc = newService(new FakeLog());
+    const text = JSON.stringify({
+      outbounds: [
+        {
+          protocol: 'vless',
+          tag: 'exit',
+          settings: {
+            vnext: [{ address: 'exit.example.com', port: 443, users: [{ id: 'uuid-x' }] }],
+          },
+          streamSettings: { network: 'tcp', security: 'tls', sockopt: { dialerProxy: 'front' } },
+        },
+        {
+          protocol: 'shadowsocks',
+          tag: 'front',
+          settings: {
+            servers: [
+              { address: 'front.example.com', port: 70000, method: 'aes-128-gcm', password: 'p' },
+            ],
+          },
+        },
+      ],
+    });
+    const r = await svc.parseLocalContent(text);
+    expect(r.nodes.map((n) => n.name)).toEqual(['exit']);
+    expect(r.nodes[0].detour).toBeUndefined();
+    expect(r.warnings.some((w) => /exit/.test(w) && /链式前置/.test(w))).toBe(true);
+  });
+
   it('Xray JSON：按 protocol 解析（区别于 sing-box 的 type）', async () => {
     const svc = newService(new FakeLog());
     const text = JSON.stringify({
