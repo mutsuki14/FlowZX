@@ -222,7 +222,12 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
     pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
-  const xraySupported = formCanUseXray({ protocol: 'vless', network: watchedNetwork });
+  // security 参与：REALITY + ws/httpupgrade 在 Xray 侧不受支持（shared/xray#canUseXrayCore）。
+  const xraySupported = formCanUseXray({
+    protocol: 'vless',
+    network: watchedNetwork,
+    security: form.watch('security'),
+  });
 
   return (
     <Form {...form}>

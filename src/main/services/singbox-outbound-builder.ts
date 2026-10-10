@@ -33,6 +33,7 @@ import {
 } from './singbox-config-helpers';
 import { isDirectSelection, resolveGlobalExitTag } from '../../shared/direct-selection';
 import { requiresXrayCore } from '../../shared/xray';
+import { realityFingerprint } from '../../shared/reality';
 import { XRAY_DIAL_DIRECT_TAG, type XrayBridgePlan } from './xray-bridge';
 
 /**
@@ -512,9 +513,10 @@ export function buildProxyOutbound(
       enabled: true,
       server_name: server.tlsSettings?.serverName || undefined,
       insecure: server.tlsSettings?.allowInsecure || false,
+      // REALITY 必须挂 uTLS：'none'（trojan 的 TLS 指纹缺省）在此 FATAL 整份配置 → realityFingerprint 归一为 chrome。
       utls: {
         enabled: true,
-        fingerprint: server.tlsSettings?.fingerprint || 'chrome',
+        fingerprint: realityFingerprint(server.tlsSettings?.fingerprint),
       },
       reality: {
         enabled: true,

@@ -383,6 +383,54 @@ describe('buildProxyOutbound — server 恒用域名（issue #147 删烧 IP）',
   });
 });
 
+// trojan + REALITY（trojan 表单 / 分享链产出形态）：sing-box 1.14 原生承载（`sing-box check` 实证），tls 块整体换成
+// REALITY 形态——不带 trojan 的默认 ALPN，指纹 'none'（trojan TLS 缺省）归一为 chrome（none 会让 sing-box FATAL）。
+describe('buildProxyOutbound — trojan + REALITY', () => {
+  const tags = new Map<string, string>();
+  const trojanReality = (over: Partial<ServerConfig> = {}): ServerConfig =>
+    ({
+      id: 'tr',
+      name: 'TR',
+      protocol: 'trojan',
+      address: 'node.example.com',
+      port: 443,
+      password: 'pw',
+      security: 'reality',
+      tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'ios' },
+      realitySettings: { publicKey: 'PBK', shortId: 'ab', spiderX: '/s' },
+      ...over,
+    }) as unknown as ServerConfig;
+
+  it('tls → REALITY 块（toEqual 精确形状；spiderX 为 Xray 独有不下发）', () => {
+    const ob = buildProxyOutbound(trojanReality(), tags, DR_V6_ON);
+    expect(ob.type).toBe('trojan');
+    expect(ob.password).toBe('pw');
+    expect(ob.tls).toEqual({
+      enabled: true,
+      server_name: 'www.microsoft.com',
+      insecure: false,
+      utls: { enabled: true, fingerprint: 'ios' },
+      reality: { enabled: true, public_key: 'PBK', short_id: 'ab' },
+    });
+  });
+
+  it("指纹 'none' / 缺省 → chrome（sing-box: unknown uTLS fingerprint: none）；gRPC 传输照常", () => {
+    for (const fingerprint of ['none', undefined]) {
+      const ob = buildProxyOutbound(
+        trojanReality({
+          network: 'grpc',
+          grpcSettings: { serviceName: 'svc' },
+          tlsSettings: { serverName: 'www.microsoft.com', fingerprint },
+        }),
+        tags,
+        DR_SPEEDTEST
+      );
+      expect(ob.tls?.utls).toEqual({ enabled: true, fingerprint: 'chrome' });
+      expect(ob.transport).toEqual({ type: 'grpc', service_name: 'svc' });
+    }
+  });
+});
+
 // B 组：节点表单新增的可选协议设置经 buildProxyOutbound 正确下发为 sing-box 字段。
 // （tailscale exitNodeAllowLanAccess 属 endpoint 构造、依赖 electron stateDir，不在此单测，由类型检查 + 集成覆盖。）
 describe('buildProxyOutbound — 可选协议设置下发（B 组编辑项）', () => {

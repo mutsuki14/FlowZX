@@ -12,15 +12,25 @@ import {
 } from '@/components/ui/select';
 import { MultiplexFields } from './shared/anti-censor-fields';
 import { AddressField, PortField } from './shared/basic-fields';
-import { TlsAdvancedFields } from './shared/tls-fields';
+import { TlsServerNameField, FingerprintField, TlsAdvancedFields } from './shared/tls-fields';
 import { WsPathField, WsHostField, GrpcServiceNameField } from './shared/transport-fields';
+import { RealityPublicKeyField, RealityShortIdField } from './shared/reality-fields';
 import {
   XhttpFields,
   XrayCoreField,
   PinnedCertField,
+  RealityXrayFields,
   formXrayRequirement,
   formCanUseXray,
 } from './shared/xray-fields';
+import {
+  normalizeFormSecurity,
+  readRealityDefaults,
+  realityFingerprint,
+  buildRealityTlsSettings,
+  buildRealitySettings,
+  requireRealityPublicKey,
+} from './shared/reality-form-logic';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import { normalizeNetworkLower } from './shared/normalize-network';
 import {
@@ -51,12 +61,17 @@ const createTrojanSchema = (t: any) =>
     port: z.number().min(1).max(65535),
     password: z.string().min(1, t('servers.passwordRequired')),
     network: z.enum(['tcp', 'ws', 'grpc', 'http', 'httpupgrade', 'xhttp']),
-    security: z.enum(['none', 'tls']),
+    // REALITY：sing-box 1.14（sing-box check）与 Xray 26（xray run -test）均接受 trojan + REALITY → 两核皆可承载。
+    security: z.enum(['none', 'tls', 'reality']),
     tlsServerName: z.string().optional(),
     tlsAllowInsecure: z.boolean(),
     tlsFingerprint: z.string().optional(),
     tlsEngine: z.string().optional(),
     alpn: z.string().optional(),
+    realityPublicKey: z.string().optional(),
+    realityShortId: z.string().optional(),
+    realitySpiderX: z.string().optional(),
+    realityMldsa65: z.string().optional(),
     wsPath: z.string().optional(),
     wsHost: z.string().optional(),
     grpcServiceName: z.string().optional(),
@@ -75,30 +90,36 @@ interface TrojanFormProps {
 
 export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
   const { t } = useTranslation();
-  // xhttpExtra 的 JSON 校验挂对象级（仅 XHTTP 时生效，见 refineXhttpExtra）。
-  const trojanFormSchema = createTrojanSchema(t).superRefine(refineXhttpExtra);
-
-  const normalizeSecurity = (s: string | undefined): 'none' | 'tls' => {
-    const lower = (s || 'tls').toLowerCase();
-    return lower === 'none' ? 'none' : 'tls';
-  };
+  // xhttpExtra 的 JSON 校验 / REALITY publicKey 条件必填均挂对象级（仅对应模式下生效）。
+  const trojanFormSchema = createTrojanSchema(t)
+    .superRefine(refineXhttpExtra)
+    .superRefine(
+      requireRealityPublicKey(
+        t('servers.realityPublicKeyRequired', 'REALITY requires the server public key')
+      )
+    );
 
   // 同步 defaultValues（对齐 vless/vmess）：编辑态直接由 serverConfig 算初值，表单按 key={id} 挂载即正确。
   // 不走挂载后 useEffect(form.reset)——radix Select 受控 value 被编程改写会触发伪 onValueChange 打回空态
   // （传输显「选择传输协议」+ 保存 invalid input，issue #294）；同步初值让 Select 挂载即带正确值，结构性免疫。
   const getDefaultValues = (): TrojanFormValues => {
     if (serverConfig && serverConfig.protocol?.toLowerCase() === 'trojan') {
+      const security = normalizeFormSecurity(serverConfig.security);
+      const fp = serverConfig.tlsSettings?.fingerprint;
       return {
         address: serverConfig.address || '',
         port: serverConfig.port || 443,
         password: serverConfig.password || '',
         network: normalizeNetworkLower(serverConfig.network),
-        security: normalizeSecurity(serverConfig.security),
+        security,
         tlsServerName: serverConfig.tlsSettings?.serverName || '',
         tlsAllowInsecure: serverConfig.tlsSettings?.allowInsecure || false,
-        tlsFingerprint: (serverConfig.tlsSettings?.fingerprint || 'none').toLowerCase(),
+        // TLS 缺省不挂 uTLS（none）；REALITY 必须挂 → 缺省 chrome（与两侧 builder 同口径）。
+        tlsFingerprint:
+          security === 'reality' ? realityFingerprint(fp) : (fp || 'none').toLowerCase(),
         tlsEngine: serverConfig.tlsSettings?.engine || 'go',
         alpn: serverConfig.tlsSettings?.alpn?.join(',') || '',
+        ...readRealityDefaults(serverConfig),
         ...readTransportDefaults(serverConfig),
         ...readEchDefault(serverConfig),
         ...readMultiplexDefaults(serverConfig),
@@ -117,6 +138,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
       tlsFingerprint: 'none',
       tlsEngine: 'go',
       alpn: '',
+      ...readRealityDefaults(),
       ...readTransportDefaults(),
       ...echDefaults,
       ...multiplexDefaults,
@@ -155,7 +177,10 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
                 : undefined,
               ...buildTlsSpoofSettings(values),
             }
-          : null,
+          : values.security === 'reality'
+            ? buildRealityTlsSettings(values)
+            : null,
+      realitySettings: values.security === 'reality' ? buildRealitySettings(values) : null,
       ...buildTransportSettings(network, values),
       useXrayCore: values.useXrayCore ? true : undefined,
       multiplexSettings: buildMultiplexSettings(values),
@@ -165,19 +190,26 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
   };
 
   const isTlsEnabled = form.watch('security') === 'tls';
+  const isRealityEnabled = form.watch('security') === 'reality';
   const watchedNetwork = form.watch('network');
   const showPathHostFields =
     watchedNetwork === 'ws' || watchedNetwork === 'httpupgrade' || watchedNetwork === 'http';
   const isGrpcEnabled = watchedNetwork === 'grpc';
   const isXhttpEnabled = watchedNetwork === 'xhttp';
+  // 内核判定（与主进程生成期同一谓词）：XHTTP / REALITY ML-DSA-65（pqv）/ 证书钉扎 / 手动勾选 → Xray。
   const xrayReq = formXrayRequirement({
     protocol: 'trojan',
     network: watchedNetwork,
     security: form.watch('security'),
+    mldsa65Verify: isRealityEnabled ? form.watch('realityMldsa65') : undefined,
     pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
-  const xraySupported = formCanUseXray({ protocol: 'trojan', network: watchedNetwork });
+  const xraySupported = formCanUseXray({
+    protocol: 'trojan',
+    network: watchedNetwork,
+    security: form.watch('security'),
+  });
 
   return (
     <Form {...form}>
@@ -249,6 +281,7 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
                   <SelectContent>
                     <SelectItem value="none">{t('servers.none')}</SelectItem>
                     <SelectItem value="tls">TLS</SelectItem>
+                    <SelectItem value="reality">Reality</SelectItem>
                   </SelectContent>
                 </Select>
                 <FormMessage className="fld-err" />
@@ -256,6 +289,33 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
             )}
           />
         </FieldGrid>
+
+        {/* Reality：security=reality 时 publicKey 为条件必填 → 放基础（不入折叠高级）；字段与 vless 表单同构（无 flow）。 */}
+        {isRealityEnabled && (
+          <div className="nd-fset">
+            <div className="nd-fset-h">
+              Reality{' '}
+              <span className="nd-badge">
+                {t('servers.realityRequiredWhen', 'security=Reality')}
+              </span>
+            </div>
+            <FieldGrid cols={2}>
+              <TlsServerNameField
+                control={form.control}
+                t={t}
+                labelKey="servers.realityTarget"
+                descKey="servers.realityTargetDesc"
+                placeholder="www.microsoft.com"
+              />
+              <FingerprintField control={form.control} t={t} reality />
+              <FieldSpan>
+                <RealityPublicKeyField control={form.control} t={t} />
+              </FieldSpan>
+              <RealityShortIdField control={form.control} t={t} />
+              <RealityXrayFields control={form.control} t={t} />
+            </FieldGrid>
+          </div>
+        )}
 
         {isXhttpEnabled && (
           <div className="nd-fset">
