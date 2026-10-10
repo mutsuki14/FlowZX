@@ -63,8 +63,10 @@ describe('issue-report', () => {
 
   describe('buildBugReportUrl', () => {
     it('builds a new-issue URL with title/labels/body and trims trailing slashes', () => {
-      const url = buildBugReportUrl('https://github.com/dododook/FlowZ/', { appVersion: '4.0.1' });
-      expect(url.startsWith('https://github.com/dododook/FlowZ/issues/new?')).toBe(true);
+      const url = buildBugReportUrl('https://github.com/mutsuki14/FlowZX/', {
+        appVersion: '4.0.1',
+      });
+      expect(url.startsWith('https://github.com/mutsuki14/FlowZX/issues/new?')).toBe(true);
       const qs = new URLSearchParams(url.split('?')[1]);
       expect(qs.get('title')).toBe('[Bug] ');
       expect(qs.get('labels')).toBe('bug');

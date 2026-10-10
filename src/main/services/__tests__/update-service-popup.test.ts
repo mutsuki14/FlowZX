@@ -67,7 +67,7 @@ describe('UpdateService.createUpdatePopup 新建窗口路径下发初始状态�
 
 describe('UpdateService.openReleasesPage 直达本版本 changelog', () => {
   const svc = new UpdateService(log) as any;
-  const RELEASES = 'https://github.com/dododook/FlowZ/releases';
+  const RELEASES = 'https://github.com/mutsuki14/FlowZX/releases';
   beforeEach(() => openExternal.mockClear());
 
   it('传 version（带 v 前缀）→ 直达该版本 tag 页', () => {

@@ -21,6 +21,7 @@ import { MAX_GITHUB_JSON_BYTES } from '../utils/http-limits';
 import { getUserDataPath } from '../utils/paths';
 import { system32 } from '../utils/win-system32';
 import { compareSemver } from '../../shared/version';
+import { REPO_OWNER, REPO_NAME, REPO_RELEASES_URL } from '../../shared/repo';
 import { ghMirrorUrl, normalizeGhProxyPrefix } from '../../shared/gh-proxy';
 import type { UserConfig } from '../../shared/types';
 import { IPC_CHANNELS } from '../../shared/ipc-channels';
@@ -40,8 +41,10 @@ import { mt, getMainLanguage } from '../i18n';
 // 防永久挂起致更新永不 resolve（进度窗/对话框永久转圈）。正常下载持续有 data、不断重置、不会误触发。
 const DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
 
-const GITHUB_OWNER = 'dododook';
-const GITHUB_REPO = 'FlowZ';
+// 「跳过此版本」记录按仓库限定（skipped_version.txt 内容 = `<owner>/<repo>@<版本>`）。旧格式（纯版本号）出自仍指向
+// 上游 dododook/FlowZ 的旧版（FlowZX ≤4.4.0、从上游迁移的用户），记的是上游 release 号；FlowZX 沿用 FlowZ 版本号段、
+// 两边会撞号，沿用旧记录会把本仓库同号新版静默跳过 → 旧格式 / 他仓库记录一律视为未跳过。
+const SKIP_RECORD_PREFIX = `${REPO_OWNER}/${REPO_NAME}@`;
 
 /**
  * 单次下载的取消 token（per-call，非实例共享）：弹窗流持有自己的 token，取消只作用于它；关于页手动下载
@@ -471,7 +474,7 @@ export class UpdateService {
    * （/releases/tag/<tag>），精确定位本次更新说明；不传 → 泛列表页（About「查看所有版本」等无版本上下文入口）。
    */
   openReleasesPage(version?: string): void {
-    const base = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+    const base = REPO_RELEASES_URL;
     if (version) {
       const tag = version.startsWith('v') ? version : `v${version}`;
       shell.openExternal(`${base}/tag/${encodeURIComponent(tag)}`);
@@ -846,7 +849,7 @@ export class UpdateService {
       let settled = false;
       const request = net.request({
         method: 'GET',
-        url: `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases`,
+        url: `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases`,
         session: sess,
       });
       // 单点收口：防 request/response 双错误源重复 settle；clear timeout；之后任何回调都 no-op。
@@ -1190,7 +1193,11 @@ export class UpdateService {
     try {
       const configPath = path.join(getUserDataPath(), 'skipped_version.txt');
       if (fs.existsSync(configPath)) {
-        this.skippedVersion = fs.readFileSync(configPath, 'utf-8').trim();
+        const raw = fs.readFileSync(configPath, 'utf-8').trim();
+        // 仅认本仓库记录（见 SKIP_RECORD_PREFIX）；旧格式 / 他仓库 → null（不跳过）。
+        this.skippedVersion = raw.startsWith(SKIP_RECORD_PREFIX)
+          ? raw.slice(SKIP_RECORD_PREFIX.length) || null
+          : null;
       }
     } catch {
       // 忽略错误
@@ -1201,7 +1208,7 @@ export class UpdateService {
     try {
       const configPath = path.join(getUserDataPath(), 'skipped_version.txt');
       if (this.skippedVersion) {
-        fs.writeFileSync(configPath, this.skippedVersion);
+        fs.writeFileSync(configPath, SKIP_RECORD_PREFIX + this.skippedVersion);
       } else if (fs.existsSync(configPath)) {
         fs.unlinkSync(configPath);
       }

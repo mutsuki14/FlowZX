@@ -29,6 +29,7 @@ import { resourceManager } from './ResourceManager';
 import { getUserDataPath } from '../utils/paths';
 import { shq } from '../utils/shell-quote';
 import { sha256File } from '../../shared/file-hash';
+import { REPO_URL } from '../../shared/repo';
 
 const SERVICE_NAME = 'flowz-helper.service';
 // 受管安装根（避开 /opt/FlowZ —— 那是 electron-builder deb 的应用目录，混放会与 dpkg 生命周期冲突）。
@@ -311,7 +312,7 @@ export class LinuxServiceHelper implements IPrivilegedHelper {
     // 真机验证后加（P3；过早收紧易踩 setuid/chown/dac_override 缺失）。singbox/authfile 路径不烧进 unit（多用户）。
     return `[Unit]
 Description=FlowZ privileged network helper
-Documentation=https://github.com/dododook/FlowZ
+Documentation=${REPO_URL}
 After=network.target
 
 [Service]

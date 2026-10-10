@@ -42,16 +42,16 @@
 
 ## دانلود و نصب
 
-آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.4.0 است:
+آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.4.1 است:
 
 | سکو | فایل | توضیح |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
-| Windows x64 | [FlowZ-4.4.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
-| macOS | [FlowZ-4.4.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
-| macOS | [FlowZ-4.4.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-x64.dmg) | تراشهٔ Intel |
-| Linux x86_64 | [FlowZ-4.4.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
-| Linux x86_64 | [FlowZ-4.4.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
+| Windows x64 | [FlowZ-4.4.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
+| Windows x64 | [FlowZ-4.4.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
+| macOS | [FlowZ-4.4.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
+| macOS | [FlowZ-4.4.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-x64.dmg) | تراشهٔ Intel |
+| Linux x86_64 | [FlowZ-4.4.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
+| Linux x86_64 | [FlowZ-4.4.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
 
 | سکو | پیش‌نیازهای سیستم |
 |---|---|
@@ -78,8 +78,8 @@
 
 - نسخهٔ نصبی Windows هنگام حذف نصب، پوشهٔ <code dir="ltr">%APPDATA%\flowz</code> (همهٔ پیکربندی‌ها، از جمله گره‌ها، اشتراک‌ها و قوانین) و سرویس دسترسی ویژه را پاک می‌کند. اگر می‌خواهید داده‌ها حفظ شوند، ابتدا از «تنظیمات ← پیشرفته ← پشتیبان‌گیری و بازیابی داده» یک نسخهٔ پشتیبان بگیرید. ارتقا با نصب روی نسخهٔ قبلی داده‌ها را پاک نمی‌کند.
 
-> [!WARNING]
-> گزینهٔ «بررسی به‌روزرسانی‌ها» در صفحهٔ «درباره» و منوی سینی سیستم، بررسی خودکار هنگام راه‌اندازی، و همچنین پیوند مخزن و «گزارش یک مشکل» در صفحهٔ «درباره»، فعلاً هنوز به مخزن بالادستی [dododook/FlowZ](https://github.com/dododook/FlowZ) اشاره می‌کنند؛ دکمهٔ «بررسی به‌روزرسانی‌ها» برای sing-box در «مدیریت هسته» از این موضوع تأثیر نمی‌پذیرد. بسته‌های نصب بالادستی هستهٔ Xray را ندارند و نصب آن‌ها روی FlowZX گره‌های Xray را از کار می‌اندازد. فقط از [Releases](https://github.com/mutsuki14/FlowZX/releases) همین مخزن به‌روزرسانی کنید و توصیه می‌شود در «تنظیمات ← عمومی» گزینهٔ «بررسی به‌روزرسانی‌ها هنگام راه‌اندازی» را خاموش کنید.
+> [!IMPORTANT]
+> از نسخهٔ 4.4.1، گزینهٔ «بررسی به‌روزرسانی‌ها» در صفحهٔ «درباره» و منوی سینی سیستم، بررسی خودکار هنگام راه‌اندازی، و همچنین پیوند مخزن و «گزارش یک مشکل» در صفحهٔ «درباره» به همین مخزن اشاره می‌کنند. در نسخهٔ 4.4.0 این موارد هنوز به مخزن بالادستی [dododook/FlowZ](https://github.com/dododook/FlowZ) اشاره می‌کنند؛ پس یک بار نسخهٔ 4.4.1 را به‌صورت دستی از [Releases](https://github.com/mutsuki14/FlowZX/releases) همین مخزن نصب کنید و پس از آن می‌توانید از داخل برنامه به‌روزرسانی کنید. بسته‌های نصب بالادستی هستهٔ Xray را ندارند؛ آن‌ها را روی FlowZX نصب نکنید.
 
 <a id="quick-start"></a>
 
@@ -322,7 +322,7 @@ flowchart LR
 
 ## گزارش مشکل
 
-لطفاً مشکلات را در [Issues](https://github.com/mutsuki14/FlowZX/issues) همین مخزن گزارش کنید، نه با «گزارش یک مشکل» داخل برنامه (که مخزن بالادستی را باز می‌کند). لطفاً این موارد را هم بفرستید:
+لطفاً مشکلات را در [Issues](https://github.com/mutsuki14/FlowZX/issues) همین مخزن گزارش کنید. از نسخهٔ 4.4.1، «گزارش یک مشکل» در صفحهٔ «درباره» داخل برنامه هم صفحهٔ ایجاد issue جدید را در همین مخزن باز می‌کند و اطلاعات نسخه و سیستم را از پیش پر می‌کند. لطفاً این موارد را هم بفرستید:
 
 - نسخهٔ برنامه، سیستم‌عامل و معماری
 - نسخه‌های sing-box و Xray («تنظیمات ← پیشرفته ← مدیریت هسته»)
@@ -378,8 +378,9 @@ npm run dev
 | سند | محتوا |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | هستهٔ Xray: ترکیب‌های پشتیبانی‌شده، معماری، پارامترهای ورود، نکات و روش راستی‌آزمایی |
+| [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | یادداشت‌های انتشار v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | یادداشت‌های انتشار v4.4.0 |
-| [docs/RELEASE.md](docs/RELEASE.md) | فرایند انتشار (بخشی از آن از پروژهٔ بالادستی به ارث رسیده و هنوز به‌روز نشده است) |
+| [docs/RELEASE.md](docs/RELEASE.md) | فرایند انتشار |
 | [resources/README.md](resources/README.md) | منابع همراه بسته و فایل‌های هسته |
 | [resources/data/README.md](resources/data/README.md) | مجموعه‌قوانین داخلی |
 | [helper/README.md](helper/README.md) | Helper با دسترسی ویژه در macOS |

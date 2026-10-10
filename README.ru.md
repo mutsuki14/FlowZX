@@ -40,16 +40,16 @@ FlowZX — форк кроссплатформенного прокси-клие
 
 ## Скачать и установить
 
-Последнюю версию можно скачать на странице [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Ниже — прямые ссылки на файлы v4.4.0:
+Последнюю версию можно скачать на странице [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Ниже — прямые ссылки на файлы v4.4.1:
 
 | Платформа | Файл | Описание |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-setup.exe) | Установщик: по умолчанию устанавливается только для текущего пользователя (при установке можно выбрать всех пользователей), каталог установки можно выбрать |
-| Windows x64 | [FlowZ-4.4.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-portable.exe) | Портативная версия, данные хранятся в папке `data\` рядом с exe |
-| macOS | [FlowZ-4.4.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-arm64.dmg) | Apple Silicon (чипы серии M) |
-| macOS | [FlowZ-4.4.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-x64.dmg) | Процессоры Intel |
-| Linux x86_64 | [FlowZ-4.4.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-x86_64.AppImage) | Без установки, требуется FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-amd64.deb) | Debian / Ubuntu, устанавливается в `/opt/FlowZ`; рекомендуется также установить `policykit-1` |
+| Windows x64 | [FlowZ-4.4.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-setup.exe) | Установщик: по умолчанию устанавливается только для текущего пользователя (при установке можно выбрать всех пользователей), каталог установки можно выбрать |
+| Windows x64 | [FlowZ-4.4.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-portable.exe) | Портативная версия, данные хранятся в папке `data\` рядом с exe |
+| macOS | [FlowZ-4.4.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-arm64.dmg) | Apple Silicon (чипы серии M) |
+| macOS | [FlowZ-4.4.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-x64.dmg) | Процессоры Intel |
+| Linux x86_64 | [FlowZ-4.4.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-x86_64.AppImage) | Без установки, требуется FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-amd64.deb) | Debian / Ubuntu, устанавливается в `/opt/FlowZ`; рекомендуется также установить `policykit-1` |
 
 | Платформа | Системные требования |
 |---|---|
@@ -72,8 +72,8 @@ FlowZX — форк кроссплатформенного прокси-клие
 
 - При удалении установочная версия для Windows стирает `%APPDATA%\flowz` (все настройки: узлы, подписки, правила и т. д.) и привилегированную службу. Если данные нужно сохранить, сначала экспортируйте резервную копию в «Настройки → Дополнительно → Резервное копирование и восстановление данных». Обновление установкой поверх данные не удаляет.
 
-> [!WARNING]
-> «Проверить обновления» на странице «О программе» и в меню трея, автоматическая проверка при запуске, а также ссылка на репозиторий и «Сообщить о проблеме» на странице «О программе» пока ведут в upstream-репозиторий [dododook/FlowZ](https://github.com/dododook/FlowZ); на «Проверить обновления» для sing-box в «Управлении ядром» это не распространяется. Пакеты upstream не содержат ядро Xray: после их установки поверх узлы Xray перестанут работать. Обновляйтесь только со страницы [Releases](https://github.com/mutsuki14/FlowZX/releases) этого репозитория; также рекомендуется отключить «Проверять обновления при запуске» в «Настройки → Общие».
+> [!IMPORTANT]
+> Начиная с 4.4.1, «Проверить обновления» на странице «О программе» и в меню трея, автоматическая проверка при запуске, а также ссылка на репозиторий и «Сообщить о проблеме» на странице «О программе» ведут в этот репозиторий. В 4.4.0 они по-прежнему ведут в upstream-репозиторий [dododook/FlowZ](https://github.com/dododook/FlowZ), поэтому один раз установите 4.4.1 вручную со страницы [Releases](https://github.com/mutsuki14/FlowZX/releases) этого репозитория — дальше можно обновляться прямо в приложении. Пакеты upstream не содержат ядро Xray, не устанавливайте их поверх FlowZX.
 
 <a id="quick-start"></a>
 
@@ -312,7 +312,7 @@ sing-box не умеет добавлять и удалять исходящие
 
 ## Сообщить о проблеме
 
-Сообщайте о проблемах в [Issues](https://github.com/mutsuki14/FlowZX/issues) этого репозитория, а не через «Сообщить о проблеме» в приложении (эта кнопка открывает upstream-репозиторий). Приложите:
+Сообщайте о проблемах в [Issues](https://github.com/mutsuki14/FlowZX/issues) этого репозитория. Начиная с 4.4.1, кнопка «Сообщить о проблеме» на странице «О программе» в приложении тоже открывает страницу нового issue в этом репозитории, с заранее заполненными сведениями о версии и системе. Приложите:
 
 - версию приложения, ОС и архитектуру;
 - версии sing-box и Xray («Настройки → Дополнительно → Управление ядром»);
@@ -360,8 +360,9 @@ npm run dev            # режим разработки Vite + Electron
 | Документ | Содержание |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Ядро Xray: поддерживаемые комбинации, архитектура, параметры импорта, особенности, способы проверки |
+| [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | Примечания к выпуску v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | Примечания к выпуску v4.4.0 |
-| [docs/RELEASE.md](docs/RELEASE.md) | Процесс выпуска (часть содержимого унаследована от upstream и ещё не обновлена) |
+| [docs/RELEASE.md](docs/RELEASE.md) | Процесс выпуска |
 | [resources/README.md](resources/README.md) | Встроенные ресурсы и файлы ядер |
 | [resources/data/README.md](resources/data/README.md) | Встроенные наборы правил |
 | [helper/README.md](helper/README.md) | Привилегированный helper для macOS |

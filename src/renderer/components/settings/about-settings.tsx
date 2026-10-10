@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { AppUpdateBanner } from './app-update-banner';
 import { useAppStore } from '@/store/app-store';
 import { buildBugReportUrl } from '@/lib/issue-report';
+import { REPO_URL } from '../../../shared/repo';
 
 interface VersionInfo {
   appVersion: string;
@@ -173,23 +174,20 @@ export function AboutSettings() {
   };
 
   const handleOpenGitHub = async () => {
-    const url = versionInfo?.repositoryUrl || 'https://github.com/dododook/FlowZ';
+    const url = versionInfo?.repositoryUrl || REPO_URL;
     await openExternal(url);
   };
 
   // 打开 GitHub 新建 issue 页，正文已自动带上版本/系统/架构/内核/代理模式，报告者只需补问题描述与日志。
   const handleReportIssue = async () => {
-    const url = buildBugReportUrl(
-      versionInfo?.repositoryUrl || 'https://github.com/dododook/FlowZ',
-      {
-        appVersion: versionInfo?.appVersion,
-        platform: versionInfo?.platform,
-        arch: versionInfo?.arch,
-        osVersion: versionInfo?.osVersion,
-        singBoxVersion: versionInfo?.singBoxVersion,
-        proxyModeType,
-      }
-    );
+    const url = buildBugReportUrl(versionInfo?.repositoryUrl || REPO_URL, {
+      appVersion: versionInfo?.appVersion,
+      platform: versionInfo?.platform,
+      arch: versionInfo?.arch,
+      osVersion: versionInfo?.osVersion,
+      singBoxVersion: versionInfo?.singBoxVersion,
+      proxyModeType,
+    });
     await openExternal(url);
   };
 

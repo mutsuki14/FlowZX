@@ -2,119 +2,79 @@
 
 **简体中文** · [English](RELEASE.en.md)
 
-本文档描述如何发布 FlowZ 新版本。发布的「单一触发点」是**推送 `v*` tag**：CI（`.github/workflows/release.yml`）随后在三平台构建并自动创建 GitHub Release。本地全量打包仅用于验证/离线出包，不走发布路径。
+本文说明如何发布 FlowZX 新版本。发布由 GitHub Actions 的 Release 工作流（`.github/workflows/release.yml`）完成：推送 `v*` tag，或在 `main` 上手动运行该工作流。它在三个平台上打包，并直接发布 GitHub Release。本地打包只用于验证，不会发布。
 
 ## 前置要求
 
-1. **仓库写权限**：能向 `origin` 推送 tag。
-2. **Node.js 26**：与 CI（`actions/setup-node@v4`，`node-version: 26`）一致，避免本地/CI 行为漂移。
-3. **GitHub CLI（可选）**：仅用于手动查看/编辑已发布 Release；标准流程由 CI 用内置 `GITHUB_TOKEN` 自动建 Release，无需本地 `gh`。
-4. **Go（仅本地打包 helper 时需要）**：`build:helper` 现编现打 macOS/Windows 提权 helper（二进制不入库）。CI 已在 mac/win runner 自动装 Go；仅当你本地 `npm run dist:mac`/`dist:win` 时才需本机有 Go。
+- **GitHub Actions 已启用**：本仓库已启用；若在 Settings → Actions → General 中被禁用，工作流不会运行。Release 使用内置的 `GITHUB_TOKEN` 创建 tag 和 Release（工作流已声明 `contents: write`），无需配置 secret。
+- **推送权限**：能推送到 `main` 和推送 tag。
+- **Node.js 26**：与 CI 一致。
+- **Go 1.24 及以上**：本地打包时用于编译提权助手；缺少时跳过，打出的包不含提权助手。CI 中已提供 Go。
 
-## 发布流程（标准：推 tag 触发 CI）
+## 工作流
 
-1. **更新版本号**
+| 工作流 | 触发条件 | 作用 |
+|---|---|---|
+| CI（`ci.yml`） | 推送到 `main`、向 `main` 发起的 PR、手动运行 | 在 macOS 与 Windows 上运行 lint、单元测试和构建 |
+| Package（`package.yml`） | 同上，但推送和 PR 只在改动涉及打包输入时触发（`package.json`、`package-lock.json`、`electron-builder.json`、`scripts/`、`helper*/`、`build/`、`resources/`、`src/shared/core-manifest.json`、`.github/workflows/`） | PR：`electron-builder --dir` 冒烟；推送 / 手动：Windows 与 macOS 完整打包，并上传 Windows 安装包（保留 3 天） |
+| Release（`release.yml`） | 推送 `v*` tag；在 `main` 上手动运行 | 在 Windows / macOS / Linux 上打包并发布 GitHub Release |
 
-   编辑 `package.json` 的 `version`（当前 `4.1.3`）：
-   ```json
-   { "version": "4.1.4" }
-   ```
+## 发布步骤
 
-2. **提交并推送**
+1. **更新版本号**。下面的命令同时更新 `package.json` 与 `package-lock.json`，不会创建 commit 或 tag：
+
    ```bash
-   git add package.json
-   git commit -m "chore: bump version to 4.1.4"
-   git push
+   npm version patch --no-git-tag-version   # 或 minor / major / 指定版本号
    ```
 
-3. **推送 Release tag**
+2. **编写发布说明** `docs/releases/v<版本>.md`，格式参照已有文件（先中文、后英文）。Release 正文取自这个文件，后面接 GitHub 自动生成的 Release Notes；文件不存在时只有自动生成的部分。
 
-   用脚本按 `package.json` 版本号创建并推送 `v{version}` tag（触发 CI）：
-   ```bash
-   npm run release:tag            # 创建并推送 vX.Y.Z
-   npm run release:tag -- -u      # 远程已存在同名 tag 时强制更新（删旧 tag 重推）
-   npm run release:tag -- -y -u   # 跳过确认 + 强制更新
-   ```
-   脚本（`scripts/push-release.js`）会校验工作区干净度、检查本地/远程 tag 是否已存在，并在确认后创建并推送 tag。**它只推 tag**——构建与发布全部由 CI 完成。
+3. **提交并推送到 `main`**，确认 CI 通过（改动涉及打包输入时 Package 也会运行）。
 
-   **不便推 tag 时（如无 tag 推送权限的自动化环境）**：在 GitHub Actions 页对 `Release` 点「Run workflow」（仅限 `main`），
-   或经 API 触发 `workflow_dispatch`。版本取 `package.json`，CI 构建完成后在本次 commit 上自动创建 `v{version}` tag 并发布；
-   该 tag 已存在且指向别的 commit 时会直接失败（须先升版本号）。
+4. **触发 Release**，二选一：
+   - **推送 tag**：在 `main` 上运行 `npm run release:tag`。`scripts/push-release.js` 读取 `package.json` 的版本号，创建附注 tag `v<版本>` 并推送到 `origin`。`npm run release:tag -- -y` 跳过确认；`npm run release:tag -- -u` 删除并重新推送已存在的同名 tag；`npm run release:tag:update` 等同于 `-- -y -u`。tag 必须与 `package.json` 版本一致：不一致时工作流只给出警告，安装包文件名仍按 `package.json`；安装后应用版本仍是 `package.json` 的版本，而应用内更新按 tag 判断，会反复提示同一「新版本」。
+   - **手动运行**：在 Actions 页选择 Release →「Run workflow」，分支选 `main`（也可经 API 触发 `workflow_dispatch`）。版本取自 `package.json`，构建完成后在该 commit 上创建 tag `v<版本>` 并发布，这个 tag 不会再次触发 Release。该 tag 已存在且指向其他 commit 时工作流会失败，需要先升版本号；指向同一 commit 时视为重跑。
 
-4. **CI 自动构建并发布**
+5. **检查 Release**：Releases 页应出现 `Release <版本>`（非 draft、非 prerelease），并包含 6 个安装包：
 
-   推送 `v*` tag 后，`release.yml` 自动：
-   - 在 `windows-2022` / `macos-14` / `ubuntu-latest` 三平台并行 `npm run package:<platform>`；
-   - 构建期拉取内核与面板（见下「构建期外部产物」），mac 额外把 arm64/x64 两份 `.app` 打成 DMG；
-   - 汇总各平台产物，经 `softprops/action-gh-release` 直接发布 GitHub Release（非 draft）并上传全部安装包；
-     正文取 `docs/releases/v<版本>.md`（存在时），其后接 GitHub 自动生成的 Release Notes。
+   | 平台 | 文件 |
+   |---|---|
+   | Windows x64 | `FlowZ-<版本>-win-x64-setup.exe`、`FlowZ-<版本>-win-x64-portable.exe` |
+   | macOS | `FlowZ-<版本>-mac-arm64.dmg`、`FlowZ-<版本>-mac-x64.dmg` |
+   | Linux x86_64 | `FlowZ-<版本>-linux-x86_64.AppImage`、`FlowZ-<版本>-linux-amd64.deb` |
 
-5. **检查 Release**
+   应用内的「检查更新」读取本仓库最近发布的非 prerelease Release，以 tag 判断版本，并按文件名挑选适合当前平台和安装形式的安装包，因此不要改动安装包的命名。
 
-   打开仓库 Releases 页，确认版本、各平台产物齐全（尤其 mac arm64 与 x64 两份，历史上易缺其一）。
+## Release 工作流的步骤
 
-## 本地全量打包（可选：验证 / 离线出包，不触发发布）
+- **meta**：确定版本号。tag 触发时取 tag 名；手动触发时取 `package.json`，并检查分支是否为 `main`、同名 tag 是否已指向其他 commit。
+- **release**：在 `windows-2022`、`macos-14`、`ubuntu-latest` 上并行执行 `npm ci`、`npm run build` 和 `npm run package:<平台>`。设置了 `REQUIRE_HELPER=1`，缺少 Go 时直接失败，不会发布不含提权助手的包。macOS 上再把 arm64 与 x64 的 `FlowZ.app` 分别用 `codesign` 做 ad-hoc 签名，并用 `hdiutil` 打成 DMG（内附首次打开说明），缺少任一架构即失败。
+- **create-release**：用 `softprops/action-gh-release` 发布 `v<版本>` 的 Release 并上传全部安装包。
+
+## 本地打包（只验证，不发布）
 
 ```bash
-npm run release:prepare   # = fetch:core + fetch:cronet + fetch:dashboard + build + package:all（win+mac+linux）
-# 或按平台：
-npm run dist:win          # Windows（nsis + portable，x64）
-npm run dist:mac          # macOS（arm64 + x64）
-npm run dist:linux        # Linux（AppImage + deb，x64）
+npm run dist:win     # Windows 安装版 + 便携版（x64）
+npm run dist:mac     # macOS arm64 + x64 的 FlowZ.app（DMG 只在 CI 中生成）
+npm run dist:linux   # Linux AppImage + deb（x64）
 ```
-`dist:*` 带 `--publish never`，只产出本地包、不上传。产物在 `dist-package/`。
 
-## 构建期外部产物（不入库，构建时拉取）
+`dist:*` 带 `--publish never`，产物在 `dist-package/`，请在对应系统上打包。打包前依次执行 `build:helper`、`fetch:core`、`test:core-gate`、`fetch:cronet`（仅 Windows / Linux）、`fetch:dashboard` 和 `build`。
 
-内核与面板**不再随仓库入库**，改为构建期从官方 Release 按 SHA 校验拉取（仓库瘦身、防膨胀）：
+sing-box、Xray、cronet 与面板都不入库，构建时下载；前三者按 `src/shared/core-manifest.json` 中的 SHA-256 校验。更换内核版本时修改该文件的版本号与 SHA-256（sing-box：`bundledCoreVersion`、`coreArchiveSha256`、`coreBinarySha256`；Xray：`bundledXrayVersion`、`xrayArchiveSha256`、`xrayBinarySha256`），再运行 `npm run fetch:core` 和 `npm run test:core-gate`。
 
-| 脚本 | 拉取内容 |
-|------|----------|
-| `fetch:core` | sing-box 内核（`coreArchiveSha256` 校验压缩包 = 官方 release digest，零后处理）+ Xray 内核（`xrayArchiveSha256` / `xrayBinarySha256` 双校验） |
-| `fetch:cronet` | cronet 库（Windows/Linux dlopen 外部库；macOS 静态编入不需要） |
-| `fetch:dashboard` | clash 面板静态资源 |
+## 版本号
 
-`package:*` / `dist:*` 已串联对应 fetch 步骤。换内核版本：改 `src/shared/core-manifest.json` 的 `bundledCoreVersion` + `coreArchiveSha256`（压缩包 SHA256，= 官方 release asset digest）后重新 `fetch:core --force`。
-
-## 打包产物
-
-| 平台 | 产物 | 架构 |
-|------|------|------|
-| Windows | NSIS 安装器 + portable | x64 |
-| macOS | DMG | arm64、x64 |
-| Linux | AppImage + deb | x64 |
-
-> 提权 helper 二进制由 `build:helper`（Go）现编现打进 mac/win 包；CI 在 mac/win runner 装 Go。缺 Go → 安装时报「提权助手二进制缺失」。
-
-## 版本号规范
-
-遵循 [语义化版本](https://semver.org/lang/zh-CN/)：
-
-- **MAJOR**：不兼容变更
-- **MINOR**：向下兼容的新功能
-- **PATCH**：向下兼容的修复
-
-tag 形如 `v4.1.4`（`push-release.js` 自动加 `v` 前缀，勿手写带 `v` 的 version）。
+遵循[语义化版本](https://semver.org/lang/zh-CN/)。`package.json` 的 `version` 不带 `v`，tag 形如 `v4.4.1`。
 
 ## 故障排除
 
 | 问题 | 处理 |
-|------|------|
-| 远程 tag 已存在 | `npm run release:tag -- -u` 强制更新，或改 `package.json` 版本号后重发 |
-| Release 缺 mac 某架构包 | CI「Create DMG」步对缺失架构会 `::error::`；检查 `package:mac` 的 `electron-builder --arm64 --x64` 是否两架构都产出 |
-| 安装报「提权助手二进制缺失」 | 该平台打包时缺 Go → 装 Go 后重打（CI 已自动装；本地 `dist:mac`/`dist:win` 需本机 Go） |
-| 构建失败 | `npm ci` 重装依赖；确认能联网（`fetch:core`/`fetch:cronet`/`fetch:dashboard` 需访问官方 Release）；查 CI 日志定位平台 |
-
-## CI/CD 配置
-
-- **`.github/workflows/build.yml`**：推送到分支时构建校验。
-- **`.github/workflows/release.yml`**：推送 `v*` tag 时三平台打包 + 自动建 Release。
-- 环境变量：CI 用内置 `GITHUB_TOKEN`（`permissions: contents: write`）创建 Release；electron 二进制走 npmmirror 镜像加速。
-- 修改 CI：编辑 `.github/workflows/` 下的文件。
-
-## 参考资料
-
-- [Electron Builder 文档](https://www.electron.build/)
-- [softprops/action-gh-release](https://github.com/softprops/action-gh-release)
-- [GitHub Actions 文档](https://docs.github.com/en/actions)
-- [语义化版本规范](https://semver.org/lang/zh-CN/)
+|---|---|
+| 推送 tag 后 Release 没有运行 | 确认 tag 以 `v` 开头、仓库的 Actions 未被禁用；之后在 `main` 上手动运行 Release（tag 指向当前 commit 时视为重跑），或用 `npm run release:tag -- -u` 重新推送 tag |
+| 手动运行失败：只允许在 `main` 上触发 | 运行时分支选择 `main` |
+| 手动运行失败：tag 已存在且指向其他 commit | 升 `package.json` 版本号后重新发布 |
+| `release:tag` 提示远程 tag 已存在 | 升版本号后重新发布。`-u` 会删除并重推同名 tag，只应在该版本尚未发布时使用 |
+| Release 缺少某个 macOS 架构的 DMG | 「Create DMG」步骤会报错失败；检查 `package:mac` 是否产出了 arm64 与 x64 两个 `FlowZ.app` |
+| 安装时提示提权助手二进制缺失 | 打包时缺少 Go，安装 Go 后重新打包 |
+| 构建失败 | 用 `npm ci` 重装依赖；确认能访问 GitHub 与 `proxy.golang.org`（`fetch:*` 需要联网）；按平台查看 CI 日志 |

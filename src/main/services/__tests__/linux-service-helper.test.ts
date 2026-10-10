@@ -52,6 +52,7 @@ describe('LinuxServiceHelper', () => {
       expect(unit).toContain('--coredir=/usr/local/lib/flowz/core'); // 路径锁：helper 只跑此目录内的核
       expect(unit).toContain('RuntimeDirectory=flowz');
       expect(unit).toContain('WantedBy=multi-user.target');
+      expect(unit).toContain('Documentation=https://github.com/mutsuki14/FlowZX'); // 本分支仓库（shared/repo）
       expect(unit).not.toContain('User='); // root 跑（setuid 拉 child + 穿越 userData）
       expect(unit).not.toContain('AmbientCapabilities'); // child cap 由代码赋，不在 unit
     });

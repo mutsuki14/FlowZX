@@ -40,16 +40,16 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 下載安裝
 
-從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.4.0 的直接下載連結：
+從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.4.1 的直接下載連結：
 
 | 平台 | 檔案 | 說明 |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
-| Windows x64 | [FlowZ-4.4.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
-| macOS | [FlowZ-4.4.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-arm64.dmg) | Apple 晶片（M 系列） |
-| macOS | [FlowZ-4.4.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-x64.dmg) | Intel 晶片 |
-| Linux x86_64 | [FlowZ-4.4.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
+| Windows x64 | [FlowZ-4.4.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
+| Windows x64 | [FlowZ-4.4.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
+| macOS | [FlowZ-4.4.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-arm64.dmg) | Apple 晶片（M 系列） |
+| macOS | [FlowZ-4.4.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-x64.dmg) | Intel 晶片 |
+| Linux x86_64 | [FlowZ-4.4.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
 
 | 平台 | 系統需求 |
 |---|---|
@@ -72,8 +72,8 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - Windows 安裝版在解除安裝時會刪除 `%APPDATA%\flowz`（節點、訂閱、規則等全部設定）與提權服務。若需保留，請先在「設定 → 進階 → 資料備份與還原」匯出備份。覆蓋升級不會刪除資料。
 
-> [!WARNING]
-> 「關於」頁與系統匣選單中的「檢查更新」、啟動時的自動檢查，以及「關於」頁的儲存庫連結與「回報問題」，目前仍指向上游 [dododook/FlowZ](https://github.com/dododook/FlowZ)；「核心管理」中 sing-box 的「檢查更新」不受影響。上游安裝檔不含 Xray 核心，以其覆蓋安裝後 Xray 節點將無法使用。請只從本儲存庫的 [Releases](https://github.com/mutsuki14/FlowZX/releases) 更新，並建議在「設定 → 一般」關閉「啟動時自動檢查更新」。
+> [!IMPORTANT]
+> 自 4.4.1 起，「關於」頁與系統匣選單中的「檢查更新」、啟動時的自動檢查，以及「關於」頁的儲存庫連結與「回報問題」都指向本儲存庫。4.4.0 的這些入口仍指向上游 [dododook/FlowZ](https://github.com/dododook/FlowZ)：請從本儲存庫的 [Releases](https://github.com/mutsuki14/FlowZX/releases) 手動安裝一次 4.4.1，之後即可在應用程式內更新。上游安裝檔不含 Xray 核心，請勿以其覆蓋安裝 FlowZX。
 
 <a id="quick-start"></a>
 
@@ -312,7 +312,7 @@ sing-box 無法在執行中增刪出站，部分修改需要重啟核心。重�
 
 ## 回報問題
 
-請在本儲存庫的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 回報，不要使用應用程式內的「回報問題」（它會開啟上游儲存庫）。請附上：
+請在本儲存庫的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 回報。自 4.4.1 起，應用程式內「關於」頁的「回報問題」也會開啟本儲存庫的新增 issue 頁面，並預先填入版本與系統資訊。請附上：
 
 - 應用程式版本、作業系統與架構
 - sing-box 與 Xray 版本（設定 → 進階 → 核心管理）
@@ -360,8 +360,9 @@ npm run dev            # Vite + Electron 開發模式
 | 文件 | 內容 |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 核心：支援的組合、架構、匯入參數、注意事項、驗證方法 |
+| [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 發行說明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 發行說明 |
-| [docs/RELEASE.md](docs/RELEASE.md) | 發布流程（部分內容沿用上游，尚未更新） |
+| [docs/RELEASE.md](docs/RELEASE.md) | 發布流程 |
 | [resources/README.md](resources/README.md) | 隨附資源與核心檔案 |
 | [resources/data/README.md](resources/data/README.md) | 內建規則集 |
 | [helper/README.md](helper/README.md) | macOS 提權 helper |

@@ -157,7 +157,7 @@ describe('T10 VersionInfo 完整结构', () => {
     );
     expect(result.appVersion).toBe('1.2.3');
     expect(result.appName).toBe('FlowZ');
-    expect(result.repositoryUrl).toBe('https://github.com/dododook/FlowZ');
+    expect(result.repositoryUrl).toBe('https://github.com/mutsuki14/FlowZX');
     // copyright 含当前年份
     expect(result.copyright).toContain(String(new Date().getFullYear()));
   });

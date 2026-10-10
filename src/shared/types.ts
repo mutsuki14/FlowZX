@@ -498,7 +498,7 @@ export interface UserConfig {
   // mac/Linux 走 route 规则规避 NetworkExtension HANG）；② 系统代理模式整份（CIDR+域名）写入 OS 忽略列表。
   // 原 systemProxyBypass 已并入此字段（单一清单，杜绝两处重复）。
   bypassLANList?: string[];
-  blockQuic?: boolean; // 阻止 QUIC（对代理向 UDP 443 执行 reject，逼浏览器回退 TCP）；默认关；节点无关，对所有协议一视同仁
+  blockQuic?: boolean; // 阻止 QUIC（对代理向 UDP 443 执行 reject，逼浏览器回退 TCP）；新装默认开（getDefaultConfig 置 true），旧配置缺键视为关（无迁移，读取端 === true）；节点无关，对所有协议一视同仁
   // 拦截浏览器自带 DoH（对 DoH 域名的 TCP 443/853 与 UDP 443 执行 reject），逼其回退系统 UDP 53 重进
   // hijack-dns/FakeIP 体系。**默认开**（undefined ≠ false，保持历史行为——此前是恒开且无开关）。
   // 关掉 = 允许浏览器 DoH，代价是域名级分流退化成 IP 级。语义与清单见 shared/browser-doh。

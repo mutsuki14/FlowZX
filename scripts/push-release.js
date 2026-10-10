@@ -19,6 +19,10 @@ const colors = {
   cyan: '\x1b[36m',
 };
 
+// 本分支（FlowZX）仓库地址，与 src/shared/repo.ts 的 REPO_URL 同值（本脚本是独立 CommonJS，不引 TS 源）。
+// tag 推到 origin，Actions 也跑在 origin 仓库 → 优先从 origin 远程地址推导，解析失败回落此常量。
+const FALLBACK_REPO_URL = 'https://github.com/mutsuki14/FlowZX';
+
 function log(msg, color = colors.reset) {
   console.log(`${color}${msg}${colors.reset}`);
 }
@@ -33,6 +37,14 @@ function execSilent(cmd) {
   } catch {
     return null;
   }
+}
+
+/** origin 远程（https / ssh 形式）→ https://github.com/<owner>/<repo>；非 GitHub 或读取失败 → 兜底常量。 */
+function originRepoUrl() {
+  const m = (execSilent('git remote get-url origin') || '').match(
+    /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/
+  );
+  return m ? `https://github.com/${m[1]}/${m[2]}` : FALLBACK_REPO_URL;
 }
 
 function prompt(question) {
@@ -140,7 +152,7 @@ async function main() {
 
   console.log('');
   log('✅ Tag 推送成功，GitHub Actions 将自动构建', colors.green);
-  log(`🔗 https://github.com/zhangjh/FlowZ/actions`, colors.blue);
+  log(`🔗 ${originRepoUrl()}/actions`, colors.blue);
 }
 
 main().catch((err) => {

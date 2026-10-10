@@ -16,6 +16,7 @@ import { mt } from '../i18n';
 import { DIRECT_SERVER_ID, isDirectSelection } from '../../shared/direct-selection';
 import { IPC_CHANNELS } from '../../shared/ipc-channels';
 import type { SpeedTestOutcome } from '../../shared/speed-test';
+import { REPO_RELEASES_URL } from '../../shared/repo';
 
 // 托盘菜单状态圆点（macOS 系统色，18px 抗锯齿）——替代旧的 emoji 大圆圈，更克制现代。
 const STATUS_DOT_PNG: Record<'connected' | 'disconnected' | 'error', string> = {
@@ -597,7 +598,7 @@ export class TrayManager implements ITrayManager {
       this.onCheckUpdate();
     } else {
       // 默认行为：打开 GitHub releases 页面
-      shell.openExternal('https://github.com/dododook/FlowZ/releases');
+      shell.openExternal(REPO_RELEASES_URL);
     }
   }
 
