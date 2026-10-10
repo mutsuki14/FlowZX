@@ -1,282 +1,389 @@
 <div align="center">
 
-<img src="docs/banner.png" width="100%" alt="FlowZ — 简洁现代的跨平台代理客户端，基于 sing-box，所见即所得" />
+<img src="docs/logo.png" width="96" alt="FlowZX" />
 
-[![release](https://img.shields.io/github/v/release/dododook/FlowZ?style=flat-square&color=0E98A4&label=release)](https://github.com/dododook/FlowZ/releases)
-[![sing-box](https://img.shields.io/badge/sing--box-1.14-0E98A4?style=flat-square)](https://github.com/SagerNet/sing-box)
-[![platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux-0E98A4?style=flat-square)](#-安装)
+# FlowZX
+
+基于 sing-box 的跨平台代理客户端，内置 Xray-core 运行 Xray 独有协议组合
+
+[![release](https://img.shields.io/github/v/release/mutsuki14/FlowZX?style=flat-square&color=0E98A4&label=release)](https://github.com/mutsuki14/FlowZX/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/mutsuki14/FlowZX/total?style=flat-square&color=0E98A4)](https://github.com/mutsuki14/FlowZX/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/mutsuki14/FlowZX/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mutsuki14/FlowZX/actions/workflows/ci.yml)
+[![sing-box](https://img.shields.io/badge/sing--box-1.14.0--rc.1-0E98A4?style=flat-square)](https://github.com/SagerNet/sing-box)
+[![Xray-core](https://img.shields.io/badge/Xray--core-26.3.27-0E98A4?style=flat-square)](https://github.com/XTLS/Xray-core)
+[![platform](https://img.shields.io/badge/platform-Windows%20·%20macOS%20·%20Linux-0E98A4?style=flat-square)](#download)
 [![license](https://img.shields.io/badge/license-MIT-0E98A4?style=flat-square)](LICENSE.txt)
-[![stars](https://img.shields.io/github/stars/dododook/FlowZ?style=flat-square&color=0E98A4)](https://github.com/dododook/FlowZ/stargazers)
 
 **简体中文** · [English](README.en.md) · [繁體中文](README.zh-TW.md) · [Русский](README.ru.md) · [فارسی](README.fa.md)
 
+<sub>English / 繁體中文 / Русский / فارسی 版本译自简体中文版，如有出入，以简体中文版为准。</sub>
+
+[下载](#download) · [快速开始](#quick-start) · [协议支持](#protocols) · [功能](#features) · [截图](#screenshots) · [工作原理](#architecture) · [常见问题](#faq) · [反馈](#feedback) · [构建](#build) · [文档](#docs)
+
 </div>
 
-> 原作者开源地址：https://github.com/zhangjh/FlowZ
+FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) 的分支，在 FlowZ 4.3.3 的基础上随安装包内置了 [Xray-core](https://github.com/XTLS/Xray-core) 26.3.27。sing-box 仍是主核，负责 TUN / 系统代理、分流、DNS 和管理 API；Xray 以 sidecar 形式只运行 sing-box 不支持的协议组合，例如 VLESS + XHTTP + REALITY + VLESS Encryption。其余节点照常由 sing-box 运行，行为与 FlowZ 相同。
 
-主打：**配置简单 · 规则明确 · 切换不断流 · 一次授权零提权**。
+> [!NOTE]
+> 安装后的应用名仍是 **FlowZ**：安装包名为 `FlowZ-<版本>-…`，macOS 上是 `FlowZ.app`。FlowZX 与上游 FlowZ 使用相同的应用标识、安装位置和配置目录，两者无法共存：已装 FlowZ 时直接覆盖安装 FlowZX 即可，节点、订阅与规则会保留；反过来用上游安装包覆盖，会失去 Xray 内核。
 
----
+## 亮点
 
-## 🌟 核心亮点
+- **Xray 独有组合**：XHTTP（auto / packet-up / stream-up / stream-one，支持 `extra`）、VLESS Encryption（`mlkem768x25519plus.*`）、REALITY ML-DSA-65（`pqv`）、`xtls-rprx-vision-udp443`、证书 SHA-256 钉扎（`pcs`），以及任意自定义 Xray outbound JSON。
+- **自动选择内核**：根据节点参数判断是否需要 Xray，需要时自动交给 Xray 运行，并在节点上显示 **Xray** 角标。Xray 节点同样支持热切换、规则指定节点、测速和代理链。
+- **一次授权**：macOS 的 launchd helper、Windows 的系统服务、Linux 的 systemd helper，安装一次后启停 TUN 不再反复请求管理员权限。
+- **减少重启**：切换节点、修改规则的目标节点经 gRPC 热切换；只含域名 / IP / 端口 / 进程条件的规则，修改匹配值后经本地规则集热重载。
+- **组网节点**：WireGuard、Cloudflare WARP（一键匿名注册）、Tailscale（浏览器登录，支持 Headscale）可以像普通节点一样选中和分流。
+- **防泄漏与抗封锁**：FakeIP、TUN 下接管系统 DNS、阻断 QUIC、WebRTC 防护、TLS Fragment、ECH、Shadow-TLS、Hysteria2 端口跳跃。
 
-- **一次授权，永久零提权** — macOS root daemon / Windows 系统服务，装一次后 TUN 启停 · 切节点 · 退出全程免授权。
-- **改规则不断流** — 编辑已启用规则的匹配值经 local rule-set 热重载**即时生效、连接零中断**；只有结构变更才重启（去抖合并、只重启一次）。
-- **任意协议，内核即权威** — 粘贴 sing-box outbound JSON即用，保存时实时探测当前内核兼容性；官方核不支持的协议可**手动换用第三方 fork 内核**，FlowZ 自动识别 fork 并停用在线更新以保护它。
-- **组网开箱即用** — WireGuard / **WARP（一键匿名注册）** / **Tailscale（浏览器交互登录）** 作为一等节点，可选中 · 分流 · 热切。
-- **退出零残留** — 跨平台清理 sing-box 进程 / 虚拟网卡 / 系统代理，崩溃 · 注销 · 关机都兜底。
-- **sing-box 1.14 原生管理面** — 内置 1.14 内核，原生 gRPC 管理 API + 可选官方 dashboard 面板。
+<a id="download"></a>
 
----
+## 下载安装
 
-## ✨ 功能特性
+从 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下载最新版本。下表为 v4.4.0 的直接下载链接：
 
-**协议**
-- 代理：VLESS / VMess / Trojan / Shadowsocks / **Snell** / Hysteria2 / TUIC / AnyTLS / **NaiveProxy** / SOCKS / HTTP / SSH
-- 组网：**WireGuard** / **Cloudflare WARP** / **Tailscale**
-- **自定义协议 + 换核扩展**：粘贴 sing-box outbound JSON，保存时「内核即权威」实时探测兼容性；官方核不支持的协议可手动替换为支持它的第三方 fork 内核（FlowZ 自动识别 fork、停用在线更新以防覆盖）
-- **Xray 内核（FlowZX）**：随包内置 Xray-core sidecar，支持 **VLESS + XHTTP + REALITY + ENC（VLESS Encryption）**、XHTTP（packet-up / stream-up / stream-one，含 `extra`/xmux/上下行分离）、REALITY ML-DSA-65、vision-udp443，以及任意「自定义 Xray outbound JSON」；sing-box 仍为主核，Xray 节点同样支持热切换、分流、测速、代理链。详见 [docs/XRAY.md](docs/XRAY.md)
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows x64 | [FlowZ-4.4.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-setup.exe) | 安装版，默认仅为当前用户安装（安装时可改为所有用户），可自选目录 |
+| Windows x64 | [FlowZ-4.4.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-win-x64-portable.exe) | 便携版，数据保存在 exe 同目录的 `data\` |
+| macOS | [FlowZ-4.4.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-arm64.dmg) | Apple 芯片（M 系列） |
+| macOS | [FlowZ-4.4.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-mac-x64.dmg) | Intel 芯片 |
+| Linux x86_64 | [FlowZ-4.4.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-x86_64.AppImage) | 免安装，依赖 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.0/FlowZ-4.4.0-linux-amd64.deb) | Debian / Ubuntu，安装到 `/opt/FlowZ`，建议同时安装 `policykit-1` |
 
-**核心**
-- sing-box 1.14 统一内核，随包内置（Windows / macOS arm64+x64 / Linux）；Xray-core 26 作为 sidecar 随包内置，仅承载 Xray 独有协议组合
-- 抗封增强：**TLS Fragment**（全局）/ ECH / Multiplex / httpupgrade / **Shadow-TLS**（可附加于 SS2022 等协议）/ **Hysteria2 端口跳跃**（订阅自动识别，部分附手动开关）
-- **Block QUIC**（节点无关）：reject 代理向 QUIC/UDP 443，逼浏览器回退 TCP，解决节点 UDP relay 不通导致的网页卡顿
-- **WebRTC 防泄露**（仅 TUN）：off / 走代理 / 阻断，三档可选
+| 平台 | 系统要求 |
+|---|---|
+| Windows | Windows 10 / 11，仅 x64 |
+| macOS | macOS 12 Monterey 及以上，Apple 芯片或 Intel |
+| Linux | 仅 x86_64；TUN 需要 polkit（`pkexec`），未安装提权助手时还需要 `setcap`（`libcap2-bin`）；自动设置系统代理仅支持 GNOME，其他桌面请用 TUN 或「仅本地」 |
 
-**代理模式与接管**
-- **TUN 透明代理** + **系统代理模式** + 仅本地代理
-- 路由模式：全局 / 智能（自动分流，推荐）/ 直连
-- **无缝热切换节点**：selector 热切，默认优雅不断流；可选「切换时中断现有连接」
-- 代理链（前置代理）
+### 首次运行
 
-**组网 / Mesh**
-- WireGuard / WARP / Tailscale 作为 endpoint 节点，与普通代理一视同仁（可选中、可分流、可热切）
-- **WARP 一键注册**：匿名注册设备即用，删除节点时机会式注销、不留孤儿
-- **Tailscale 交互登录**：无需 authKey，点登录走浏览器授权，登录态求真、过期自动提示
-- **允许访问外网**开关：组网节点既可只通内网、也可当全量出口
-- **反向 mesh**（需 TUN + helper）：本机作子网路由 / 被组网内其它设备访问
+- **macOS**：应用没有 Apple 开发者签名，首次打开会提示「已损坏，无法打开」。把 FlowZ 拖入「应用程序」后，在终端执行一次下面的命令，再正常打开即可。对这个提示，「右键 → 打开」无效。DMG 中的 `0 首次打开必读 READ ME FIRST.txt` 也有同样说明。
 
-**路由规则**
-- **单条规则多条件组合**：域名 / IP / 端口 / 进程 / geosite / geoip / 规则集 等 15 类，OR/AND 组合
-- **规则资源体系**：内置 geosite/geoip 精选清单 + 远程 `.srs`/`.json` 规则集下载与定期更新
-- **改规则值零重启**：编辑已启用规则的匹配值（如往域名清单加一条）经 local rule-set 热重载即时生效、连接不中断；增删 / 排序 / 改策略等结构变更才重启（去抖合并，连改多条只重启一次）
-- **应用分流**：按进程名 / 路径指定 代理 / 直连 / 阻止
-- 列表搜索 + 拖拽排序（置顶 / 置底 / 上下移 / 键盘无障碍）+ 必填备注名 + 悬浮展开完整规则
+  ```bash
+  xattr -cr /Applications/FlowZ.app
+  ```
 
-**DNS 与分流**
-- **FakeIP** 加速 + 按地区分流（国内直连 / 回国反向）
-- **DNS 接管**：TUN 模式接管系统 DNS，崩溃安全兜底
-- DoH 上游、节点域名防回流、隐私 DoH 泄漏拦截
+- **Windows**：安装包未签名，SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
+- **Linux**：AppImage 需要先 `chmod +x`，并依赖 FUSE 2（如 `libfuse2`，Ubuntu 24.04 为 `libfuse2t64`）。Ubuntu 24.04 及以上建议用 `.deb`，它的安装脚本会写入 AppArmor 配置。
 
-**订阅**
-- 订阅链接导入（sing-box JSON 与常见分享格式）
-- 手动导入：从文件或粘贴文本（sing-box / Xray / Clash 配置、Base64、分享链接）批量导入到自建节点；Clash proxy-providers 同时导入为订阅（默认不自动更新、直连）
-- 自动更新调度（**默认开启**）：启动补更陈旧订阅 + 周期巡检 + 失败指数退避 + 「经代理更新」开关，更新**不打断当前连接**
-- 节点稳定指纹对账：订阅更新保留本地 id / 选中节点，连接零中断
-- **GitHub 镜像加速**：内核 / 规则资源 / 面板等 GitHub 下载可走 gh-proxy 镜像
+### 卸载与更新
 
-**界面与体验**
-- **Conduit 设计系统**：token 驱动双主题（亮 / 暗）+ 自托管字体，视觉统一
-- 五语言：简体中文 / 繁體中文 / English / Русский / فارسی（含 RTL）
-- 连接拓扑 · 实时流量统计与测速 · 出口 IP 展示
-- **隐私保护模式**（密码锁，scrypt 哈希存独立文件、不入配置）
-- **自动空闲模式**（系统真实输入空闲触发轻量 / 隐私模式）
-- **macOS 菜单栏常驻**：关窗即从程序坞隐去、仅留菜单栏，点菜单栏 / Spotlight 唤回
-- 开机自启 + 自动连接 + 静默启动
+- Windows 安装版在卸载时会删除 `%APPDATA%\flowz`（节点、订阅、规则等全部配置）和提权服务。需要保留时，请先在「设置 → 高级 → 数据备份与恢复」导出备份。覆盖升级不会删除数据。
 
-**管理与诊断**
-- **sing-box 1.14 原生 gRPC 管理 API**（取代 clash_api）：状态 / 连接 / 分组 / 节点热切统一走原生面
-- **官方 sing-box 面板集成**（opt-in 逃生舱）：开关开启后由内核在 `/dashboard/` serve 官方面板，给高级用户全功能入口
-- **诊断报告导出**：一键采集脱敏诊断信息，便于排障
+> [!WARNING]
+> 「关于」页和托盘菜单中的「检查更新」、启动时的自动检查，以及「关于」页的仓库链接与「报告问题」，目前仍指向上游 [dododook/FlowZ](https://github.com/dododook/FlowZ)；「内核管理」中 sing-box 的「检查更新」不受影响。上游安装包不含 Xray 内核，用它覆盖安装后 Xray 节点将无法使用。请只从本仓库 [Releases](https://github.com/mutsuki14/FlowZX/releases) 更新，并建议在「设置 → 常规」关闭「启动时自动检查更新」。
 
-**系统与可靠性**
-- **零授权提权链**：macOS root daemon · Windows LocalSystem 服务 + 命名管道 / socket · token 鉴权
-- **退出零残留**：跨平台清理进程 / 虚拟网卡 / 系统代理注册表，崩溃 · 注销 · 关机兜底
-- 自动更新：完整性校验 + 启动预检 + 失败自动回滚 + 问题版本跳过
-- 跨平台：Windows / macOS（Apple Silicon + Intel）/ Linux
+<a id="quick-start"></a>
 
----
+## 快速开始
 
-## 🖼 界面预览
+1. **添加节点**：在「节点」页点「添加订阅」粘贴订阅链接；或点「手动导入」，从文件或粘贴的文本导入分享链接、Clash、sing-box、Xray 配置；也可以逐个手动添加。
+2. **选择节点**：在「主页」或「节点」页选中要使用的节点。
+3. **确认接管方式与分流策略**：新安装默认为「系统代理」+「全局」。
+   - 「智能分流」：国内直连、国外走代理。自定义规则和应用分流只在这个模式下生效。
+   - 「TUN 网卡」：接管所有应用的流量和系统 DNS。macOS / Windows 首次启用时会提示安装提权助手；Linux 首次启用时经 pkexec 授权一次，也可在「设置 → 网络 → 提权助手」安装 systemd 助手，之后不再请求授权。
+   - 「仅本地」：只开放本地端口（默认 `7890`，HTTP 和 SOCKS 共用），不改动系统代理和网卡。
+4. **开启代理**：在「主页」点「开启代理」。
+5. **（可选）配置规则**：在「规则」页添加自定义规则；在「应用分流」页按应用指定代理 / 直连 / 阻断（总开关默认关闭）。
 
-> 截图为内置 demo 数据，非真实订阅 / 节点。各语言界面布局一致。
+<a id="protocols"></a>
 
-### 首页 · 连接总览
-所见即所得的连接状态、节点切换、实时速率与连接拓扑。亮 / 暗双主题：
+## 协议支持
 
-| 浅色主题 | 深色主题 |
+节点默认由 sing-box 运行，只有用到 Xray 独有特性的节点才交给 Xray。参数和实现细节见 [docs/XRAY.md](docs/XRAY.md)。
+
+| 协议 / 组合 | sing-box | Xray |
+|---|:---:|:---:|
+| **VLESS + XHTTP + REALITY + VLESS Encryption** | — | ✅ 自动 |
+| VLESS / VMess / Trojan + XHTTP | — | ✅ 自动 |
+| VLESS Encryption（`mlkem768x25519plus.*`，HTTP/2 以外的传输） | — | ✅ 自动 |
+| `xtls-rprx-vision-udp443` 流控 | — | ✅ 自动 |
+| REALITY ML-DSA-65 验证（`pqv`） | — | ✅ 自动 |
+| TLS + 证书 SHA-256 钉扎（`pcs`） | — | ✅ 自动 |
+| VLESS / VMess / Trojan（TCP / WebSocket / gRPC / HTTPUpgrade + TLS；VLESS 另支持 REALITY 与 `xtls-rprx-vision`） | ✅ 默认 | 可手动切换 |
+| VLESS / VMess / Trojan + HTTP/2 传输 | ✅ | — |
+| Shadowsocks / SS2022（可附加插件或 Shadow-TLS v3） | ✅ | 仅导入的 XHTTP 等组合（自动，表单无开关） |
+| Hysteria2（端口跳跃，salamander / gecko 混淆）、TUIC、AnyTLS、Snell v4 / v6 | ✅ | — |
+| NaiveProxy（Cronet，可选 HTTP/3） | ✅ | — |
+| SOCKS5、HTTP(S)、SSH | ✅ | — |
+| WireGuard、Cloudflare WARP、Tailscale（组网节点） | ✅ | — |
+| 自定义出站 JSON | ✅ sing-box outbound | ✅ Xray outbound（如 mKCP + finalmask、hysteria、wireguard） |
+
+**✅ 自动**：用到该特性时自动改由 Xray 运行，节点卡片显示 **Xray** 角标，悬停可看原因。**✅ 默认 / 可手动切换**：默认由 sing-box 运行，可在节点编辑表单的「高级」中打开「使用 Xray 内核」改由 Xray 运行。**—**：不由该内核运行。
+
+### 导入来源
+
+| 格式 | 订阅 | 手动导入 |
+|---|:---:|:---:|
+| 分享链接：`vless`、`vmess`、`trojan`、`hysteria2` / `hy2`、`ss`、`tuic`、`anytls`、`snell`、`naive+https`、`socks5`、`http(s)` 等，可为 Base64 列表 | ✅ | ✅ |
+| Clash / mihomo YAML 或 JSON（含 `xhttp-opts`、`proxy-providers`） | ✅ | ✅ |
+| sing-box JSON（`outbounds`） | ✅ | ✅ |
+| Xray JSON 配置 | — | ✅ |
+
+手动导入 Xray JSON 时，表单能表达的节点转为普通节点，其余（如 mKCP、finalmask、mux、自定义 sockopt）作为「自定义 Xray 出站 JSON」原样导入。
+
+<a id="features"></a>
+
+## 功能
+
+### 接管与分流
+
+- 接管方式：系统代理 / TUN 网卡 / 仅本地
+- 分流策略：全局 / 智能分流 / 直连；按地区分流（中国 / 伊朗 / 俄罗斯，可反向）
+- 本地混合端口可开放给局域网
+- 一键复制终端代理命令（CMD / PowerShell / Bash / git）
+
+### 节点切换
+
+- gRPC 热切换，失败时回退为重启内核；默认切换时断开旧节点上的连接（可关闭）
+- 编辑未使用的节点默认进入「待应用」，一键生效
+- 可选的故障自动切换：每 30 秒探测，连续 3 次失败后切换
+- 代理链（前置代理），自动排除环路
+
+### 规则
+
+- 15 类条件（域名、IP/CIDR、端口、进程、来源 MAC / 主机名、geosite、geoip、规则集等），可 OR / AND 组合
+- 动作为代理 / 直连 / 阻断，可指定目标节点
+- 规则资源：内置 MetaCubeX 规则目录，可添加 `https://….srs` 远程规则集，默认每 12 小时自动更新
+- 应用分流：按进程指定代理 / 直连 / 阻断（实验性）
+
+### DNS 与防泄漏
+
+- 国内 / 国外 DoH 分开设置（默认 `doh.pub` / `dns.google`）
+- FakeIP（新安装默认开）；TUN 下接管系统 DNS
+- 节点域名多上游竞速解析；拦截浏览器 DoH
+- 阻断 QUIC（新安装默认开）；WebRTC 防护（仅 TUN）
+
+### 抗封锁
+
+- TLS Fragment：全局开关，也作用于 Xray 节点，不作用于 Hysteria2 / TUIC / NaiveProxy
+- ECH、uTLS 指纹、Shadow-TLS v3、Multiplex（smux / yamux / h2mux）
+- 按平台可选的 TLS 引擎（Go / Schannel / Network.framework）
+- TLS spoof（需提权，ARM64 不可用）
+
+### 组网
+
+- WireGuard：默认用户态，支持 reserved、MTU
+- Cloudflare WARP：一键匿名注册，删除节点时注销设备
+- Tailscale：浏览器登录或 authKey、自定义控制服务器（Headscale）、出口节点、子网路由、Tailscale SSH
+- 反向 mesh（需 TUN 和提权助手）
+
+### 订阅
+
+- 默认每 12 小时自动更新（可设 1–168 小时），失败后指数退避
+- 更新默认不打断当前连接（改动了正在使用的节点时除外，见[常见问题](#faq)）
+- 可选经代理更新；显示流量与到期时间
+- GitHub 下载可走 gh-proxy 镜像（默认关闭）
+
+### 诊断
+
+- 延迟测速：TTFB，默认请求 `generate_204`，地址可改；不测带宽
+- 流媒体 / AI 服务解锁检测（ChatGPT、Claude、Gemini、Netflix、Disney+、Spotify）
+- 连接列表与实时日志
+- 导出脱敏诊断报告（含 Xray 状态）
+
+### 管理
+
+- sing-box 原生 gRPC 管理 API
+- 随包的官方 sing-box 面板（新安装默认开，代理运行时可用）
+- sing-box 内核在线更新：sha256 校验、启动预检、失败自动回滚
+- 数据备份与恢复（6 类可选）；应用内完整卸载
+
+### 界面
+
+- 简体中文 / 繁體中文 / English / Русский / فارسی（波斯语为从右到左布局），可跟随系统
+- 浅色 / 深色 / 跟随系统
+- 隐私模式（密码锁）；可选的空闲自动进入轻量 / 隐私模式
+- macOS 菜单栏常驻；开机自启、静默启动、自动连接
+
+<a id="screenshots"></a>
+
+## 截图
+
+截图使用演示数据（非真实订阅 / 节点），界面来自上游 FlowZ，未包含 Xray 角标和 Xray 内核状态。
+
+| 浅色 | 深色 |
 |:---:|:---:|
-| <img src="docs/screenshots/home-light.webp" width="100%"> | <img src="docs/screenshots/home-dark.webp" width="100%"> |
+| <img src="docs/screenshots/home-light.webp" width="100%" alt="主页（浅色）"> | <img src="docs/screenshots/home-dark.webp" width="100%" alt="主页（深色）"> |
 
-### 节点与订阅
-订阅一键导入、节点卡片管理、协议标识、批量测速与排序：
+<details>
+<summary>更多截图：节点、应用分流、规则、规则资源、连接、日志、设置</summary>
 
-<img src="docs/screenshots/servers.webp" width="100%">
-
-### 应用分流 · 路由规则
-按应用一键指定 代理 / 直连 / 阻止；规则支持多条件组合（域名 / IP / 端口 / 进程 / geosite 等 15 类，OR/AND）+ 拖拽排序 + 改值零重启：
-
-| 应用分流 | 路由规则 |
+| 节点 | 应用分流 |
 |:---:|:---:|
-| <img src="docs/screenshots/app-routing.webp" width="100%"> | <img src="docs/screenshots/rules.webp" width="100%"> |
+| <img src="docs/screenshots/servers.webp" width="100%" alt="节点"> | <img src="docs/screenshots/app-routing.webp" width="100%" alt="应用分流"> |
 
-### 规则资源
-内置 geosite/geoip 精选清单 + 远程 `.srs` 规则集下载与定期更新：
-
-<img src="docs/screenshots/rule-resources.webp" width="100%">
-
-### 连接诊断 · 实时日志
-逐连接速率 / 规则命中 / 节点链；分级实时日志：
-
-| 连接信息 | 实时日志 |
+| 规则 | 规则资源 |
 |:---:|:---:|
-| <img src="docs/screenshots/connections.webp" width="100%"> | <img src="docs/screenshots/logs.webp" width="100%"> |
+| <img src="docs/screenshots/rules.webp" width="100%" alt="规则"> | <img src="docs/screenshots/rule-resources.webp" width="100%" alt="规则资源"> |
 
-### 设置 · 一次授权零提权
-精细设置；**装一次提权 helper / 服务后，TUN 模式启停免每次授权**（Windows 一次 UAC / macOS 一次密码）：
+| 连接 | 日志 |
+|:---:|:---:|
+| <img src="docs/screenshots/connections.webp" width="100%" alt="连接"> | <img src="docs/screenshots/logs.webp" width="100%" alt="日志"> |
 
-<img src="docs/screenshots/settings.webp" width="100%">
+| 设置 |
+|:---:|
+| <img src="docs/screenshots/settings.webp" width="100%" alt="设置"> |
 
----
+</details>
 
-## ⚠️ 已知限制与行为说明
+<a id="architecture"></a>
 
-提 issue 前请先读——以下均为**设计如此，并非 bug**。
+## 工作原理
 
-### 结构性配置变更会短暂重连（约 1 秒），属正常
-底层 sing-box 内核**没有运行时增删 outbound / 重载整份配置的 API**（其 Clash 兼容 API 只能在已加载节点间切换，`PUT /configs` 是空操作）。因此 FlowZ 把变更分为两类：
-
-- **实时生效、连接零中断**：
-  - 切换选中节点（selector 热切换）。
-  - 编辑已启用规则的**匹配值**（如往域名清单加一条）——经 local rule-set 热重载。
-- **约 1 秒内核重启**（去抖：连续多次编辑合并为一次；连接短暂中断后自动恢复）：
-  - 增 / 删 / 排序规则，或改规则的动作 / 目标。
-  - 切换路由模式（全局 / 智能 / 直连）、改本地端口或 TUN/inbound 设置。
-  - 编辑当前被引用的节点，或订阅更新引入了**被引用的新节点**。
-
-重启很快、连接会自动恢复。**改这些设置时出现短暂闪断请勿提 issue**——这是 sing-box 应用结构性变更的固有方式。
-
-### 其它预期行为
-- **Tailscale：每设备只支持一个节点。** 所有 Tailscale 账号共用 `100.64.0.0/10`，多个会互相覆盖。
-- **NaiveProxy 依赖 Cronet 库**（Linux/Windows，打包时拉取）。缺失时 naive 节点会被**自动跳过**——其它协议不受影响；若选中的正是 naive 节点会明确提示。
-- **系统代理模式无法完整控制 DNS、也挡不住 QUIC 泄漏。** 只有 TUN 模式接管系统 DNS 并能 reject 代理向 QUIC。需要防泄漏的 DNS/QUIC 请用 TUN。
-- **Block QUIC 仅作用于代理向 QUIC。** 以 QUIC 拨号的节点（hysteria2 / tuic / naive）自身不受影响——它 reject 的是去往代理的 UDP 443，逼浏览器回退 TCP。
-- **macOS 提示「软件已损坏」**（未签名构建）→ 移除隔离属性：`xattr -cr /Applications/FlowZ.app`。
-
----
-
-## 📋 系统要求
-
-| 平台 | 要求 |
-|------|------|
-| Windows | Windows 10（1809+）/ Windows 11，x64 |
-| macOS | macOS 11 (Big Sur)+，Apple Silicon 或 Intel |
-| Linux | x86_64，AppImage / `.deb`（TUN 模式需 `pkexec` 一次性授权 setcap） |
-
----
-
-## 📥 安装
-
-从 [Releases](https://github.com/dododook/FlowZ/releases) 下载最新版本。
-
-| 平台 | 安装 |
-|------|------|
-| **Windows** | 运行 `.exe` 安装包，或免安装 `portable.exe` |
-| **macOS** | 打开 `.dmg` 拖入「应用程序」；arm64 / Intel 均随发布提供（Intel 版 naive 开箱即用） |
-| **Linux** | `AppImage` 直接运行，或安装 `.deb` |
-
-macOS 若提示「软件已损坏」，移除隔离属性即可：
-
-```bash
-xattr -cr /Applications/FlowZ.app
+```mermaid
+flowchart LR
+    APP["应用流量"] -->|"系统代理 / TUN / 本地端口"| SB["sing-box 主核<br/>分流 · DNS / FakeIP · 管理 API"]
+    SB -->|"原生节点"| NAT["sing-box 出站<br/>VLESS · Trojan · Hysteria2 · WireGuard …"]
+    SB -->|"Xray 节点：本地 SOCKS 桥"| XR["Xray-core sidecar<br/>XHTTP · REALITY · ENC …"]
+    XR -->|"dialerProxy 回环"| DI["sing-box xray-dial-in"]
+    DI -->|"直连"| SRV(("节点服务器"))
+    DI -->|"设置了前置代理时"| NAT
+    NAT --> SRV
 ```
 
----
+- sing-box 是唯一的主核。Xray 节点在 sing-box 中只是一个本地 SOCKS 出站，因此热切换、规则指定节点、测速和出口 IP 检测与原生节点走同一套逻辑。
+- Xray 以普通用户权限运行，只监听 `127.0.0.1`。启动前用 `xray run -test` 校验配置，随主核启停；意外退出后 60 秒内最多自动重启 3 次，超出后停止并提示，sing-box 不受影响。
+- Xray 发出的连接经 `dialerProxy` 回到 sing-box，由 sing-box 直连或交给前置节点（可以是原生节点，也可以是另一个 Xray 节点）。前置节点不可用时连接会被拒绝，不会改为直连。阻断 QUIC、TLS Fragment 等路由层设置对 Xray 节点同样有效。
 
-## 🚀 快速开始
+<a id="faq"></a>
 
-1. **添加节点** —「服务器」页选协议填信息，用「手动导入」从文件/文本（sing-box·Xray·Clash·Base64·分享链接）批量导入，或在「订阅」导入订阅链接。
-2. **选模式** — 首页选路由模式（默认 智能 / 自动分流）；不用 TUN 可在设置切「系统代理模式」。
-3. **启用代理** — 首页点「启用代理」。
-4. **（可选）配规则** —「路由规则」加自定义规则 / 引用规则集；「应用分流」按应用指定策略。
+## 常见问题与已知限制
 
----
+### 怎么知道节点由哪个内核运行？
 
-## 🛠 从源码构建
+带 **Xray** 角标的节点由 Xray 运行，悬停可看原因（如「XHTTP 传输」「证书 SHA-256 指纹」）。Xray 的版本和运行状态在「设置 → 高级 → 内核管理 → Xray 内核（sidecar）」中查看。
+
+### 为什么普通的 VLESS / Trojan 节点也显示 Xray 角标？
+
+填写了「证书 SHA-256 指纹」（`pcs`）的 TLS 节点会自动改由 Xray 运行，因为 sing-box 不支持整证书钉扎。
+
+### 怎样更换 Xray 版本？
+
+Xray 没有在线更新。把 `xray`（Windows 为 `xray.exe`）放到 `<userData>/xray_core/` 目录，存在时优先于随包版本；具体路径在内核管理的 Xray 一行中显示。macOS / Linux 需先 `chmod +x` 该文件，否则会被忽略并继续使用随包版本。
+
+### 改了设置后连接短暂中断？
+
+sing-box 不能在运行中增删出站，部分修改需要重启内核。重启有 1.5 秒去抖，连续修改合并为一次，通常几秒内恢复，Windows TUN 下稍慢。
+
+| 修改 | 结果 |
+|---|---|
+| 切换选中节点；修改规则的目标节点 | 热切换，不重启（目标节点处于「待应用」或为仅在选中时路由内网段的组网节点时会重启） |
+| 修改已启用规则的匹配值（规则只含域名、IP/CIDR、端口、进程类条件） | 本地规则集热重载，不重启 |
+| 修改含 geosite、geoip、规则集或来源设备条件的规则 | 重启 |
+| 新增、删除、排序规则，修改规则动作 | 重启 |
+| 切换分流策略，修改本地端口或 TUN 设置 | 重启 |
+| 编辑或删除正在使用的节点（选中节点、规则目标、前置代理链中的节点、组网节点）；订阅更新改动或下架了这些节点 | 重启 |
+| 增删改未使用的节点（含订阅更新带来的此类变化） | 进入「待应用」，不重启（可在设置中改为立即重启） |
+
+在「全局」或「直连」模式下修改规则不会重启，因为规则只在「智能分流」下生效。
+
+### 系统代理模式下 DNS、QUIC、WebRTC 会绕过代理吗？
+
+会。系统代理只对遵循代理设置的应用生效，DNS 接管和 WebRTC 防护只在 TUN 模式下工作。需要完整接管时请用 TUN。阻断 QUIC 拒绝的是发往代理的 UDP 443，让浏览器回退到 TCP；以 QUIC 拨号的节点（Hysteria2 / TUIC / NaiveProxy）自身不受影响。
+
+<details>
+<summary>完整的已知限制</summary>
+
+**通用**
+
+- Tailscale：每台设备只能添加一个 Tailscale 节点，所有账号共用 `100.64.0.0/10` 网段。
+- NaiveProxy：Linux / Windows 依赖随包的 `libcronet`，缺失时 naive 节点会被跳过，选中的正是 naive 节点时会提示；macOS 的 sing-box 已静态编入 Cronet。
+- `hy2://` 分享链接不携带端口跳跃参数；需要时在表单中填写，或通过 sing-box JSON、Clash `ports` 导入。
+- Multiplex 不作用于使用 `vision` 流控的节点。
+- WireGuard / Tailscale 组网节点不能作为前置代理。
+- 规则资源的远程导入只接受 `https://` 开头的 `.srs` 文件。
+
+**Xray 节点**
+
+- Xray 26 移除了 `allowInsecure`，Xray 节点上的「允许不安全连接」不会生效。自签证书请填写「证书 SHA-256 指纹」，可用 `xray tls hash --cert cert.pem` 获取。
+- 开启 ECH 时必须提供 ECHConfigList 或 DNS 查询地址，否则节点无效。
+- 使用 HTTP/2 传输、Shadow-TLS 或 SS 插件的节点不能改用 Xray。
+- 不使用 sing-box 的 Multiplex；XHTTP 的连接复用请在 `extra.xmux` 中配置。
+- 自定义 Xray JSON 中的 `tag`、`proxySettings`、`sockopt.dialerProxy` 由 FlowZX 接管，代理链请用节点的「前置代理」。
+- 随包 Xray 缺失时，Xray 节点会被跳过；选中的正是 Xray 节点时会提示。
+- 订阅链接不支持 Xray JSON 格式，只能手动导入。
+
+</details>
+
+<a id="feedback"></a>
+
+## 反馈问题
+
+请在本仓库的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 反馈，不要使用应用内的「报告问题」（它会打开上游仓库）。请附上：
+
+- 应用版本、操作系统与架构
+- sing-box 与 Xray 版本（设置 → 高级 → 内核管理）
+- 接管方式与分流策略
+- 出问题的节点是否带 Xray 角标，以及角标显示的原因
+- 「日志」页导出的脱敏诊断报告
+
+如果问题在不带 Xray 角标的节点上同样出现，它也可能存在于上游 FlowZ。
+
+<a id="build"></a>
+
+## 从源码构建
+
+需要 Node.js 26（与 CI 一致）、Go 1.24 及以上（编译提权助手；缺少时跳过，打出的包不含提权助手）、`bash`、`curl`、`tar`、`unzip`（Windows 请在 Git Bash 等提供这些命令的环境中执行），并能访问 GitHub 与 `proxy.golang.org`。
 
 ```bash
-git clone https://github.com/dododook/FlowZ.git
-cd FlowZ
-npm install
-
-npm run dev            # 开发（Vite + Electron 热重载）
-npm run build          # 编译主进程 + 渲染端
-
-npm run package:win    # Windows 安装包 + 便携版
-npm run package:mac    # macOS（arm64 + x64，含交叉编译 root helper）
-npm run package:linux  # Linux（AppImage + deb）
+git clone https://github.com/mutsuki14/FlowZX.git
+cd FlowZX
+npm ci                 # .npmrc 默认使用 npmmirror 镜像
+npm run fetch:core     # 下载 sing-box 与 Xray 并校验 sha256；二进制不入库，开发模式同样需要
+npm run dev            # Vite + Electron 开发模式
 ```
 
-- `package:mac` / `package:win` 会先 `build:helper`（Go 交叉编译提权 helper），再打包。
-- NaiveProxy 的 cronet 库由 `npm run fetch:cronet` 在打包时拉取（见下「NaiveProxy 说明」）。
+| 命令 | 作用 |
+|---|---|
+| `npm run build` | 编译主进程与渲染进程 |
+| `npm run package:win` | Windows 安装版与便携版 |
+| `npm run package:mac` | macOS arm64 与 x64 的 `FlowZ.app`（DMG 只在 CI 中生成） |
+| `npm run package:linux` | Linux AppImage 与 deb |
+| `npm test` | 单元测试 |
+| `npm run lint` | ESLint 检查 |
+| `npm run test:core-gate` | 用随包的 sing-box / Xray 校验生成的配置 |
+| `npm run test:xray-e2e` | Xray 端到端测试（仅 Linux / macOS，需先 `fetch:core`） |
 
----
+- `package:*` 依次执行 `build:helper` → `fetch:core` → `test:core-gate` → `fetch:cronet`（仅 Windows / Linux）→ `fetch:dashboard` → `build` → electron-builder，产物在 `dist-package/`。各平台请在对应系统上打包。
+- NaiveProxy 所需的 `libcronet` 由 `fetch:cronet` 从 Go 模块代理下载；macOS 的 sing-box 已静态编入 Cronet，无需下载。
+- 发布：推送 `v*` tag，或在 `main` 分支上手动运行 Release 工作流；发布说明取自 `docs/releases/v<版本>.md`。
 
-## 🛡 进阶说明
+技术栈：Electron 42 · React 19 · TypeScript · Vite · Tailwind CSS · Radix UI · electron-builder；内核为 sing-box 与 Xray-core（版本见顶部徽章与 [`src/shared/core-manifest.json`](src/shared/core-manifest.json)）；提权组件用 Go 编写（macOS launchd helper、Windows 服务、Linux systemd helper）。
 
-### 无缝切换节点
-默认 **selector 热切换**：切节点不重启内核、现有连接保留至自然关闭、新连接走新节点（优雅不断流）。高级设置「**切换时中断现有连接**」（默认关）开启后强制断开重建。**编辑已启用规则的匹配值**经 local rule-set 热重载零重启生效；跨模式 / 端口 / TUN / 规则结构（增删 / 排序 / 改策略）等改动才重启（多次改动去抖合并、只重启一次）。
+<a id="docs"></a>
 
-### 组网 / Mesh
-WireGuard / WARP / Tailscale 作为 endpoint 节点接入，和普通代理一样可选中、可被规则指向、可热切。
+## 文档
 
-- **WARP**：一键匿名注册即用；纯出口节点，可加多个作备选 / failover（一次激活一个）。
-- **Tailscale**：账号制，点「登录」走浏览器授权（也支持 authKey）；同一设备**只支持一个 Tailscale 节点**——所有账号共用 `100.64.0.0/10` 网段，多个会互相覆盖。
-- **允许访问外网**：开 = 当全量出口；关 = 只通组网内网段。
-- **反向 mesh**（需 TUN + helper）：建真内核接口，让本机可被组网内其它设备访问 / 作子网路由；默认关（用户态只出不进，零提权）。
+| 文档 | 内容 |
+|---|---|
+| [docs/XRAY.md](docs/XRAY.md) | Xray 内核：支持的组合、架构、导入参数、注意事项、验证方法 |
+| [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 发布说明 |
+| [docs/RELEASE.md](docs/RELEASE.md) | 发布流程（部分内容沿用上游，尚未更新） |
+| [resources/README.md](resources/README.md) | 随包资源与内核文件 |
+| [resources/data/README.md](resources/data/README.md) | 内置规则集 |
+| [helper/README.md](helper/README.md) | macOS 提权 helper |
 
-### Block QUIC（高级设置）
-对**代理向 QUIC（UDP 443）**执行 reject、逼浏览器回退 TCP，解决「节点 UDP relay 不通导致网页卡顿 / 断流」。**节点无关**；hysteria2 / tuic / naive 等以 QUIC 拨号的节点**自身拨号不受影响**。默认关。
+<a id="credits"></a>
 
-### 抗封增强
-- **TLS Fragment**（全局开关）：切分 TLS ClientHello，规避基于 SNI 的 DPI 阻断。对所有 TCP-TLS 节点生效；hysteria2 / tuic / naive 自动排除。
-- **ECH / Multiplex / httpupgrade / Hysteria2 端口跳跃**：从 **sing-box JSON 订阅自动识别并生效**（Multiplex 对 reality+vision 节点自动跳过；端口跳跃支持多段范围）。
+## 致谢
 
-### sing-box 官方面板（opt-in）
-设置开启后，内核会在管理 API 监听口的 `/dashboard/` 提供官方 sing-box 面板。**仅在代理运行时可用**，与代理模式 / 路由模式无关。首次需联网下载面板资源（可走 GitHub 镜像加速）。
+| 项目 | 用途 |
+|---|---|
+| [FlowZ](https://github.com/dododook/FlowZ)（原作者开源地址：[zhangjh/FlowZ](https://github.com/zhangjh/FlowZ)） | FlowZX 的上游 |
+| [sing-box](https://github.com/SagerNet/sing-box) | 主核 |
+| [Xray-core](https://github.com/XTLS/Xray-core) | sidecar 内核 |
+| [cronet-go](https://github.com/SagerNet/cronet-go) | NaiveProxy 使用的 Cronet |
+| [sing-box-dashboard](https://github.com/SagerNet/sing-box-dashboard) | 随包的官方面板 |
+| [sing-geoip](https://github.com/SagerNet/sing-geoip) · [sing-geosite](https://github.com/SagerNet/sing-geosite) · [meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat) | 内置与可下载的规则集 |
+| [IBM Plex](https://github.com/IBM/plex) · [Space Grotesk](https://github.com/floriankarsten/space-grotesk) · [country-flag-icons](https://gitlab.com/catamphetamine/country-flag-icons) | 界面字体与国旗图标 |
 
-### ⚠️ NaiveProxy（naive）核心库说明
-naive 出站底层走 **Chromium 的 Cronet 网络库**以获得与浏览器一致的指纹，各平台链接方式不同：
-- **Linux / Windows**：cronet 走**动态库**（`libcronet.so` / `libcronet.dll`），由 `npm run fetch:cronet` 从 [SagerNet/cronet-go](https://github.com/SagerNet/cronet-go/releases) 拉取并随安装包打入（体积大，不入库、打包时拉取）。
-- **macOS（arm64 与 x64）**：cronet 由 sing-box 内核**静态编入**（CGO），naive **开箱即用、无需外部库**。
+<a id="license"></a>
 
-> 缺少 cronet 的平台 / 架构上，naive 节点会被**自动跳过**（不影响其它协议；若选中的正是 naive 节点会明确提示）。
+## 许可与免责声明
 
----
-
-## 🔧 技术栈
-
-- **Electron 42** + **React 19** + TypeScript
-- **sing-box 1.14**（代理内核，多平台随包内置）
-- 管理面：sing-box 1.14 **原生 gRPC API**（取代 clash_api）
-- Tailwind CSS + Radix UI · **Conduit 设计系统**（token 驱动双主题 + 自托管字体）
-- Vite（构建）/ electron-builder（打包）
-- Go（macOS 提权 helper · Windows 提权服务）
-
----
-
-## 📄 开源协议
-
-MIT License
-
----
-
-## ⚠️ 免责声明
-
-本软件仅供学习与研究使用。请遵守当地法律法规。使用本软件所产生的任何后果由使用者自行承担。
-
----
-
-## ⭐ Star 趋势
-
-[![Star History Chart](https://star-history.dera.page/svg?repos=dododook/FlowZ&type=Date)](https://star-history.dera.page/#dododook/FlowZ&Date)
+- FlowZX 源代码以 [MIT](LICENSE.txt) 许可发布（Copyright (c) 2025 FlowZ Project）。
+- 随包分发的第三方程序遵循各自的许可：sing-box 为 GPL-3.0-or-later，Xray-core 为 MPL-2.0，其他组件以各自上游的声明为准。
+- 本软件仅供学习与研究使用。请遵守当地法律法规，使用本软件产生的一切后果由使用者自行承担。
