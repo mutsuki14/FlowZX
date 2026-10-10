@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/select';
 import { FormField, FormMessage } from '@/components/ui/form';
 import { TLS_SPOOF_METHODS, isTlsSpoofSupportedArch } from '@shared/tls-spoof';
+import { realityFingerprint } from '@shared/reality';
 import { InfoTooltip } from './info-tooltip';
 import { FieldGrid, FieldSpan } from './form-layout';
 import { EchField } from './anti-censor-fields';
@@ -69,7 +70,19 @@ export function TlsServerNameField({
   );
 }
 
-export function FingerprintField({ control, t }: { control: AnyControl; t: TFn }) {
+/**
+ * @param reality REALITY 段用：去掉「无」选项、显示值按 realityFingerprint 归一（none/空 → chrome）——REALITY 不挂
+ *   uTLS 两侧内核都拒收，提交映射同样归一，界面显示即实际生效值（trojan 的 TLS 指纹缺省为 none，切过来不露馅）。
+ */
+export function FingerprintField({
+  control,
+  t,
+  reality = false,
+}: {
+  control: AnyControl;
+  t: TFn;
+  reality?: boolean;
+}) {
   return (
     <FormField
       control={control}
@@ -77,12 +90,15 @@ export function FingerprintField({ control, t }: { control: AnyControl; t: TFn }
       render={({ field }) => (
         <div className="nd-fld">
           <span className="nd-fld-lbl">{t('servers.fingerprint')}</span>
-          <Select onValueChange={field.onChange} value={field.value}>
+          <Select
+            onValueChange={field.onChange}
+            value={reality ? realityFingerprint(field.value) : field.value}
+          >
             <SelectTrigger>
               <SelectValue placeholder={t('servers.selectFingerprint', 'Select TLS Fingerprint')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">{t('servers.none', 'None')}</SelectItem>
+              {!reality && <SelectItem value="none">{t('servers.none', 'None')}</SelectItem>}
               <SelectItem value="chrome">Chrome</SelectItem>
               <SelectItem value="firefox">Firefox</SelectItem>
               <SelectItem value="safari">Safari</SelectItem>

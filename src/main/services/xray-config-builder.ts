@@ -15,6 +15,7 @@
  */
 import type { ServerConfig, LogLevel } from '../../shared/types';
 import { isVlessEncryptionEnabled, isXhttpNetwork } from '../../shared/xray';
+import { realityFingerprint } from '../../shared/reality';
 
 export type XrayLogLevel = 'debug' | 'info' | 'warning' | 'error' | 'none';
 
@@ -335,7 +336,8 @@ function buildStreamSettings(
     ss.security = 'reality';
     ss.realitySettings = compact({
       serverName: server.tlsSettings?.serverName?.trim(),
-      fingerprint: toXrayFingerprint(server.tlsSettings?.fingerprint) || 'chrome',
+      // REALITY 必须是浏览器指纹：'none'（→ Xray 'unsafe'）被 Xray 拒收 → 与 sing-box 同口径归一为 chrome。
+      fingerprint: realityFingerprint(server.tlsSettings?.fingerprint),
       publicKey: r.publicKey.trim(),
       shortId: r.shortId?.trim(),
       spiderX: r.spiderX?.trim(),

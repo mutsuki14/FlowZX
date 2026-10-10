@@ -2,10 +2,11 @@
  * Xray sidecar 真核门 —— 把「Xray 独有协议组合」节点交**随包 Xray 内核**（`xray run -test`）与**随包 sing-box**
  *（`sing-box check`）双重校验，覆盖单测 toEqual 管不到的值域与跨字段引用：
  *  - Xray 侧：VLESS-XHTTP-REALITY-ENC / RAW-REALITY-Vision-ENC / XHTTP-TLS 证书钉扎 / Reality ML-DSA-65 /
- *    vision-udp443 / VMess-XHTTP / Trojan-XHTTP-REALITY / SS2022 强制 Xray / 自定义 Xray JSON（XHTTP 上下行分离）
- *    + 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）；
+ *    vision-udp443 / VMess-XHTTP / Trojan-XHTTP-REALITY / Trojan-gRPC-REALITY 强制 Xray / SS2022 与 SS-AEAD 强制 Xray /
+ *    自定义 Xray JSON（XHTTP 上下行分离）+ 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）；
  *  - sing-box 侧：socks 桥出站 / xray-dial-in 回环入站（users）/ auth_user 钉死路由 / xray-dial-direct 出站
- *    在完整 generateSingBoxConfig 产物中引用完整、check 通过。
+ *    在完整 generateSingBoxConfig 产物中引用完整、check 通过；原生 trojan + REALITY（指纹 none → chrome）与
+ *    勾了 Xray 却因流加密留在 sing-box 的 SS 节点同场 check。
  *
  * 与 singbox-check-gate 同一调用位置与语义：不在默认 `npm test`（需随包二进制，已 gitignore），由
  * `npm run test:core-gate`（打包链必经、先跑 fetch:core）执行；二进制缺失即硬 fail，无豁免。
@@ -187,6 +188,40 @@ function corpus(pqv: string): ServerConfig[] {
         password: 'AAAAAAAAAAAAAAAAAAAAAA==',
       },
     }),
+    // SS 表单「使用 Xray 内核」：AEAD → Xray；流加密（Xray 已移除）勾了也留在 sing-box（canUseXrayCore）。
+    base('ss-aead-forced', {
+      protocol: 'shadowsocks',
+      uuid: undefined,
+      useXrayCore: true,
+      shadowsocksSettings: { method: 'aes-256-gcm', password: 'pw' },
+    }),
+    base('ss-stream-forced', {
+      protocol: 'shadowsocks',
+      uuid: undefined,
+      useXrayCore: true,
+      shadowsocksSettings: { method: 'aes-256-cfb', password: 'pw' },
+    }),
+    // trojan + REALITY（trojan 表单）：纯 REALITY 由 sing-box 原生承载；勾「使用 Xray」（gRPC）→ Xray。
+    // 指纹故意用 trojan 的 TLS 缺省 'none'：两侧 builder 须归一为 chrome，否则两核均拒收。
+    base('trojan-raw-reality', {
+      protocol: 'trojan',
+      uuid: undefined,
+      password: 'pw',
+      security: 'reality',
+      tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'none' },
+      realitySettings: { publicKey: PBK, shortId: '0123abcd' },
+    }),
+    base('trojan-grpc-reality-forced', {
+      protocol: 'trojan',
+      uuid: undefined,
+      password: 'pw',
+      useXrayCore: true,
+      network: 'grpc',
+      grpcSettings: { serviceName: 'svc' },
+      security: 'reality',
+      tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'none' },
+      realitySettings: { publicKey: PBK, shortId: 'ab', spiderX: '/' },
+    }),
     base('vless-ws-forced', {
       useXrayCore: true,
       network: 'ws',
@@ -312,6 +347,12 @@ describe('Xray 侧：xray run -test', () => {
     const servers = corpus(PQV);
     const xrayNodes = servers.filter((s) => requiresXrayCore(s));
     expect(xrayNodes.map((s) => s.id)).not.toContain('hy2-hop');
+    // 自检：表单新形态确实分到了预期内核（否则「通过」不含它们）。
+    expect(xrayNodes.map((s) => s.id)).toEqual(
+      expect.arrayContaining(['ss-aead-forced', 'trojan-grpc-reality-forced'])
+    );
+    expect(xrayNodes.map((s) => s.id)).not.toContain('ss-stream-forced');
+    expect(xrayNodes.map((s) => s.id)).not.toContain('trojan-raw-reality');
     const plan = planXrayBridge({
       candidates: xrayNodes,
       allServers: servers,
@@ -357,6 +398,12 @@ describe('sing-box 侧：完整 generateSingBoxConfig + sing-box check', () => {
       expect(sel?.outbounds).toContain(s.name);
     }
     expect(sb.outbounds.find((o) => o.tag === 'hy2-hop')?.type).toBe('hysteria2');
+    // 原生 trojan + REALITY（指纹 none → chrome）与留在 sing-box 的 SS 流加密节点进入本次 check。
+    const trojanReality = sb.outbounds.find((o) => o.tag === 'trojan-raw-reality');
+    expect(trojanReality?.type).toBe('trojan');
+    expect(trojanReality?.tls?.reality).toMatchObject({ enabled: true, public_key: PBK });
+    expect(trojanReality?.tls?.utls).toEqual({ enabled: true, fingerprint: 'chrome' });
+    expect(sb.outbounds.find((o) => o.tag === 'ss-stream-forced')?.type).toBe('shadowsocks');
     expect(sb.outbounds.find((o) => o.tag === 'xray-dial-direct')?.type).toBe('direct');
     const dialIn = sb.inbounds.find((i) => i.tag === 'xray-dial-in');
     expect(dialIn?.type).toBe('socks');

@@ -58,6 +58,23 @@ export function isVlessEncryptionEnabled(encryption: string | undefined): boolea
   return /^mlkem768x25519plus\./i.test((encryption || '').trim());
 }
 
+/**
+ * Shadowsocks 加密方法 Xray 是否支持：仅 AEAD（aes-128/256-gcm、(x)chacha20(-ietf)-poly1305）、SS2022（2022-blake3-*）
+ * 与 none/plain（大小写不敏感，与 Xray 一致）。流加密（aes-*-cfb/ctr、rc4-md5、chacha20-ietf…）已被 Xray 移除，
+ * `xray run -test` 报「unknown cipher method」——这类节点只能留在 sing-box。
+ */
+export function isXrayShadowsocksMethod(method: string | undefined): boolean {
+  const m = (method || '').trim().toLowerCase();
+  return (
+    m === 'aes-128-gcm' ||
+    m === 'aes-256-gcm' ||
+    /^x?chacha20(-ietf)?-poly1305$/.test(m) ||
+    m.startsWith('2022-blake3-') ||
+    m === 'none' ||
+    m === 'plain'
+  );
+}
+
 /** 自定义协议节点是否为 Xray outbound JSON（engine='xray'）。 */
 export function isXrayCustomNode(
   server: Pick<ServerConfig, 'protocol' | 'customSettings'>
@@ -67,16 +84,24 @@ export function isXrayCustomNode(
 
 /**
  * 节点能否「手动切到 Xray 内核」（表单开关可用性）：结构化协议，且未用 sing-box 独有的附加层
- *（Shadow-TLS 外层 / SS 插件——Xray 无对应实现）。
+ *（Shadow-TLS 外层 / SS 插件——Xray 无对应实现），SS 加密方法须为 Xray 支持的 AEAD / 2022。
  */
 export function canUseXrayCore(server: ServerConfig): boolean {
   const p = server.protocol?.toLowerCase();
   if (!XRAY_STRUCTURED_PROTOCOLS.includes(p)) return false;
   if (server.shadowTlsSettings) return false;
   if (p === 'shadowsocks' && server.shadowsocksSettings?.plugin) return false;
+  if (p === 'shadowsocks' && !isXrayShadowsocksMethod(server.shadowsocksSettings?.method)) {
+    return false;
+  }
   // HTTP/2(h2) 传输已被 Xray 移除（官方建议迁 XHTTP）→ 强制 Xray 会产出 Xray 拒收的配置。
   const n = (server.network || 'tcp').toLowerCase();
   if (n === 'http' || n === 'h2') return false;
+  // Xray 的 REALITY 只支持 RAW / XHTTP / gRPC（`xray run -test`：「REALITY only supports RAW, XHTTP and gRPC
+  // for now」）；sing-box 不限传输 → ws / httpupgrade + REALITY 只能留在 sing-box。
+  if ((server.security || '').toLowerCase() === 'reality' && (n === 'ws' || n === 'httpupgrade')) {
+    return false;
+  }
   return true;
 }
 

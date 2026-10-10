@@ -57,7 +57,9 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
    outbound（mKCP、finalmask、mux、sockopt、wireguard / hysteria 等）会以「自定义 Xray JSON」原样导入。
 2. **手动添加 / 编辑**：VLESS / VMess / Trojan 表单的「传输」选 **XHTTP (Xray)**；VLESS 的「加密」可填
    `xray vlessenc` 生成的 encryption 串。需要 Xray 的节点会显示 **Xray** 角标，「高级」里的「使用 Xray 内核」
-   开关会自动打开并说明原因；普通节点也可手动打开该开关改由 Xray 承载。
+   开关会自动打开并说明原因；普通节点（含 Shadowsocks，见下方限制）也可手动打开该开关改由 Xray 承载。
+   Trojan 表单的「安全」可选 **Reality**（与 VLESS 相同的公钥 / Short ID / SpiderX / 指纹字段）：sing-box 与 Xray
+   都原生支持 Trojan + REALITY，默认由 sing-box 承载；填写 ML-DSA-65 验证公钥（`pqv`）或手动勾选时改由 Xray 承载。
 3. **任意 Xray 组合**：添加节点 →「自定义出站 JSON」→ 内核选 **Xray** → 粘贴 Xray outbound JSON，表单会实时用
    `xray run -test` 校验。`tag`、`proxySettings`、`sockopt.dialerProxy` 由 FlowZX 接管（链式代理请用节点的前置代理）。
 4. **内核状态**：设置 → 高级 → 内核管理 →「Xray 内核（sidecar）」显示版本与运行状态。要使用其它版本的 Xray，
@@ -73,6 +75,10 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 - HTTP/2（h2）传输已被 Xray 移除：使用 h2 的节点不能切到 Xray 内核（官方建议改用 XHTTP）。
 - Xray 节点不使用 sing-box 的多路复用（Multiplex）；XHTTP 的连接复用用 `extra.xmux` 配置。
 - Shadow-TLS、SS 插件为 sing-box 独有特性，带这些附加层的节点不能切到 Xray 内核。
+- Xray 已移除 Shadowsocks 流加密（`aes-*-cfb` / `aes-*-ctr`、`rc4-md5`、`chacha20-ietf` 等）：仅 AEAD
+  （`aes-128/256-gcm`、`(x)chacha20-(ietf-)poly1305`）与 2022（`2022-blake3-*`）方法的 SS 节点可切到 Xray 内核。
+- Xray 的 REALITY 只支持 RAW / XHTTP / gRPC 传输：WebSocket / HTTPUpgrade + REALITY 的节点只能由 sing-box 承载。
+- REALITY 必须使用 uTLS 浏览器指纹：指纹为「无」时两侧均按 `chrome` 下发（sing-box / Xray 都拒收无指纹的 REALITY）。
 
 ## 打包与版本
 
