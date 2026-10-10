@@ -37,6 +37,10 @@
    ```
    脚本（`scripts/push-release.js`）会校验工作区干净度、检查本地/远程 tag 是否已存在，并在确认后创建并推送 tag。**它只推 tag**——构建与发布全部由 CI 完成。
 
+   **不便推 tag 时（如无 tag 推送权限的自动化环境）**：在 GitHub Actions 页对 `Release` 点「Run workflow」（仅限 `main`），
+   或经 API 触发 `workflow_dispatch`。版本取 `package.json`，CI 构建完成后在本次 commit 上自动创建 `v{version}` tag 并发布；
+   该 tag 已存在且指向别的 commit 时会直接失败（须先升版本号）。
+
 4. **CI 自动构建并发布**
 
    推送 `v*` tag 后，`release.yml` 自动：

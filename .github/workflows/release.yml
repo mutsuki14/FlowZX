@@ -4,12 +4,55 @@ on:
   push:
     tags:
       - 'v*'
+  # 手动发版（Actions 页「Run workflow」或 API，仅限 main）：无需先推 tag——版本取 package.json，create-release 在本次
+  # commit 上创建 v<版本> tag 并发布。tag 已存在且指向别的 commit 时 meta 直接失败（绝不把另一份代码挂到已发布版本号下）。
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  # 版本号单一来源：tag 触发 = tag 名；手动触发 = package.json（并做 main 分支 / 既有 tag 校验）。
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            if [ "$VERSION" != "$PKG" ]; then
+              echo "::warning::tag v$VERSION 与 package.json 版本 $PKG 不一致（安装包文件名按 package.json）"
+            fi
+          else
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::手动发版只允许在 main 上触发（当前 $GITHUB_REF）"
+              exit 1
+            fi
+            VERSION=$PKG
+            # 既有 tag：附注 tag 取 ^{} 解引用后的 commit。指向本次 commit → 视为重跑（补传安装包）；否则拒绝。
+            V_RE=${VERSION//./\\.}
+            LINES=$(git ls-remote --tags origin | grep -E "refs/tags/v${V_RE}(\^\{\})?$" || true)
+            if [ -n "$LINES" ]; then
+              SHA=$(echo "$LINES" | awk '$2 ~ /\^\{\}$/ {print $1}')
+              [ -n "$SHA" ] || SHA=$(echo "$LINES" | awk '{print $1}' | head -1)
+              if [ "$SHA" != "$GITHUB_SHA" ]; then
+                echo "::error::tag v$VERSION 已存在且指向 $SHA（非本次 $GITHUB_SHA）——请先升 package.json 版本号"
+                exit 1
+              fi
+            fi
+          fi
+          echo "Release version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: meta
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -73,7 +116,7 @@ jobs:
           # （v4.1.0 实测：x64 落 dist-package/mac、arm64 落 dist-package/mac-arm64），各自含对应架构的提权 helper。
           # 故此处按 arch 后缀目录优先、回退无后缀目录，并用 lipo 校验确属目标架构；缺则【报错失败】（不再静默跳过，
           # 避免 v4.1.0 那样绿灯却漏发 mac-x64 包）。
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${{ needs.meta.outputs.version }}
           for ARCH in arm64 x64; do
             DMG_PATH="dist-package/FlowZ-${VERSION}-mac-${ARCH}.dmg"
             case "$ARCH" in arm64) WANT=arm64 ;; x64) WANT=x86_64 ;; esac
@@ -121,7 +164,7 @@ jobs:
           retention-days: 5
 
   create-release:
-    needs: release
+    needs: [meta, release]
     runs-on: ubuntu-latest
 
     steps:
@@ -136,22 +179,22 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
       # FlowZX fork 的提交多为直推 main、无 PR，generate_release_notes 只剩一行 Full Changelog。
       # 有 docs/releases/v<版本>.md 时以其为正文（generate_release_notes 的自动部分接在其后）；没有则空正文。
       - name: Prepare release notes
         run: |
-          NOTES="docs/releases/v${{ steps.version.outputs.VERSION }}.md"
+          NOTES="docs/releases/v${{ needs.meta.outputs.version }}.md"
           if [ -f "$NOTES" ]; then cp "$NOTES" release-notes.md; else : > release-notes.md; fi
 
       - name: Create GitHub Release
-        # 直接发布（非 draft）：tag 仅在 main 校验通过后推送，发布前已人工/CI 把关。
+        # 直接发布（非 draft）：tag / 手动发版仅在 main 校验通过后进行，发布前已人工/CI 把关。
+        # tag_name + target_commitish：手动发版时 tag 尚不存在，由 Release 在本次 commit 上创建（GITHUB_TOKEN 建的 tag
+        # 不会再触发本 workflow，无递归）；tag 触发时二者即现有 tag / 其 commit，行为不变。
         uses: softprops/action-gh-release@v2
         with:
-          name: Release ${{ steps.version.outputs.VERSION }}
+          tag_name: v${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Release ${{ needs.meta.outputs.version }}
           draft: false
           prerelease: false
           body_path: release-notes.md

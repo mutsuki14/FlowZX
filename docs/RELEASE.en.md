@@ -37,6 +37,11 @@ This document describes how to ship a new FlowZ release. The single trigger for 
    ```
    The script (`scripts/push-release.js`) checks the working tree is clean, whether the local/remote tag already exists, and — after confirmation — creates and pushes the tag. **It only pushes the tag**; building and publishing are done entirely by CI.
 
+   **When pushing a tag isn't possible** (e.g. an automation environment without tag-push rights): click "Run workflow" on the `Release`
+   workflow in GitHub Actions (`main` only), or trigger its `workflow_dispatch` via the API. The version comes from `package.json`; after the
+   builds finish, CI creates the `v{version}` tag on that commit and publishes the release. It fails if that tag already exists on another commit
+   (bump the version first).
+
 4. **CI builds and publishes automatically**
 
    On a `v*` tag push, `release.yml`:
