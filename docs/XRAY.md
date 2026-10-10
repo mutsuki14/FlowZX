@@ -53,8 +53,21 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 
    支持的分享链参数：`type=xhttp|splithttp`、`path`、`host`、`mode`、`extra`（URL 编码 JSON）、`encryption`、
    `flow=xtls-rprx-vision-udp443`、`pbk`/`sid`/`spx`/`pqv`、`pcs`（证书指纹）、`ech`。Clash（mihomo）的
-   `network: xhttp` + `xhttp-opts` + `encryption` 与 Xray JSON 配置导入同样支持；Xray JSON 中结构化表单无法表达的
-   outbound（mKCP、finalmask、mux、sockopt、wireguard / hysteria 等）会以「自定义 Xray JSON」原样导入。
+   `network: xhttp` + `xhttp-opts` + `encryption` 同样支持。
+
+   **Xray JSON**（手动导入与订阅链接均支持）。按 outbound 用 `protocol`（sing-box 用 `type`）自动识别，不会与
+   sing-box JSON 混淆；支持三种形态：
+   - 单份 Xray 配置（含 `outbounds`）；
+   - 完整配置数组：Marzban / 3x-ui 等面板的「v2ray-json」订阅，每份配置通常一个节点，节点名取配置顶层的
+     `remarks`（一份配置含多个代理 outbound 时为「remarks · tag」）；
+   - 裸 outbound 数组。
+
+   `freedom` / `blackhole` / `dns` / `loopback` 等内部 outbound 忽略。链式代理（`sockopt.dialerProxy` /
+   `proxySettings.tag`）转为节点的「前置代理」，且只在**同一份配置内**解析；前置指向内部 outbound（如 3x-ui 的
+   `fragment` 分片 freedom）时该链不保留并告警——节点直连服务器，分片设置不生效。结构化表单无法表达的 outbound
+   （mKCP、finalmask、mux、sockopt、wireguard / hysteria 等）以「自定义 Xray JSON」原样导入。订阅更新按「协议 +
+   地址 + 端口 + 凭据 + 传输」对账（自定义 Xray JSON 节点取其 outbound 内的凭据与传输），节点 id 与前置代理关系在
+   更新间保持稳定，内容未变时不重启内核。
 2. **手动添加 / 编辑**：VLESS / VMess / Trojan 表单的「传输」选 **XHTTP (Xray)**；VLESS 的「加密」可填
    `xray vlessenc` 生成的 encryption 串。需要 Xray 的节点会显示 **Xray** 角标，「高级」里的「使用 Xray 内核」
    开关会自动打开并说明原因；普通节点也可手动打开该开关改由 Xray 承载。
@@ -83,8 +96,8 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 
 ## 验证
 
-- `npm test`：Xray 判定 / 配置构造 / 桥规划 / 分享链 / Clash / Xray JSON 导入 / 脱敏 等单测。
+- `npm test`：Xray 判定 / 配置构造 / 桥规划 / 分享链 / Clash / Xray JSON 导入与订阅（含对账稳定性）/ 脱敏 等单测。
 - `npm run test:core-gate`（打包链必经）：`xray-check-gate` 用随包 Xray 跑 `xray run -test`、用随包 sing-box 跑
-  `sing-box check`，覆盖上表全部组合与前置代理链。
+  `sing-box check`，覆盖上表全部组合与前置代理链，以及 v2ray-json 订阅语料（`xray-subscription-fixtures.ts`）的解析产物。
 - `npm run test:xray-e2e`（Linux / macOS，需先 `npm run fetch:core`）：在本机起 VLESS-XHTTP-REALITY-ENC 等真实服务端，
   经 `ProxyManager.start` 全链路验证 TCP + UDP 转发、两条测速路径、节点热切换、Xray 崩溃自愈、前置代理链。

@@ -1629,7 +1629,7 @@
       "toolargeTitle": "Subscription too large",
       "toolargeDetail": "The response exceeds the size limit and was rejected.",
       "parseTitle": "Unrecognized format",
-      "parseDetail": "The content is not a valid subscription (failed to parse as Clash, sing-box, or Base64).",
+      "parseDetail": "The content is not a valid subscription (failed to parse as Clash, sing-box, Xray, or Base64).",
       "emptyTitle": "Subscription is empty",
       "emptyDetail": "Fetched successfully but no usable nodes were found.",
       "unknownTitle": "Failed to add",

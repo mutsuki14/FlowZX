@@ -16,7 +16,8 @@ import {
   resolveProxyProviders,
   type ClashDoc,
 } from './ClashSubscriptionParser';
-import { parseXrayOutbounds } from './xray-import';
+import { parseXrayJson, xrayOutboundIdentity, type XrayJsonParseResult } from './xray-import';
+import { isXrayCustomNode } from '../../shared/xray';
 import { isServerComplete } from '../../shared/server-completeness';
 import { normalizeDuration } from '../../shared/duration';
 import {
@@ -203,6 +204,12 @@ export class SubscriptionService {
    * 凭据可区分同 host:port 的并列节点，几乎不随更新变化。
    */
   static serverFingerprint(s: ServerConfig): string {
+    // 透传 Xray outbound（Xray JSON 订阅的 mKCP/mux/sockopt/wireguard… 节点）：凭据/传输在 customSettings.outbound 里，
+    // 外层 uuid/password/network 恒空——不展开则同 host:port 的并列透传节点指纹相同、按顺序互相顶替 id。
+    if (isXrayCustomNode(s)) {
+      const x = xrayOutboundIdentity(s.customSettings?.outbound);
+      return `custom:${x.protocol}|${s.address}|${s.port}|${x.cred}|${x.network}`;
+    }
     // 凭据按协议落点取：vless/vmess/tuic→uuid；trojan/hy2/anytls→password；ss→shadowsocksSettings.password；
     // naive/socks/http→username；ssh→sshSettings.password。覆盖嵌套落点，避免 SS 等凭据落空致同 host:port 误并。
     const cred =
@@ -258,27 +265,40 @@ export class SubscriptionService {
       else oldBuckets.set(key, [s]);
     }
 
-    const kept: ServerConfig[] = [];
-    let added = 0;
-    let updated = 0;
-    let anyContentChanged = false;
+    // 第一遍：按指纹配对，记「本批解析期 id → 落盘 id」（命中沿用旧 id）。
+    const pairs: { ns: ServerConfig; old?: ServerConfig }[] = [];
+    const finalId = new Map<string, string>();
     for (const ns of fetchedServers) {
       const key = SubscriptionService.serverFingerprint(ns);
       const bucket = oldBuckets.get(key);
       const old = bucket && bucket.length > 0 ? bucket.shift() : undefined;
+      pairs.push({ ns, old });
+      finalId.set(ns.id, old ? old.id : ns.id);
+    }
+
+    const kept: ServerConfig[] = [];
+    let added = 0;
+    let updated = 0;
+    let anyContentChanged = false;
+    for (const { ns, old } of pairs) {
+      // 订阅内链式代理（Xray JSON 的 dialerProxy / proxySettings → detour）指向本批解析期的随机 id：前置命中旧节点时
+      // 改指其旧 id——否则 detour 悬空（前置 id 已被换回旧 id），且 contentKey 每次都因随机 id 而变 → 恒判「有变化」，
+      // 打断「订阅无变化不重启」。detour 不指向本批节点（其它格式无 detour）→ 原样。
+      const mapped =
+        ns.detour && finalId.has(ns.detour) ? { ...ns, detour: finalId.get(ns.detour) } : ns;
       if (old) {
         // 内容相同（忽略 id/时间戳）则保留 old.updatedAt，避免无变化也刷新 updatedAt「投毒」纯切节点热切换
-        const same = contentKey(ns) === contentKey(old);
+        const same = contentKey(mapped) === contentKey(old);
         if (!same) anyContentChanged = true;
         kept.push({
-          ...ns,
+          ...mapped,
           id: old.id,
           createdAt: old.createdAt,
           updatedAt: same ? old.updatedAt : now,
         });
         updated++;
       } else {
-        kept.push(ns);
+        kept.push(mapped);
         added++;
       }
     }
@@ -816,7 +836,8 @@ export class SubscriptionService {
 
   /**
    * 第二层（解析）：trimmed 内容 → ServerConfig[]。四分支：
-   *   ① Sing-box JSON(outbounds) / JSON 编码 Clash(proxies / proxy-providers)
+   *   ① Xray JSON(单份配置 / v2ray-json 配置数组 / 裸 outbound 数组) / Sing-box JSON(outbounds) /
+   *      JSON 编码 Clash(proxies / proxy-providers)
    *   ② Clash YAML(proxies / proxy-providers)
    *   ③ 明文 URL-list
    *   ④ Base64 URL-list
@@ -836,7 +857,7 @@ export class SubscriptionService {
     }
   ): Promise<{ servers: ServerConfig[]; partial?: boolean; failedProviders?: string[] }> {
     const throwOnEmpty = ctx.throwOnEmpty !== false;
-    // ── 1. JSON: sing-box outbounds 或 JSON 编码的 Clash ──────────────
+    // ── 1. JSON: Xray / sing-box outbounds 或 JSON 编码的 Clash ───────
     // 数据穿仓风险：try 只包 JSON.parse 本身，catch 仅消化「非 JSON」(SyntaxError) 以 fall through；
     // 分流调用（parseSingboxOutbounds/handleClashDoc）移出 catch 作用域 —— 否则 handleClashDoc 的
     // 「0 节点必须 throw」会被这个 catch 吞掉，fall through 到 Base64 返回空集，reconcile 删光节点。
@@ -849,6 +870,10 @@ export class SubscriptionService {
       // 非 JSON（SyntaxError）→ fall through 到 YAML / URL-list 分支
     }
     if (isJson && json && typeof json === 'object') {
+      // Xray JSON 先于 sing-box 判（二者都用 outbounds[]）：outbound 用 protocol（Xray）而非 type（sing-box）；
+      // 另含 v2ray-json 配置数组 / 裸 outbound 数组两种数组形态（此前数组一律落 URL-list 分支报「无法识别」）。
+      const xray = parseXrayJson(json, new Date().toISOString());
+      if (xray) return this.handleXrayResult(xray, subscriptionId, throwOnEmpty);
       const obj = json as Record<string, unknown>;
       if (Array.isArray(obj.outbounds)) {
         this.logManager.addLog(
@@ -966,6 +991,50 @@ export class SubscriptionService {
   }
 
   /**
+   * Xray JSON 订阅收口（parseXrayJson 产物）：告警入日志 → 与本地导入同口径的最终 gate（gateImportable）→ 归属
+   * subscriptionId。合计 0 节点必须 throw（与 sing-box/Clash 分支对齐，防穿仓：空数组经 reconcile 会删光该订阅节点）。
+   * 节点身份：结构化节点按 serverFingerprint（协议+地址+端口+凭据+传输），透传节点按 xrayOutboundIdentity 展开；
+   * 订阅内链式代理（detour）由 reconcileServers 随前置节点的旧 id 重映射——更新前后 id / detour 均稳定。
+   */
+  private handleXrayResult(
+    r: XrayJsonParseResult,
+    subscriptionId: string,
+    throwOnEmpty: boolean
+  ): { servers: ServerConfig[] } {
+    const shapeLabel =
+      r.shape === 'config-list'
+        ? `${r.configs} 份配置`
+        : r.shape === 'outbound-list'
+          ? 'outbound 数组'
+          : '单份配置';
+    this.logManager.addLog(
+      'info',
+      `检测到 Xray JSON 格式（${shapeLabel}），解析 outbounds...`,
+      'Subscription'
+    );
+    const warnings = [...r.warnings];
+    const { nodes, dropped } = SubscriptionService.gateImportable(r.servers, warnings);
+    const failed = r.failed + dropped;
+    if (r.skipped > 0 || failed > 0) {
+      warnings.push(`跳过 ${r.skipped} 个无法识别的条目，${failed} 个 outbound 字段缺失或无效`);
+    }
+    for (const w of warnings) this.logManager.addLog('warn', w, 'Subscription');
+    if (nodes.length === 0) {
+      if (throwOnEmpty) {
+        throw new Error(`Xray 订阅解析得到 0 个可用节点（跳过 ${r.skipped}、失败 ${failed}）`);
+      }
+      return { servers: [] };
+    }
+    for (const n of nodes) n.subscriptionId = subscriptionId;
+    this.logManager.addLog(
+      'info',
+      `成功从 Xray 订阅解析了 ${nodes.length} 个节点${r.skipped + failed > 0 ? `（另有 ${r.skipped + failed} 条被跳过/失败，详见上方告警）` : ''}`,
+      'Subscription'
+    );
+    return { servers: nodes };
+  }
+
+  /**
    * Clash 文档统一收口：解析内联 proxies + 编排 proxy-providers + 合并去重。
    * 合计 0 节点必须 throw（防穿仓：空数组经 reconcile 会删光该订阅节点）。
    * @returns partial=true 当任一 provider 失败（调用方 reconcile 改 merge-only 不删 leftover）。
@@ -1069,9 +1138,10 @@ export class SubscriptionService {
    * 拉取并解析订阅 URL，返回 ServerConfig 列表。
    * 支持格式:
    *   1. Sing-box JSON (带 outbounds 数组) — GlaDOS /singbox/ 等
-   *   2. Clash / mihomo YAML（proxies / proxy-providers）
-   *   3. 明文 URL 列表 (每行一个 vless:// / ss:// / trojan:// ...)
-   *   4. Base64 编码的 URL 列表
+   *   2. Xray JSON（单份配置 / Marzban·3x-ui「v2ray-json」配置数组 / 裸 outbound 数组）
+   *   3. Clash / mihomo YAML（proxies / proxy-providers）
+   *   4. 明文 URL 列表 (每行一个 vless:// / ss:// / trojan:// ...)
+   *   5. Base64 编码的 URL 列表
    * @param userAgent 可选 UA（per-sub ?? 全局 ?? 默认）；缺省时用 defaultSubscriptionUserAgent()。
    * @returns partial=true 当 Clash provider 部分失败 → 调用方 reconcile 改 merge-only 防穿仓。
    */
@@ -1241,48 +1311,43 @@ export class SubscriptionService {
       }
       if (isJson && json && typeof json === 'object') {
         const obj = json as Record<string, unknown>;
-        if (Array.isArray(obj.outbounds)) {
+        // Xray JSON（单份配置 / v2ray-json 配置数组 / 裸 outbound 数组）与订阅同一解析入口。
+        const xray = parseXrayJson(json, now);
+        if (xray) {
+          format = 'xray';
+          candidates.push(...xray.servers);
+          skipped += xray.skipped;
+          failed += xray.failed;
+          warnings.push(...xray.warnings);
+        } else if (Array.isArray(obj.outbounds)) {
           const obs = obj.outbounds as Array<Record<string, unknown>>;
-          const looksXray = obs.some(
-            (o) =>
-              o && typeof o === 'object' && typeof o.protocol === 'string' && o.type === undefined
-          );
-          if (looksXray) {
-            format = 'xray';
-            const r = parseXrayOutbounds(obs, now);
-            candidates.push(...r.servers);
-            skipped += r.skipped;
-            failed += r.failed;
-            warnings.push(...r.warnings);
-          } else {
-            format = 'singbox';
-            const mapped = this.parseSingboxOutbounds(obs as unknown as SingboxOutbound[], '');
-            for (const s of mapped) {
-              s.subscriptionId = undefined;
-              s.providerName = undefined;
-              s.createdAt = now;
-              s.updatedAt = now;
-              candidates.push(s);
-            }
-            // 未映射但合法的 type → 透传 custom（内部 type 如 direct/selector 忽略）
-            for (const ob of obs) {
-              if (!ob || typeof ob !== 'object') continue;
-              const t = ob.type;
-              if (typeof t !== 'string' || !t.trim()) continue;
-              if (SINGBOX_SUPPORTED_TYPES.has(t) || SINGBOX_INTERNAL_TYPES.has(t)) continue;
-              candidates.push(this.makeCustomNode(ob, now));
-              customWrapped++;
-            }
-            // 受支持 type 但缺 server/port 被 parseSingboxOutbounds 丢弃的节点计入 failed（统计准确，对齐 xray/clash 分支）。
-            const supportedInputs = obs.filter(
-              (o) =>
-                o &&
-                typeof o === 'object' &&
-                typeof o.type === 'string' &&
-                SINGBOX_SUPPORTED_TYPES.has(o.type)
-            ).length;
-            failed += Math.max(0, supportedInputs - mapped.length);
+          format = 'singbox';
+          const mapped = this.parseSingboxOutbounds(obs as unknown as SingboxOutbound[], '');
+          for (const s of mapped) {
+            s.subscriptionId = undefined;
+            s.providerName = undefined;
+            s.createdAt = now;
+            s.updatedAt = now;
+            candidates.push(s);
           }
+          // 未映射但合法的 type → 透传 custom（内部 type 如 direct/selector 忽略）
+          for (const ob of obs) {
+            if (!ob || typeof ob !== 'object') continue;
+            const t = ob.type;
+            if (typeof t !== 'string' || !t.trim()) continue;
+            if (SINGBOX_SUPPORTED_TYPES.has(t) || SINGBOX_INTERNAL_TYPES.has(t)) continue;
+            candidates.push(this.makeCustomNode(ob, now));
+            customWrapped++;
+          }
+          // 受支持 type 但缺 server/port 被 parseSingboxOutbounds 丢弃的节点计入 failed（统计准确，对齐 xray/clash 分支）。
+          const supportedInputs = obs.filter(
+            (o) =>
+              o &&
+              typeof o === 'object' &&
+              typeof o.type === 'string' &&
+              SINGBOX_SUPPORTED_TYPES.has(o.type)
+          ).length;
+          failed += Math.max(0, supportedInputs - mapped.length);
         } else if (
           Array.isArray(obj.proxies) ||
           (obj['proxy-providers'] && typeof obj['proxy-providers'] === 'object')
@@ -1348,7 +1413,28 @@ export class SubscriptionService {
 
     // 最终 gate：仅保留 saveConfig.validateConfig 不会 throw 的节点（与渲染侧 isServerComplete 同口径）。
     // 透传 custom 必含合法 type → 必过 gate；故 unsupported = customWrapped。
+    const { nodes, dropped } = SubscriptionService.gateImportable(candidates, warnings);
+    failed += dropped;
+
+    return {
+      nodes,
+      subscriptions,
+      stats: { imported: nodes.length, unsupported: customWrapped, skipped, failed },
+      warnings,
+      format,
+    };
+  }
+
+  /**
+   * 批量入库前的最终 gate（本地导入 / Xray JSON 订阅共用）：仅保留 saveConfig.validateConfig 不会拒收的节点
+   *（与渲染侧 isServerComplete 同口径）；链式前置没过 gate → 断链并告警。
+   */
+  private static gateImportable(
+    candidates: ServerConfig[],
+    warnings: string[]
+  ): { nodes: ServerConfig[]; dropped: number } {
     const nodes: ServerConfig[] = [];
+    let dropped = 0;
     for (const n of candidates) {
       // 与 ConfigManager.validateConfig 对齐：isServerComplete 缺端口上界、不校验 name，这里补齐——
       // 否则 port>65535 / 空 name 的节点会过 gate 却让 SERVER_ADD_BULK 的 saveConfig throw → 整批失败。
@@ -1357,7 +1443,7 @@ export class SubscriptionService {
         p === 'custom' || (typeof n.port === 'number' && n.port >= 1 && n.port <= 65535);
       const nameOk = !!n.name && n.name.trim().length > 0;
       if (isServerComplete(n) && portOk && nameOk) nodes.push(n);
-      else failed++;
+      else dropped++;
     }
     // 链式前置（Xray JSON 的 dialerProxy / proxySettings 映射成的 detour，指向批内解析期 id）没过 gate → 断链并告警，
     // 否则落盘成悬空 detour、运行时静默直连服务器。
@@ -1369,14 +1455,7 @@ export class SubscriptionService {
         warnings.push(`节点「${n.name}」的链式前置节点未通过校验，该链未保留（将直连服务器）`);
       }
     }
-
-    return {
-      nodes,
-      subscriptions,
-      stats: { imported: nodes.length, unsupported: customWrapped, skipped, failed },
-      warnings,
-      format,
-    };
+    return { nodes, dropped };
   }
 
   /** Clash 文档（本地，不拉取）：proxies → 自建节点；proxy-providers(type:http) → {name,url} 订阅。 */
