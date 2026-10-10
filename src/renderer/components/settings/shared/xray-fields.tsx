@@ -1,5 +1,5 @@
 /**
- * Xray 相关字段的共享渲染组件（Conduit `.nd-fld` / `.nd-swrow` 版）——vless/vmess/trojan 表单共用：
+ * Xray 相关字段的共享渲染组件（Conduit `.nd-fld` / `.nd-swrow` 版）——vless/vmess/trojan（XrayCoreField 另含 ss）表单共用：
  *   XhttpFields        XHTTP 传输（path / host / mode / extra JSON）
  *   XrayCoreField      「使用 Xray 内核」开关 + 当前节点内核判定提示（单一真值 shared/xray#xrayRequirement）
  *   PinnedCertField    证书 SHA256 指纹（Xray 26 移除 allowInsecure 后的自签证书方案）
@@ -143,17 +143,20 @@ export function XhttpFields({ control, t }: { control: AnyControl; t: TFn }) {
 
 /**
  * 「使用 Xray 内核」开关：节点用到 Xray 独有特性时恒开且置灰（提示原因）；否则由用户选择（仅 canUseXrayCore 协议）。
+ * unsupportedHint：不可切 Xray 时的说明（缺省为 vless/vmess/trojan 通用文案；SS 表单传自己的插件/Shadow-TLS/流加密说明）。
  */
 export function XrayCoreField({
   control,
   t,
   requirement,
   supported = true,
+  unsupportedHint,
 }: {
   control: AnyControl;
   t: TFn;
   requirement: XrayRequirement | null;
   supported?: boolean;
+  unsupportedHint?: string;
 }) {
   const auto = requirement !== null && requirement !== 'forced';
   return (
@@ -184,10 +187,11 @@ export function XrayCoreField({
           </p>
         ) : !supported ? (
           <p className="text-xs text-muted-foreground">
-            {t(
-              'servers.xrayCoreUnsupported',
-              'Not available with HTTP/2 transport, Shadow-TLS or SS plugins (sing-box only features).'
-            )}
+            {unsupportedHint ??
+              t(
+                'servers.xrayCoreUnsupported',
+                'Not available with HTTP/2 transport, REALITY over WebSocket/HTTPUpgrade, Shadow-TLS or SS plugins (not supported by Xray).'
+              )}
           </p>
         ) : undefined
       }

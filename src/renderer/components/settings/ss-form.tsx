@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch';
 import { Shield } from 'lucide-react';
 import { MultiplexFields } from './shared/anti-censor-fields';
 import { AddressField, PortField } from './shared/basic-fields';
+import { XrayCoreField, formXrayRequirement, formCanUseXray } from './shared/xray-fields';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import {
   multiplexSchemaShape,
@@ -38,6 +39,7 @@ const createSsSchema = (t: any) =>
     shadowTlsSni: z.string().optional(),
     shadowTlsFingerprint: z.string().optional(),
     shadowTlsPort: z.number().optional().or(z.literal('')), // '' = 清空态哨兵（提交 `|| undefined` 归一）
+    useXrayCore: z.boolean().optional(),
     ...multiplexSchemaShape,
   });
 
@@ -78,6 +80,19 @@ function normalizeMethod(raw: string | undefined): string {
   return COMMON_METHODS.find((m) => m === aliased) ?? aliased;
 }
 
+/**
+ * 内核判定所需的表单片段（shared/xray#canUseXrayCore，与生成期同一谓词）：插件 / Shadow-TLS 为 sing-box 独有，
+ * 流加密（aes-*-cfb/ctr、rc4-md5…）Xray 已移除。Shadow-TLS 按开关判（开着即视为要用，与界面一致）。
+ */
+function ssXrayLayer(v: { method?: string; plugin?: string; enableShadowTls?: boolean }) {
+  return {
+    protocol: 'shadowsocks',
+    ssMethod: v.method,
+    ssPlugin: v.plugin,
+    shadowTls: !!v.enableShadowTls,
+  };
+}
+
 export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
   const { t } = useTranslation();
   const ssFormSchema = createSsSchema(t);
@@ -104,6 +119,7 @@ export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
       shadowTlsPort: hasShadowTls
         ? (serverConfig?.shadowTlsSettings?.port ?? undefined)
         : undefined,
+      useXrayCore: isSs && serverConfig?.useXrayCore === true,
       ...(isSs && serverConfig ? readMultiplexDefaults(serverConfig) : multiplexDefaults),
     },
   });
@@ -123,6 +139,8 @@ export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
         pluginOptions: values.pluginOptions || undefined,
       },
       multiplexSettings: buildMultiplexSettings(values),
+      // 不可切 Xray（插件 / Shadow-TLS / 流加密）时开关显示为关 → 提交也不持久化，免日后去掉插件时节点静默改走 Xray。
+      useXrayCore: values.useXrayCore && formCanUseXray(ssXrayLayer(values)) ? true : undefined,
     };
 
     if (values.enableShadowTls && values.shadowTlsPassword && values.shadowTlsSni) {
@@ -136,6 +154,14 @@ export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
 
     await onSubmit(config);
   };
+
+  const xrayLayer = ssXrayLayer({
+    method: form.watch('method'),
+    plugin: form.watch('plugin'),
+    enableShadowTls,
+  });
+  const xrayReq = formXrayRequirement({ ...xrayLayer, useXrayCore: form.watch('useXrayCore') });
+  const xraySupported = formCanUseXray(xrayLayer);
 
   return (
     <Form {...form}>
@@ -217,6 +243,17 @@ export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
         </FieldGrid>
 
         <FormSection title={t('servers.advanced', 'Advanced')} collapsible defaultOpen={false}>
+          <XrayCoreField
+            control={form.control}
+            t={t}
+            requirement={xrayReq}
+            supported={xraySupported}
+            unsupportedHint={t(
+              'servers.xrayCoreUnsupportedSs',
+              'Not available with SS plugins or Shadow-TLS (sing-box only), or with legacy stream ciphers: Xray supports only AEAD (AES-GCM, ChaCha20-Poly1305) and 2022 methods.'
+            )}
+          />
+
           <FieldGrid cols={2}>
             <FormField
               control={form.control}
@@ -354,7 +391,15 @@ export function SsForm({ serverConfig, onSubmit }: SsFormProps) {
             )}
           </div>
 
-          <MultiplexFields control={form.control} t={t} disabled={false} />
+          <MultiplexFields
+            control={form.control}
+            t={t}
+            disabled={!!xrayReq}
+            disabledReason={t(
+              'servers.multiplexXrayConflictSs',
+              'Xray-core nodes do not use sing-box multiplex.'
+            )}
+          />
         </FormSection>
       </form>
     </Form>

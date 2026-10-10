@@ -193,6 +193,61 @@ describe('buildXrayOutbound — TLS 口径（Xray 26）', () => {
     expect((t({ network: 'xhttp' }).streamSettings as any).tlsSettings).toEqual({});
     expect(t({}).settings).toEqual({ servers: [{ address: 'a', port: 1, password: 'p' }] });
   });
+
+  it('trojan + REALITY（表单 / 分享链产出形态）：realitySettings 全映射，不带 TLS 的默认 ALPN', () => {
+    const ob = buildXrayOutbound(
+      {
+        id: 't',
+        name: 't',
+        protocol: 'trojan',
+        address: 'a',
+        port: 443,
+        password: 'p',
+        network: 'grpc',
+        grpcSettings: { serviceName: 'svc' },
+        security: 'reality',
+        tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'ios' },
+        realitySettings: { publicKey: PBK, shortId: 'ab', spiderX: '/s', mldsa65Verify: 'pq' },
+        useXrayCore: true,
+      } as ServerConfig,
+      'x'
+    );
+    expect(ob.settings).toEqual({ servers: [{ address: 'a', port: 443, password: 'p' }] });
+    expect(ob.streamSettings).toEqual({
+      network: 'grpc',
+      grpcSettings: { serviceName: 'svc' },
+      security: 'reality',
+      realitySettings: {
+        serverName: 'www.microsoft.com',
+        fingerprint: 'ios',
+        publicKey: PBK,
+        shortId: 'ab',
+        spiderX: '/s',
+        mldsa65Verify: 'pq',
+      },
+    });
+  });
+
+  it("REALITY 指纹 'none'（trojan 的 TLS 缺省）→ chrome：Xray 拒收 'unsafe'（真核实证）", () => {
+    for (const protocol of ['trojan', 'vless'] as const) {
+      const ob = buildXrayOutbound(
+        {
+          id: 't',
+          name: 't',
+          protocol,
+          address: 'a',
+          port: 443,
+          password: 'p',
+          uuid: UUID,
+          security: 'reality',
+          tlsSettings: { serverName: 'www.microsoft.com', fingerprint: 'none' },
+          realitySettings: { publicKey: PBK },
+        } as ServerConfig,
+        'x'
+      );
+      expect((ob.streamSettings as any).realitySettings.fingerprint).toBe('chrome');
+    }
+  });
 });
 
 describe('buildXrayOutbound — 其它传输 / 协议', () => {
@@ -268,6 +323,50 @@ describe('buildXrayOutbound — 其它传输 / 协议', () => {
       servers: [{ address: 'a', port: 1, method: '2022-blake3-aes-128-gcm', password: SS16 }],
     });
     expect(() => buildXrayOutbound(ss('obfs-local'), 't')).toThrow(/插件/);
+  });
+
+  it('SS AEAD（表单「使用 Xray 内核」）：method / password 原样，无安全层（raw + none）', () => {
+    const ob = buildXrayOutbound(
+      {
+        id: 's',
+        name: 's',
+        protocol: 'shadowsocks',
+        address: 'a',
+        port: 8388,
+        useXrayCore: true,
+        shadowsocksSettings: { method: 'aes-256-gcm', password: 'pw' },
+      } as ServerConfig,
+      't'
+    );
+    expect(ob).toEqual({
+      tag: 't',
+      protocol: 'shadowsocks',
+      settings: {
+        servers: [{ address: 'a', port: 8388, method: 'aes-256-gcm', password: 'pw' }],
+      },
+      streamSettings: { network: 'raw', security: 'none' },
+    });
+  });
+
+  it('SS 方法名小写下发（Xray 对 2022-blake3-* 大小写敏感；大写导入的节点也能起）；空白方法 → throw', () => {
+    const ss = (method: string, password: string) =>
+      ({
+        id: 's',
+        name: 's',
+        protocol: 'shadowsocks',
+        address: 'a',
+        port: 1,
+        shadowsocksSettings: { method, password },
+      }) as ServerConfig;
+    expect(buildXrayOutbound(ss(' 2022-BLAKE3-AES-128-GCM ', SS16), 't').settings).toEqual({
+      servers: [{ address: 'a', port: 1, method: '2022-blake3-aes-128-gcm', password: SS16 }],
+    });
+    expect(buildXrayOutbound(ss('AES-256-GCM', 'pw'), 't').settings).toEqual({
+      servers: [{ address: 'a', port: 1, method: 'aes-256-gcm', password: 'pw' }],
+    });
+    // 大写 2022 方法同样走密钥预校验（不因大小写漏检）。
+    expect(() => buildXrayOutbound(ss('2022-BLAKE3-AES-256-GCM', SS16), 't')).toThrow(/32 字节/);
+    expect(() => buildXrayOutbound(ss('  ', 'pw'), 't')).toThrow(/缺少加密方法/);
   });
 });
 

@@ -30,7 +30,7 @@ export const XRAY_STRUCTURED_PROTOCOLS: readonly string[] = [
  *  - xhttp           ：XHTTP 传输（含旧名 splithttp）
  *  - vless-encryption：VLESS Encryption（encryption 为 mlkem768x25519plus.* 串；none / 杂值不算）
  *  - vision-udp443   ：flow=xtls-rprx-vision-udp443（sing-box 仅支持 xtls-rprx-vision）
- *  - reality-pqv     ：Reality 启用 ML-DSA-65 验证（mldsa65Verify / 分享链 pqv）
+ *  - reality-pqv     ：Reality 启用 ML-DSA-65 验证（mldsa65Verify / 分享链 pqv；仅 RAW / XHTTP / gRPC 等能切 Xray 的传输）
  *  - tls-pinned-cert ：TLS 证书 SHA-256 钉扎（pinnedPeerCertSha256 / 分享链 pcs；sing-box 无整证书钉扎，
  *                      走 sing-box 会按 CA 校验——自签证书连不上、CA 证书则钉扎静默失效）
  *  - forced          ：用户在节点上手动勾选「使用 Xray 内核」
@@ -58,6 +58,28 @@ export function isVlessEncryptionEnabled(encryption: string | undefined): boolea
   return /^mlkem768x25519plus\./i.test((encryption || '').trim());
 }
 
+/**
+ * Shadowsocks 加密方法 Xray 是否支持：仅 AEAD（aes-128/256-gcm、(x)chacha20(-ietf)-poly1305）、SS2022（显式三种：
+ * 2022-blake3-aes-128-gcm / -aes-256-gcm / -chacha20-poly1305）与 none/plain（大小写不敏感：Xray 自身只对 AEAD 名
+ * 归一大小写、2022-blake3-* 按原样匹配，故 xray-config-builder 统一小写下发）。流加密（aes-*-cfb/ctr、rc4-md5、
+ * chacha20-ietf…）已被 Xray 移除，`xray run -test` 报「unknown cipher method」——这类节点只能留在 sing-box。
+ * 2022-blake3-chacha8-poly1305 Xray 26 同样报 unknown cipher method（sing-box 1.14 亦不认）：不按 `2022-blake3-*`
+ * 前缀放行，免得给出一个开了就被 Xray 门剔除的「使用 Xray 内核」开关。
+ */
+export function isXrayShadowsocksMethod(method: string | undefined): boolean {
+  const m = (method || '').trim().toLowerCase();
+  return (
+    m === 'aes-128-gcm' ||
+    m === 'aes-256-gcm' ||
+    /^x?chacha20(-ietf)?-poly1305$/.test(m) ||
+    m === '2022-blake3-aes-128-gcm' ||
+    m === '2022-blake3-aes-256-gcm' ||
+    m === '2022-blake3-chacha20-poly1305' ||
+    m === 'none' ||
+    m === 'plain'
+  );
+}
+
 /** 自定义协议节点是否为 Xray outbound JSON（engine='xray'）。 */
 export function isXrayCustomNode(
   server: Pick<ServerConfig, 'protocol' | 'customSettings'>
@@ -67,16 +89,24 @@ export function isXrayCustomNode(
 
 /**
  * 节点能否「手动切到 Xray 内核」（表单开关可用性）：结构化协议，且未用 sing-box 独有的附加层
- *（Shadow-TLS 外层 / SS 插件——Xray 无对应实现）。
+ *（Shadow-TLS 外层 / SS 插件——Xray 无对应实现），SS 加密方法须为 Xray 支持的 AEAD / 2022。
  */
 export function canUseXrayCore(server: ServerConfig): boolean {
   const p = server.protocol?.toLowerCase();
   if (!XRAY_STRUCTURED_PROTOCOLS.includes(p)) return false;
   if (server.shadowTlsSettings) return false;
   if (p === 'shadowsocks' && server.shadowsocksSettings?.plugin) return false;
+  if (p === 'shadowsocks' && !isXrayShadowsocksMethod(server.shadowsocksSettings?.method)) {
+    return false;
+  }
   // HTTP/2(h2) 传输已被 Xray 移除（官方建议迁 XHTTP）→ 强制 Xray 会产出 Xray 拒收的配置。
   const n = (server.network || 'tcp').toLowerCase();
   if (n === 'http' || n === 'h2') return false;
+  // Xray 的 REALITY 只支持 RAW / XHTTP / gRPC（`xray run -test`：「REALITY only supports RAW, XHTTP and gRPC
+  // for now」）；sing-box 不限传输 → ws / httpupgrade + REALITY 只能留在 sing-box。
+  if ((server.security || '').toLowerCase() === 'reality' && (n === 'ws' || n === 'httpupgrade')) {
+    return false;
+  }
   return true;
 }
 
@@ -91,9 +121,12 @@ export function xrayRequirement(server: ServerConfig): XrayRequirement | null {
   if (isXhttpNetwork(server.network)) return 'xhttp';
   if (p === 'vless' && isVlessEncryptionEnabled(server.encryption)) return 'vless-encryption';
   if ((server.flow || '').toLowerCase() === 'xtls-rprx-vision-udp443') return 'vision-udp443';
+  // pqv 只有 Xray 消费，但 Xray 的 REALITY 仅 RAW / XHTTP / gRPC：ws / httpupgrade / h2 上 pqv 无从生效 → 归 sing-box
+  //（其不限传输、忽略 pqv），与表单 realityXrayExtrasSupported 同口径（分享链 type=ws&security=reality&pqv=… 亦然）。
   if (
     (server.security || '').toLowerCase() === 'reality' &&
-    !!server.realitySettings?.mldsa65Verify?.trim()
+    !!server.realitySettings?.mldsa65Verify?.trim() &&
+    canUseXrayCore(server)
   ) {
     return 'reality-pqv';
   }

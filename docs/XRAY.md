@@ -53,11 +53,32 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 
    支持的分享链参数：`type=xhttp|splithttp`、`path`、`host`、`mode`、`extra`（URL 编码 JSON）、`encryption`、
    `flow=xtls-rprx-vision-udp443`、`pbk`/`sid`/`spx`/`pqv`、`pcs`（证书指纹）、`ech`。Clash（mihomo）的
-   `network: xhttp` + `xhttp-opts` + `encryption` 与 Xray JSON 配置导入同样支持；Xray JSON 中结构化表单无法表达的
-   outbound（mKCP、finalmask、mux、sockopt、wireguard / hysteria 等）会以「自定义 Xray JSON」原样导入。
+   `network: xhttp` + `xhttp-opts` + `encryption` 同样支持。
+
+   **Xray JSON**（手动导入与订阅链接均支持）。按 outbound 用 `protocol`（sing-box 用 `type`）自动识别：outbounds
+   里出现任何带 `type` 的条目即按 sing-box JSON 处理，二者不会混淆；支持三种形态：
+   - 单份 Xray 配置（含 `outbounds`）；
+   - 完整配置数组：Marzban / 3x-ui 等面板的「v2ray-json」订阅，每份配置通常一个节点，节点名取配置顶层的
+     `remarks`（一份配置含多个代理 outbound 时为「remarks · tag」）；无 `remarks` 的配置按地址命名
+     （`address:port`，自定义 Xray JSON 节点带协议前缀），同地址同端口仍重名时追加「#配置序号」；
+   - 裸 outbound 数组。
+
+   `freedom` / `blackhole`（及其协议别名 `direct` / `block`）/ `dns` / `loopback` 等内部 outbound 忽略。链式代理
+   （`sockopt.dialerProxy` / `proxySettings.tag`）转为节点的「前置代理」，且只在**同一份配置内**解析；前置指向内部
+   outbound（如 3x-ui 的 `fragment` 分片 freedom）时该链不保留并告警（订阅更新时记入「日志」页，手动导入时在导入
+   对话框中提示）——节点直连服务器，分片设置不生效。结构化表单
+   无法表达的 outbound（mKCP、TCP / RAW 的 HTTP 伪装头、finalmask、mux、sockopt、wireguard / hysteria 等）以
+   「自定义 Xray JSON」原样导入。订阅更新按「协议 + 地址 + 端口 + 凭据 + 传输」对账（自定义 Xray JSON 节点取其
+   outbound 内的凭据与传输；多个节点该五项完全相同时——如多份配置链经同一中转——再按节点名配对），节点 id 与前置
+   代理关系在更新间保持稳定，内容未变时不重启内核。例外：完全相同的节点连名字也相同（或名字带「#配置序号」）时，
+   配置重排可能令其互换 id / 改名，该次更新按「有变化」处理、重启一次内核（流量走向不变）。
 2. **手动添加 / 编辑**：VLESS / VMess / Trojan 表单的「传输」选 **XHTTP (Xray)**；VLESS 的「加密」可填
    `xray vlessenc` 生成的 encryption 串。需要 Xray 的节点会显示 **Xray** 角标，「高级」里的「使用 Xray 内核」
-   开关会自动打开并说明原因；普通节点也可手动打开该开关改由 Xray 承载。
+   开关会自动打开并说明原因；普通节点（含 Shadowsocks，见下方限制）也可手动打开该开关改由 Xray 承载。
+   Trojan 表单的「安全」可选 **Reality**（与 VLESS 相同的公钥 / Short ID / SpiderX / 指纹字段）：sing-box 与 Xray
+   都原生支持 Trojan + REALITY，默认由 sing-box 承载；填写 ML-DSA-65 验证公钥（`pqv`）或手动勾选时改由 Xray 承载。
+   VLESS / Trojan 的 ML-DSA-65 与 SpiderX 字段只在 RAW（TCP）/ gRPC / XHTTP 传输下显示；其它传输上 ML-DSA-65 不提交、
+   节点留在 sing-box（Xray 的 REALITY 不支持这些传输，见下方注意事项）。
 3. **任意 Xray 组合**：添加节点 →「自定义出站 JSON」→ 内核选 **Xray** → 粘贴 Xray outbound JSON，表单会实时用
    `xray run -test` 校验。`tag`、`proxySettings`、`sockopt.dialerProxy` 由 FlowZX 接管（链式代理请用节点的前置代理）。
 4. **内核状态**：设置 → 高级 → 内核管理 →「Xray 内核（sidecar）」显示版本与运行状态。要使用其它版本的 Xray，
@@ -73,6 +94,12 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 - HTTP/2（h2）传输已被 Xray 移除：使用 h2 的节点不能切到 Xray 内核（官方建议改用 XHTTP）。
 - Xray 节点不使用 sing-box 的多路复用（Multiplex）；XHTTP 的连接复用用 `extra.xmux` 配置。
 - Shadow-TLS、SS 插件为 sing-box 独有特性，带这些附加层的节点不能切到 Xray 内核。
+- Xray 已移除 Shadowsocks 流加密（`aes-*-cfb` / `aes-*-ctr`、`rc4-md5`、`chacha20-ietf` 等）：仅 AEAD
+  （`aes-128/256-gcm`、`(x)chacha20-(ietf-)poly1305`）与 2022（`2022-blake3-*`）方法的 SS 节点可切到 Xray 内核。
+  加密方法名下发给 Xray 时统一转小写（Xray 按原样匹配 `2022-blake3-*`，大写会被拒收）。
+- Xray 的 REALITY 只支持 RAW / XHTTP / gRPC 传输：WebSocket / HTTPUpgrade + REALITY 的节点只能由 sing-box 承载
+  （「使用 Xray 内核」开关不可用，表单也不提供 ML-DSA-65 字段）。
+- REALITY 必须使用 uTLS 浏览器指纹：指纹为「无」时两侧均按 `chrome` 下发（sing-box / Xray 都拒收无指纹的 REALITY）。
 
 ## 打包与版本
 
@@ -83,8 +110,8 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 
 ## 验证
 
-- `npm test`：Xray 判定 / 配置构造 / 桥规划 / 分享链 / Clash / Xray JSON 导入 / 脱敏 等单测。
+- `npm test`：Xray 判定 / 配置构造 / 桥规划 / 分享链 / Clash / Xray JSON 导入与订阅（含对账稳定性）/ 脱敏 等单测。
 - `npm run test:core-gate`（打包链必经）：`xray-check-gate` 用随包 Xray 跑 `xray run -test`、用随包 sing-box 跑
-  `sing-box check`，覆盖上表全部组合与前置代理链。
+  `sing-box check`，覆盖上表全部组合与前置代理链，以及 v2ray-json 订阅语料（`xray-subscription-fixtures.ts`）的解析产物。
 - `npm run test:xray-e2e`（Linux / macOS，需先 `npm run fetch:core`）：在本机起 VLESS-XHTTP-REALITY-ENC 等真实服务端，
   经 `ProxyManager.start` 全链路验证 TCP + UDP 转发、两条测速路径、节点热切换、Xray 崩溃自愈、前置代理链。

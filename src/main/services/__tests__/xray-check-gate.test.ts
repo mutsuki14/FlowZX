@@ -2,10 +2,11 @@
  * Xray sidecar 真核门 —— 把「Xray 独有协议组合」节点交**随包 Xray 内核**（`xray run -test`）与**随包 sing-box**
  *（`sing-box check`）双重校验，覆盖单测 toEqual 管不到的值域与跨字段引用：
  *  - Xray 侧：VLESS-XHTTP-REALITY-ENC / RAW-REALITY-Vision-ENC / XHTTP-TLS 证书钉扎 / Reality ML-DSA-65 /
- *    vision-udp443 / VMess-XHTTP / Trojan-XHTTP-REALITY / SS2022 强制 Xray / 自定义 Xray JSON（XHTTP 上下行分离）
- *    + 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）；
+ *    vision-udp443 / VMess-XHTTP / Trojan-XHTTP-REALITY / Trojan-gRPC-REALITY 强制 Xray / SS2022 与 SS-AEAD 强制 Xray /
+ *    自定义 Xray JSON（XHTTP 上下行分离）/ Xray JSON 导入的 SS 套 ws+TLS（透传）+ 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）+ Xray JSON 订阅（v2ray-json 配置数组）的解析产物；
  *  - sing-box 侧：socks 桥出站 / xray-dial-in 回环入站（users）/ auth_user 钉死路由 / xray-dial-direct 出站
- *    在完整 generateSingBoxConfig 产物中引用完整、check 通过。
+ *    在完整 generateSingBoxConfig 产物中引用完整、check 通过；原生 trojan + REALITY（指纹 none → chrome）与
+ *    勾了 Xray 却因流加密留在 sing-box 的 SS 节点同场 check。
  *
  * 与 singbox-check-gate 同一调用位置与语义：不在默认 `npm test`（需随包二进制，已 gitignore），由
  * `npm run test:core-gate`（打包链必经、先跑 fetch:core）执行；二进制缺失即硬 fail，无豁免。
@@ -33,7 +34,11 @@ jest.mock('electron', () => ({
 import { ProxyManager } from '../ProxyManager';
 import type { UserConfig, ServerConfig } from '../../../shared/types';
 import type { SingBoxConfig } from '../singbox-config-types';
-import { requiresXrayCore } from '../../../shared/xray';
+import { canUseXrayCore, requiresXrayCore } from '../../../shared/xray';
+import { SubscriptionService } from '../SubscriptionService';
+import { ProtocolParser } from '../ProtocolParser';
+import { V2RAY_JSON_NODE_NAMES, v2rayJsonSubscription } from './xray-subscription-fixtures';
+import { parseXrayOutbounds } from '../xray-import';
 import {
   buildXrayConfig,
   buildXrayOutbound,
@@ -187,6 +192,40 @@ function corpus(pqv: string): ServerConfig[] {
         password: 'AAAAAAAAAAAAAAAAAAAAAA==',
       },
     }),
+    // SS 表单「使用 Xray 内核」：AEAD → Xray；流加密（Xray 已移除）勾了也留在 sing-box（canUseXrayCore）。
+    base('ss-aead-forced', {
+      protocol: 'shadowsocks',
+      uuid: undefined,
+      useXrayCore: true,
+      shadowsocksSettings: { method: 'aes-256-gcm', password: 'pw' },
+    }),
+    base('ss-stream-forced', {
+      protocol: 'shadowsocks',
+      uuid: undefined,
+      useXrayCore: true,
+      shadowsocksSettings: { method: 'aes-256-cfb', password: 'pw' },
+    }),
+    // trojan + REALITY（trojan 表单）：纯 REALITY 由 sing-box 原生承载；勾「使用 Xray」（gRPC）→ Xray。
+    // 指纹故意用 trojan 的 TLS 缺省 'none'：两侧 builder 须归一为 chrome，否则两核均拒收。
+    base('trojan-raw-reality', {
+      protocol: 'trojan',
+      uuid: undefined,
+      password: 'pw',
+      security: 'reality',
+      tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'none' },
+      realitySettings: { publicKey: PBK, shortId: '0123abcd' },
+    }),
+    base('trojan-grpc-reality-forced', {
+      protocol: 'trojan',
+      uuid: undefined,
+      password: 'pw',
+      useXrayCore: true,
+      network: 'grpc',
+      grpcSettings: { serviceName: 'svc' },
+      security: 'reality',
+      tlsSettings: { serverName: 'www.microsoft.com', allowInsecure: false, fingerprint: 'none' },
+      realitySettings: { publicKey: PBK, shortId: 'ab', spiderX: '/' },
+    }),
     base('vless-ws-forced', {
       useXrayCore: true,
       network: 'ws',
@@ -194,6 +233,31 @@ function corpus(pqv: string): ServerConfig[] {
       wsSettings: { path: '/ws?ed=2048', headers: { Host: 'w.example.com' } },
       tlsSettings: { serverName: 'w.example.com' },
     }),
+    // Xray JSON 导入的 SS 套 ws + TLS（3x-ui 可下发）：sing-box 的 shadowsocks 出站无 transport / tls 字段，
+    // 导入即透传为自定义 Xray 节点（xray-import needsPassthrough）——此处取真实导入产物交两核。
+    {
+      ...parseXrayOutbounds(
+        [
+          {
+            protocol: 'shadowsocks',
+            settings: {
+              servers: [
+                { address: 'ss.example.com', port: 443, method: 'aes-256-gcm', password: 'pw' },
+              ],
+            },
+            streamSettings: {
+              network: 'ws',
+              security: 'tls',
+              wsSettings: { path: '/ss', host: 'ss.example.com' },
+              tlsSettings: { serverName: 'ss.example.com' },
+            },
+          },
+        ],
+        '2026-01-01T00:00:00.000Z'
+      ).servers[0],
+      id: 'ss-ws-tls-imported',
+      name: 'ss-ws-tls-imported',
+    },
     {
       id: 'custom-xhttp-split',
       name: 'custom-xhttp-split',
@@ -312,6 +376,12 @@ describe('Xray 侧：xray run -test', () => {
     const servers = corpus(PQV);
     const xrayNodes = servers.filter((s) => requiresXrayCore(s));
     expect(xrayNodes.map((s) => s.id)).not.toContain('hy2-hop');
+    // 自检：表单新形态确实分到了预期内核（否则「通过」不含它们）。
+    expect(xrayNodes.map((s) => s.id)).toEqual(
+      expect.arrayContaining(['ss-aead-forced', 'trojan-grpc-reality-forced', 'ss-ws-tls-imported'])
+    );
+    expect(xrayNodes.map((s) => s.id)).not.toContain('ss-stream-forced');
+    expect(xrayNodes.map((s) => s.id)).not.toContain('trojan-raw-reality');
     const plan = planXrayBridge({
       candidates: xrayNodes,
       allServers: servers,
@@ -357,6 +427,12 @@ describe('sing-box 侧：完整 generateSingBoxConfig + sing-box check', () => {
       expect(sel?.outbounds).toContain(s.name);
     }
     expect(sb.outbounds.find((o) => o.tag === 'hy2-hop')?.type).toBe('hysteria2');
+    // 原生 trojan + REALITY（指纹 none → chrome）与留在 sing-box 的 SS 流加密节点进入本次 check。
+    const trojanReality = sb.outbounds.find((o) => o.tag === 'trojan-raw-reality');
+    expect(trojanReality?.type).toBe('trojan');
+    expect(trojanReality?.tls?.reality).toMatchObject({ enabled: true, public_key: PBK });
+    expect(trojanReality?.tls?.utls).toEqual({ enabled: true, fingerprint: 'chrome' });
+    expect(sb.outbounds.find((o) => o.tag === 'ss-stream-forced')?.type).toBe('shadowsocks');
     expect(sb.outbounds.find((o) => o.tag === 'xray-dial-direct')?.type).toBe('direct');
     const dialIn = sb.inbounds.find((i) => i.tag === 'xray-dial-in');
     expect(dialIn?.type).toBe('socks');
@@ -553,6 +629,73 @@ describe('dialer 接管 / TLS 分片 / 预校验 × 真核', () => {
         { dialerTag: 'flowz-dialer' }
       )
     ).toThrow(/downloadSettings/);
+  });
+});
+
+describe('Xray JSON 订阅（v2ray-json 配置数组）解析产物 × 真核', () => {
+  it('语料本身是 Xray 接受的客户端配置；订阅解析出的节点 → xray run -test + sing-box check 均通过', async () => {
+    // 前提：语料逐份原样交真核（去 remarks、错开入站端口）——证明是 Xray 26 真实可用的 v2ray-json，而非臆造形态。
+    v2rayJsonSubscription().forEach((cfg, i) => {
+      const raw = JSON.parse(JSON.stringify(cfg)) as Record<string, any>;
+      delete raw.remarks;
+      raw.inbounds[0].port = 36000 + i;
+      const r = xrayTest(raw, `sub-raw-${i}`);
+      if (r.code !== 0) throw new Error(`语料第 ${i} 份配置被 Xray 拒收：\n${r.out}`);
+    });
+
+    // 走订阅解析主路径（parseSubscriptionContent → parseXrayJson → gate → subscriptionId）。
+    const sub = new SubscriptionService(new ProtocolParser(), { addLog: () => {} } as never);
+    const { servers } = (await (sub as any).parseSubscriptionContent(
+      JSON.stringify(v2rayJsonSubscription()),
+      'sub-xray',
+      { allowProviders: true, viaProxy: false, userAgent: 'ua' }
+    )) as { servers: ServerConfig[] };
+    expect(servers.map((s) => s.name)).toEqual(V2RAY_JSON_NODE_NAMES);
+    const byName = new Map(servers.map((s) => [s.name, s]));
+    const us = byName.get('🇺🇸 US · proxy')!;
+    const relay = byName.get('🇺🇸 US · relay')!;
+    expect(us.detour).toBe(relay.id);
+
+    // Xray 侧：全部节点交 Xray（结构化节点按「使用 Xray 内核」强制，透传节点本就 Xray）——覆盖每个解析产物，
+    // 含 Xray→Xray 前置链（US → relay）。
+    expect(servers.every((s) => requiresXrayCore(s) || canUseXrayCore(s))).toBe(true);
+    const plan = planXrayBridge({
+      candidates: servers,
+      allServers: servers,
+      ports: servers.map((_, i) => 37000 + i).concat(38000),
+      secret: () => 's3cret',
+    });
+    expect(plan.detourOf.get(us.id)).toBe(relay.id);
+    const cfg = buildXrayConfig({
+      servers: new Map(servers.map((s) => [s.id, s])),
+      nodes: plan.nodes,
+      dialers: plan.dialers,
+      logLevel: 'warning',
+    });
+    expect(cfg.outbounds.filter((o) => o.tag.startsWith('n-'))).toHaveLength(servers.length);
+    const xr = xrayTest(cfg, 'sub-v2ray-json');
+    if (xr.code !== 0) throw new Error(`xray run -test 未通过：\n${xr.out}`);
+
+    // sing-box 侧（真实分工）：需 Xray 的节点（mKCP / sockopt 透传、XHTTP+ENC）走 socks 桥，其余原生 + 原生 detour。
+    const pm: any = new ProxyManager(
+      undefined,
+      undefined,
+      path.join(TMP, 'cfg-sub.json'),
+      '/fake/sing-box'
+    );
+    pm.coreVersion = '1.14.0';
+    const sb = pm.generateSingBoxConfig(userConfig(servers)) as SingBoxConfig;
+    const xrayNames = servers.filter((s) => requiresXrayCore(s)).map((s) => s.name);
+    expect(xrayNames).toEqual(['KCP A', 'KCP B', '3x-ui 分片', 'XHTTP ENC']);
+    for (const name of xrayNames) {
+      expect(sb.outbounds.find((o) => o.tag === name)?.type).toBe('socks');
+    }
+    expect(sb.outbounds.find((o) => o.tag === us.name)).toMatchObject({
+      type: 'trojan',
+      detour: relay.name,
+    });
+    const sr = singboxCheck(sb, 'sub-v2ray-json');
+    if (sr.code !== 0) throw new Error(`sing-box check 未通过：\n${sr.out}`);
   });
 });
 

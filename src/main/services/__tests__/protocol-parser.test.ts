@@ -130,6 +130,27 @@ describe('Trojan', () => {
     void expectRoundTripStable(
       'trojan://trojanpass@c.example.com:443?security=tls&sni=t.example.com&alpn=h2&fp=chrome&type=ws&path=%2Ftj&host=t.example.com#trojan-1'
     ));
+
+  // trojan + REALITY：两核皆可承载（sing-box check / xray run -test 实证）→ 纯 REALITY 走 sing-box，pqv → Xray。
+  const TROJAN_REALITY =
+    'trojan://pw@r.example.com:443?type=grpc&serviceName=svc&security=reality&sni=www.microsoft.com&fp=chrome&pbk=PUBKEYxyz&sid=ab12&spx=%2Fs#trojan-reality';
+
+  it('REALITY 特征：security / tlsSettings / realitySettings（pbk/sid/spx）', () => {
+    const c = parser.parseUrl(TROJAN_REALITY);
+    expect(c.protocol).toBe('trojan');
+    expect(c.security).toBe('reality');
+    expect(c.network).toBe('grpc');
+    expect(c.grpcSettings).toMatchObject({ serviceName: 'svc' });
+    expect(c.tlsSettings).toEqual({ serverName: 'www.microsoft.com', fingerprint: 'chrome' });
+    expect(c.realitySettings).toEqual({ publicKey: 'PUBKEYxyz', shortId: 'ab12', spiderX: '/s' });
+    expect(xrayRequirement(c)).toBeNull();
+    expect(xrayRequirement(parser.parseUrl(TROJAN_REALITY.replace('#', '&pqv=PQ#')))).toBe(
+      'reality-pqv'
+    );
+  });
+
+  it('REALITY 往返不动点（含 pqv）', () =>
+    void expectRoundTripStable(TROJAN_REALITY.replace('#', '&pqv=PQ#')));
 });
 
 describe('Hysteria2', () => {

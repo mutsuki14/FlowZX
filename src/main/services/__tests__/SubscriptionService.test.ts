@@ -990,6 +990,32 @@ describe('§16.3.4 reconcileServers contentChanged（手动 force-restart / 渲�
     expect(r.contentChanged).toBe(true);
   });
 
+  it('同指纹多节点（仅名不同）重排 → 按名配对：id 跟随名字、contentChanged=false；改名仍按序命中', () => {
+    // 同 uuid/地址 → 同指纹，仅 name 不同（如多份配置共用同一中转）。
+    const old = [node('u', '1.1.1.1', 'A', 'id-A'), node('u', '1.1.1.1', 'B', 'id-B')];
+    const r = SubscriptionService.reconcileServers(
+      old,
+      [node('u', '1.1.1.1', 'B', 'new-1'), node('u', '1.1.1.1', 'A', 'new-2')],
+      'NOW'
+    );
+    expect(r.servers.map((s) => [s.name, s.id])).toEqual([
+      ['B', 'id-B'],
+      ['A', 'id-A'],
+    ]);
+    expect(r).toMatchObject({ added: 0, deleted: 0, contentChanged: false });
+    // 同名者在后也优先（不被前面无同名的节点按序抢走）；无同名者退回按序命中剩余旧 id
+    const r2 = SubscriptionService.reconcileServers(
+      old,
+      [node('u', '1.1.1.1', 'C', 'new-1'), node('u', '1.1.1.1', 'A', 'new-2')],
+      'NOW'
+    );
+    expect(r2.servers.map((s) => [s.name, s.id])).toEqual([
+      ['C', 'id-B'],
+      ['A', 'id-A'],
+    ]);
+    expect(r2).toMatchObject({ added: 0, deleted: 0, contentChanged: true });
+  });
+
   it('完全无变化（同指纹同内容，仅顺序）→ contentChanged=false', () => {
     const old = [node('u1', '1.1.1.1', 'a'), node('u2', '2.2.2.2', 'b')];
     // 抓取顺序颠倒 + 无内容差异 → 恒 false（norm/reconcile 双保险的内容级判据）。

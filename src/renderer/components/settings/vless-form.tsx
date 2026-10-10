@@ -23,6 +23,11 @@ import {
   formXrayRequirement,
   formCanUseXray,
 } from './shared/xray-fields';
+import {
+  buildRealitySettings,
+  realityFingerprint,
+  realityXrayExtrasSupported,
+} from './shared/reality-form-logic';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import { InfoTooltip } from './shared/info-tooltip';
 import { normalizeNetworkUpper } from './shared/normalize-network';
@@ -172,7 +177,12 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           ? {
               serverName: values.tlsServerName?.trim() || null,
               allowInsecure: security === 'tls' ? values.tlsAllowInsecure : false,
-              fingerprint: values.tlsFingerprint || 'chrome',
+              // REALITY 必须挂 uTLS：none / 空 → chrome（与 trojan 的 buildRealityTlsSettings、两侧 builder 同口径），
+              // 否则表单存 none、实际下发 chrome，分享链导出 fp=none 被其它客户端拒收。
+              fingerprint:
+                security === 'reality'
+                  ? realityFingerprint(values.tlsFingerprint)
+                  : values.tlsFingerprint || 'chrome',
               engine:
                 security === 'tls' && values.tlsEngine && values.tlsEngine !== 'go'
                   ? values.tlsEngine
@@ -187,15 +197,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
               ...(security === 'tls' ? buildTlsSpoofSettings(values) : {}),
             }
           : null,
-      realitySettings:
-        security === 'reality'
-          ? {
-              publicKey: values.realityPublicKey?.trim() || '',
-              shortId: values.realityShortId?.trim() || undefined,
-              spiderX: values.realitySpiderX?.trim() || undefined,
-              mldsa65Verify: values.realityMldsa65?.trim() || undefined,
-            }
-          : null,
+      // ML-DSA-65 仅在传输能承载 Xray REALITY（RAW / gRPC / XHTTP）时提交，见 buildRealitySettings。
+      realitySettings: security === 'reality' ? buildRealitySettings('vless', values) : null,
       ...buildTransportSettings(network, values),
       multiplexSettings: buildMultiplexSettings(values, { skipVisionFlow: true }),
       useXrayCore: values.useXrayCore ? true : undefined,
@@ -211,6 +214,9 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
     watchedNetwork === 'Ws' || watchedNetwork === 'HttpUpgrade' || watchedNetwork === 'Http';
   const isGrpcEnabled = watchedNetwork === 'Grpc';
   const isXhttpEnabled = watchedNetwork === 'Xhttp';
+  // REALITY 的 Xray 扩展（spiderX / ML-DSA-65）仅在 RAW / gRPC / XHTTP 上显示；ML-DSA-65 也只在此时参与内核判定
+  //（与提交侧 buildRealitySettings 同一谓词）——ws / httpupgrade / HTTP/2 上的残留值不把节点误判成 Xray。
+  const realityXrayExtras = isRealityEnabled && realityXrayExtrasSupported('vless', watchedNetwork);
   // 内核判定（与主进程生成期同一谓词）：XHTTP / VLESS Encryption / vision-udp443 / pqv / 证书钉扎 / 手动勾选 → Xray。
   const xrayReq = formXrayRequirement({
     protocol: 'vless',
@@ -218,11 +224,16 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
     encryption: form.watch('encryption'),
     flow: form.watch('flow'),
     security: form.watch('security'),
-    mldsa65Verify: isRealityEnabled ? form.watch('realityMldsa65') : undefined,
+    mldsa65Verify: realityXrayExtras ? form.watch('realityMldsa65') : undefined,
     pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
-  const xraySupported = formCanUseXray({ protocol: 'vless', network: watchedNetwork });
+  // security 参与：REALITY + ws/httpupgrade 在 Xray 侧不受支持（shared/xray#canUseXrayCore）。
+  const xraySupported = formCanUseXray({
+    protocol: 'vless',
+    network: watchedNetwork,
+    security: form.watch('security'),
+  });
 
   return (
     <Form {...form}>
@@ -333,7 +344,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                 descKey="servers.realityTargetDesc"
                 placeholder="www.microsoft.com"
               />
-              <FingerprintField control={form.control} t={t} />
+              <FingerprintField control={form.control} t={t} reality />
               <FieldSpan>
                 <RealityPublicKeyField control={form.control} t={t} />
               </FieldSpan>
@@ -366,7 +377,8 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                   </div>
                 )}
               />
-              <RealityXrayFields control={form.control} t={t} />
+              {/* spiderX / ML-DSA-65 只有 Xray 消费：传输承载不了 Xray REALITY（ws / httpupgrade / HTTP/2）时不显示——填 pqv 即改走 Xray，在这些传输上只会产出 Xray 拒收的节点。 */}
+              {realityXrayExtras && <RealityXrayFields control={form.control} t={t} />}
             </FieldGrid>
           </div>
         )}

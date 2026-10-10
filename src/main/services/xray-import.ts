@@ -9,6 +9,7 @@
  *    （customSettings.engine='xray'，Xray outbound JSON 原样保存），由 Xray sidecar 直接运行，零语义丢失。
  *
  * 逐 outbound try/catch，单条失败不影响其它（对齐 ClashSubscriptionParser.parseClashProxies）。
+ * 手动导入与订阅（parseXrayJson：单份配置 / v2ray-json 配置数组 / 裸 outbound 数组）共用本模块。
  */
 import { randomUUID } from 'crypto';
 import type { ServerConfig, Network, Security, XhttpMode } from '../../shared/types';
@@ -16,8 +17,9 @@ import { xrayOutboundDisplayAddress } from '../../shared/xray';
 
 /** 本模块可结构化映射的 xray outbound.protocol。 */
 const XRAY_SUPPORTED = new Set(['vmess', 'vless', 'trojan', 'shadowsocks']);
-/** xray 内部/非节点 outbound（忽略，不计入任何统计）。 */
-const XRAY_INTERNAL = new Set(['freedom', 'blackhole', 'dns', 'loopback']);
+/** xray 内部/非节点 outbound（忽略，不计入任何统计）。`direct` / `block` 是 Xray 对 freedom / blackhole 的协议别名
+ * （xray run -test 均接受）——漏掉则被当成「节点」导入：直连真实 IP 却可被选中、测速自动切换还最易选中它。 */
+const XRAY_INTERNAL = new Set(['freedom', 'direct', 'blackhole', 'block', 'dns', 'loopback']);
 /** 结构化映射认识的传输层（其余 → 原样透传）。 */
 const STRUCTURED_NETWORKS = new Set([
   'tcp',
@@ -57,16 +59,36 @@ function obj(v: unknown): Record<string, unknown> {
 }
 
 /**
- * 该 outbound 是否需原样透传（结构化映射会丢语义）：未知传输、finalmask、mux 开启、除 dialerProxy 外的 sockopt、
- * 遗留 xtls 安全层。dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理），
- * 导入时映射为 ServerConfig.detour（见 parseXrayOutbounds 第二遍）。
+ * 该 outbound 是否需原样透传（结构化映射会丢语义）：未知传输、TCP/RAW 伪装头（header.type≠none，如 http）、
+ * SS 套传输 / TLS、无 TLS 的 trojan、finalmask、mux 开启、除 dialerProxy 外的 sockopt、遗留 xtls 安全层。
+ * dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理），导入时映射为
+ * ServerConfig.detour（见 parseXrayOutbounds 第二遍）。
  */
 function needsPassthrough(o: Record<string, unknown>): string | null {
   const ss = obj(o.streamSettings);
   const network = (str(ss.network) || 'tcp').toLowerCase();
   if (!STRUCTURED_NETWORKS.has(network)) return `传输 ${network}`;
-  if (ss.finalmask !== undefined) return 'finalmask';
+  // TCP/RAW 的 HTTP 伪装头（Marzban / 3x-ui「TCP + HTTP header」）：ServerConfig 无此字段，结构化会静默丢头、
+  // 连不上要求该头的服务端。rawSettings / tcpSettings（旧名）任一带非 none 伪装即透传——透传原样保留，宁宽勿漏。
+  if (network === 'tcp' || network === 'raw') {
+    for (const k of ['rawSettings', 'tcpSettings']) {
+      const ht = (str(obj(obj(ss[k]).header).type) || 'none').toLowerCase();
+      if (ht !== 'none') return `TCP 伪装头 ${ht}`;
+    }
+  }
+  const proto = (str(o.protocol) || '').toLowerCase();
   const security = (str(ss.security) || 'none').toLowerCase();
+  // Xray 允许 SS 套 ws / grpc / tls（3x-ui 可下发），sing-box 的 shadowsocks 出站却无 transport / tls 字段
+  //（sing-box check：unknown field）→ 结构化即成 sing-box 拒收的节点（且 SS 恒按 sing-box 原生建模）→ 透传。
+  if (
+    proto === 'shadowsocks' &&
+    (!(network === 'tcp' || network === 'raw') || security !== 'none')
+  ) {
+    return `SS ${network}${security !== 'none' ? `+${security}` : ''}`;
+  }
+  // 两侧 builder 对 trojan 恒开 TLS（无 security 字段可表达明文）→ 结构化会把明文 trojan 变成 TLS 握手 → 透传。
+  if (proto === 'trojan' && security === 'none') return 'trojan 无 TLS';
+  if (ss.finalmask !== undefined) return 'finalmask';
   if (security === 'xtls') return 'xtls';
   const sockopt = obj(ss.sockopt);
   if (Object.keys(sockopt).some((k) => k !== 'dialerProxy')) return 'sockopt';
@@ -267,15 +289,24 @@ function mapXrayOutbound(
   return null;
 }
 
+/**
+ * 不看 tag 的默认节点名：结构化 `address:port`；透传 `<protocol> address:port`（无地址时仅协议）。
+ * 无 tag 的 outbound 与无 remarks 的 v2ray-json 配置共用（见 parseXrayJson）。
+ */
+function addressName(s: ServerConfig): string {
+  if (s.protocol !== 'custom') return `${s.address}:${s.port}`;
+  const proto = str(obj(s.customSettings?.outbound).protocol) || 'xray';
+  return s.address ? `${proto} ${s.address}:${s.port}` : proto;
+}
+
 /** 原样透传为自定义 Xray 节点（customSettings.engine='xray'）。tag/proxySettings 由生成期接管，此处保留原文。 */
 function makeXrayCustomNode(o: Record<string, unknown>, now: string): ServerConfig {
   const { address, port } = xrayOutboundDisplayAddress(o);
-  const proto = str(o.protocol) || 'xray';
   const outbound = JSON.parse(JSON.stringify(o)) as Record<string, unknown>;
   delete outbound.tag;
-  return {
+  const node: ServerConfig = {
     id: randomUUID(),
-    name: str(o.tag) || (address ? `${proto} ${address}:${port}` : proto),
+    name: '',
     protocol: 'custom',
     address,
     port,
@@ -283,6 +314,8 @@ function makeXrayCustomNode(o: Record<string, unknown>, now: string): ServerConf
     createdAt: now,
     updatedAt: now,
   };
+  node.name = str(o.tag) || addressName(node);
+  return node;
 }
 
 /** 链式代理引用的前置 outbound tag：sockopt.dialerProxy 优先，其次旧式 proxySettings.tag。 */
@@ -294,21 +327,37 @@ function chainRef(o: Record<string, unknown>): string | undefined {
   );
 }
 
+/** 链式代理前置未能解析为已导入节点（内部 outbound / 解析失败 / 拼写错 / 自引用）。 */
+interface BrokenChain {
+  server: ServerConfig;
+  ref: string;
+}
+
+/** 单份 outbounds[] 的解析中间结果（parseXrayOutbounds / parseXrayJson 共用；告警由调用方在命名定稿后生成）。 */
+interface XrayCollectResult {
+  servers: ServerConfig[];
+  skipped: number;
+  failed: number;
+  brokenChains: BrokenChain[];
+  passByReason: Map<string, number>;
+}
+
 /**
- * xray outbounds[] → ServerConfig[]，逐条 try/catch，聚合 skipped/failed/warnings。
+ * xray outbounds[] → ServerConfig[]（不生成告警文案），逐条 try/catch。
  * 两遍：先逐条映射并记 源 tag → 新节点 id；再把 dialerProxy / proxySettings 链映射为 ServerConfig.detour
  *（生成期 Xray 侧的 dialerProxy / proxySettings 一律被 FlowZ 接管，不映射即静默变直连）。
+ * tag 解析只在本次传入的 outbounds 内进行——即链式代理的作用域 = 一份配置。
  */
-export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseResult {
+function collectXrayOutbounds(outbounds: unknown, now: string): XrayCollectResult {
   const servers: ServerConfig[] = [];
   let skipped = 0;
   let failed = 0;
-  const warnings: string[] = [];
-  if (!Array.isArray(outbounds)) return { servers, skipped, failed, warnings };
-
+  const brokenChains: BrokenChain[] = [];
   const passByReason = new Map<string, number>();
+  if (!Array.isArray(outbounds)) return { servers, skipped, failed, brokenChains, passByReason };
+
   const idByTag = new Map<string, string>();
-  const chains: { server: ServerConfig; ref: string }[] = [];
+  const chains: BrokenChain[] = [];
   const addServer = (o: Record<string, unknown>, server: ServerConfig): void => {
     servers.push(server);
     const tag = str(o.tag)?.trim();
@@ -344,22 +393,227 @@ export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseRe
     }
   }
 
-  // 第二遍：链式代理 → detour。前置 tag 不在已导入节点里（内部 outbound / 解析失败 / 拼写错）→ 告警而非静默丢链。
-  for (const { server, ref } of chains) {
-    const detour = idByTag.get(ref);
-    if (detour && detour !== server.id) {
-      server.detour = detour;
+  // 第二遍：链式代理 → detour。前置 tag 不在已导入节点里（内部 outbound / 解析失败 / 拼写错）→ 记入
+  // brokenChains（由调用方告警）而非静默丢链。
+  for (const chain of chains) {
+    const detour = idByTag.get(chain.ref);
+    if (detour && detour !== chain.server.id) chain.server.detour = detour;
+    else brokenChains.push(chain);
+  }
+  return { servers, skipped, failed, brokenChains, passByReason };
+}
+
+function chainWarning(name: string, ref: string): string {
+  return `节点「${name}」的链式代理前置「${ref}」不是已导入的节点，该链未保留（将直连服务器）`;
+}
+
+function passthroughWarning(passByReason: Map<string, number>): string | null {
+  if (passByReason.size === 0) return null;
+  const total = [...passByReason.values()].reduce((a, b) => a + b, 0);
+  const detail = [...passByReason.entries()].map(([p, c]) => `${p}(${c})`).join(', ');
+  return `${total} 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: ${detail}`;
+}
+
+/**
+ * xray outbounds[]（一份配置）→ ServerConfig[]，逐条 try/catch，聚合 skipped/failed/warnings。
+ * 链式代理映射见 collectXrayOutbounds；整份 Xray JSON 文档（含 v2ray-json 配置数组）用 parseXrayJson。
+ */
+export function parseXrayOutbounds(outbounds: unknown, now: string): XrayParseResult {
+  const r = collectXrayOutbounds(outbounds, now);
+  const warnings = r.brokenChains.map(({ server, ref }) => chainWarning(server.name, ref));
+  const pass = passthroughWarning(r.passByReason);
+  if (pass) warnings.push(pass);
+  return { servers: r.servers, skipped: r.skipped, failed: r.failed, warnings };
+}
+
+/**
+ * outbounds 是否为 Xray 形态：任一条目带字符串 `protocol` 且无 `type`，且**没有任何**条目带字符串 `type`
+ *（Xray outbound 顶层恒无 `type`；sing-box outbound 恒用 `type`、无 `protocol`）。后一条防 sing-box 订阅里混入
+ * 一条杂项 `{protocol}` 就整份被 Xray 分支截走、sing-box 节点全被跳过。订阅与本地导入共用的单一判据。
+ */
+export function looksLikeXrayOutbounds(outbounds: unknown): boolean {
+  if (!Array.isArray(outbounds)) return false;
+  const entries = outbounds.filter(
+    (o): o is Record<string, unknown> => !!o && typeof o === 'object' && !Array.isArray(o)
+  );
+  return (
+    entries.some((o) => typeof o.protocol === 'string' && o.type === undefined) &&
+    !entries.some((o) => typeof o.type === 'string')
+  );
+}
+
+/** 是否为一份 Xray 完整配置（对象 + Xray 形态 outbounds[]）。 */
+function isXrayConfigObject(v: unknown): v is Record<string, unknown> {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    looksLikeXrayOutbounds((v as Record<string, unknown>).outbounds)
+  );
+}
+
+/** Xray JSON 文档形态：单份配置 / 完整配置数组（v2ray-json 订阅）/ 裸 outbound 数组。 */
+export type XrayJsonShape = 'config' | 'config-list' | 'outbound-list';
+
+export interface XrayJsonParseResult extends XrayParseResult {
+  shape: XrayJsonShape;
+  /** 参与解析的配置份数（outbound-list 计 1）。 */
+  configs: number;
+}
+
+/** 同一前置 tag 的断链按 tag 聚合：多份配置共用同一前置（如 3x-ui 的 fragment）时一条告警，不刷屏。 */
+function chainWarnings(broken: BrokenChain[]): string[] {
+  const byRef = new Map<string, string[]>();
+  for (const { server, ref } of broken) {
+    const names = byRef.get(ref);
+    if (names) names.push(server.name);
+    else byRef.set(ref, [server.name]);
+  }
+  const out: string[] = [];
+  for (const [ref, names] of byRef) {
+    if (names.length === 1) {
+      out.push(chainWarning(names[0], ref));
+      continue;
+    }
+    const shown = names
+      .slice(0, 5)
+      .map((n) => `「${n}」`)
+      .join('、');
+    const more = names.length > 5 ? ` 等 ${names.length} 个节点` : '';
+    out.push(
+      `节点 ${shown}${more}的链式代理前置「${ref}」不是已导入的节点，该链未保留（将直连服务器）`
+    );
+  }
+  return out;
+}
+
+/**
+ * Xray JSON 文档（订阅正文 / 本地导入文本，已 JSON.parse）→ ServerConfig[]。支持三种真实形态：
+ *  ① 单份配置 `{ outbounds: [...] }`（outbounds 为 Xray 形态）；
+ *  ② 完整配置数组 `[{ remarks, outbounds: [...] }, ...]`（Marzban / 3x-ui 等「v2ray-json」订阅，一份配置一个节点）；
+ *  ③ 裸 outbound 数组 `[{ protocol, settings, ... }, ...]`。
+ * 非 Xray 形态返回 null（调用方继续 sing-box / Clash / 链接探测）：判据为 looksLikeXrayOutbounds（protocol 而非 type）。
+ *
+ * 每份配置独立解析：链式代理（dialerProxy / proxySettings.tag）只在**同一配置内**解析——v2ray-json 订阅的各配置
+ * 普遍复用同名 tag（"proxy" / "fragment"），跨配置解析会串链。内部 outbound（freedom/direct/blackhole/block/dns/
+ * loopback）与手动导入一样忽略。
+ * remarks 命名：配置顶层 remarks 非空时，该配置只产出 1 个节点 → 节点名 = remarks；多个 → `<remarks> · <原名>`
+ *（原名 = tag，无 tag 时为 address:port）。配置数组里**无 remarks** 的配置：各配置的 tag 普遍同为 "proxy"，按 tag
+ * 命名则整份订阅同名、无从区分 → 改按地址命名（addressName）；仍撞名（同 host:port 的不同用户 / 传输）者追加
+ * ` #<配置序号>`（1 起）。单份配置 / 裸 outbound 数组无此问题（同一配置内 tag 唯一），仍按 tag 命名。
+ */
+export function parseXrayJson(json: unknown, now: string): XrayJsonParseResult | null {
+  let shape: XrayJsonShape;
+  let configs: unknown[];
+  if (Array.isArray(json)) {
+    if (json.some(isXrayConfigObject)) {
+      shape = 'config-list';
+      configs = json;
+    } else if (looksLikeXrayOutbounds(json)) {
+      shape = 'outbound-list';
+      configs = [{ outbounds: json }];
     } else {
-      warnings.push(
-        `节点「${server.name}」的链式代理前置「${ref}」不是已导入的节点，该链未保留（将直连服务器）`
-      );
+      return null;
+    }
+  } else if (isXrayConfigObject(json)) {
+    shape = 'config';
+    configs = [json];
+  } else {
+    return null;
+  }
+
+  const servers: ServerConfig[] = [];
+  let skipped = 0;
+  let failed = 0;
+  let parsedConfigs = 0;
+  const broken: BrokenChain[] = [];
+  const passByReason = new Map<string, number>();
+  const addressNamed: { server: ServerConfig; index: number }[] = [];
+  for (let index = 0; index < configs.length; index++) {
+    const cfg = configs[index];
+    // 配置数组里的非配置条目（非对象 / 无 outbounds[]）无法导入 → skipped。
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+      skipped++;
+      continue;
+    }
+    const c = cfg as Record<string, unknown>;
+    if (!Array.isArray(c.outbounds)) {
+      skipped++;
+      continue;
+    }
+    parsedConfigs++;
+    const r = collectXrayOutbounds(c.outbounds, now);
+    const remarks = typeof c.remarks === 'string' ? c.remarks.trim() : '';
+    if (remarks) {
+      if (r.servers.length === 1) r.servers[0].name = remarks;
+      else for (const s of r.servers) s.name = `${remarks} · ${s.name}`;
+    } else if (shape === 'config-list') {
+      for (const s of r.servers) {
+        s.name = addressName(s);
+        addressNamed.push({ server: s, index });
+      }
+    }
+    servers.push(...r.servers);
+    skipped += r.skipped;
+    failed += r.failed;
+    broken.push(...r.brokenChains);
+    for (const [reason, n] of r.passByReason) {
+      passByReason.set(reason, (passByReason.get(reason) ?? 0) + n);
     }
   }
 
-  if (passByReason.size > 0) {
-    const total = [...passByReason.values()].reduce((a, b) => a + b, 0);
-    const detail = [...passByReason.entries()].map(([p, c]) => `${p}(${c})`).join(', ');
-    warnings.push(`${total} 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: ${detail}`);
+  // 地址命名仍撞名 → 追加配置序号（须在生成告警前定稿，告警引用节点名）。
+  const nameCount = new Map<string, number>();
+  for (const { server } of addressNamed) {
+    nameCount.set(server.name, (nameCount.get(server.name) ?? 0) + 1);
   }
-  return { servers, skipped, failed, warnings };
+  for (const { server, index } of addressNamed) {
+    if ((nameCount.get(server.name) ?? 0) > 1) server.name = `${server.name} #${index + 1}`;
+  }
+
+  const warnings = chainWarnings(broken);
+  const pass = passthroughWarning(passByReason);
+  if (pass) warnings.push(pass);
+  return { servers, skipped, failed, warnings, shape, configs: parsedConfigs };
+}
+
+/**
+ * 透传 Xray outbound 的身份要素（订阅对账指纹用，见 SubscriptionService.serverFingerprint）：内层协议 + 凭据 + 传输。
+ * 凭据按落点取：vnext[0].users[0].id（vmess/vless）→ servers[0].password（trojan/ss）→ servers[0].users[0]（socks/http）
+ * → Xray 25+ 扁平 settings（id/password/pass/user）→ peers[0].publicKey（wireguard）→ hysteriaSettings.auth。
+ * 同 host:port 的并列透传节点（不同用户 / 不同传输）据此区分，不在对账时互相顶替 id。
+ */
+export function xrayOutboundIdentity(outbound: unknown): {
+  protocol: string;
+  cred: string;
+  network: string;
+} {
+  const o = obj(outbound);
+  const settings = obj(o.settings);
+  const first = (k: string): Record<string, unknown> => {
+    const list = settings[k];
+    return Array.isArray(list) ? obj(list[0]) : {};
+  };
+  const firstUser = (entry: Record<string, unknown>): Record<string, unknown> =>
+    Array.isArray(entry.users) ? obj(entry.users[0]) : {};
+  const vnext = first('vnext');
+  const server = first('servers');
+  const ss = obj(o.streamSettings);
+  // 传输名按结构化导入同口径归一（raw→tcp、splithttp→xhttp、h2→http）：面板模板改拼写（如 Xray 的 tcp→raw 更名）
+  // 时透传节点指纹不变，对账不至于删旧增新换 id（选中回落、内核重启）——与其结构化同胞一致。
+  const n = (str(ss.network) || 'tcp').toLowerCase();
+  const network = n === 'raw' ? 'tcp' : n === 'splithttp' ? 'xhttp' : n === 'h2' ? 'http' : n;
+  const cred =
+    str(firstUser(vnext).id) ||
+    str(server.password) ||
+    str(firstUser(server).pass) ||
+    str(firstUser(server).user) ||
+    str(settings.id) ||
+    str(settings.password) ||
+    str(settings.pass) ||
+    str(settings.user) ||
+    str(first('peers').publicKey) ||
+    str(obj(ss.hysteriaSettings).auth) ||
+    '';
+  return { protocol: (str(o.protocol) || '').toLowerCase(), cred, network };
 }

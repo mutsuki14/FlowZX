@@ -39,28 +39,59 @@ export function refineXhttpExtra(
   }
 }
 
+/**
+ * Shadowsocks 表单的附加层字段（仅 SS 表单传）：加密方法 / 插件 / 是否启用 Shadow-TLS——
+ * 决定 canUseXrayCore（插件、Shadow-TLS 为 sing-box 独有；流加密 Xray 已移除）。
+ */
+interface FormSsLayer {
+  ssMethod?: string;
+  ssPlugin?: string;
+  shadowTls?: boolean;
+}
+
+/** 表单值中与 canUseXrayCore 相关的部分 → 最小 ServerConfig 片段（与提交映射同判据）。 */
+function formLayerConfig(
+  v: { protocol: string; network?: string; security?: string } & FormSsLayer
+): Pick<
+  ServerConfig,
+  'protocol' | 'network' | 'security' | 'shadowsocksSettings' | 'shadowTlsSettings'
+> {
+  const isSs = v.protocol.toLowerCase() === 'shadowsocks';
+  return {
+    protocol: v.protocol as ServerConfig['protocol'],
+    // SS 无传输层（恒 tcp）：不让残留 network 值影响判定。
+    network: (isSs ? 'tcp' : (v.network || 'tcp').toLowerCase()) as ServerConfig['network'],
+    // security 参与判定：REALITY 在 Xray 侧仅支持 RAW / XHTTP / gRPC（ws / httpupgrade + REALITY 不能切 Xray）。
+    security: (v.security || '').toLowerCase() as ServerConfig['security'],
+    shadowsocksSettings: isSs
+      ? { method: v.ssMethod || '', password: '', plugin: v.ssPlugin || undefined }
+      : undefined,
+    shadowTlsSettings: v.shadowTls ? { password: '', sni: '' } : undefined,
+  };
+}
+
 /** 以表单当前值构造最小 ServerConfig，求内核判定（与主进程生成期同一谓词）。 */
-export function formXrayRequirement(v: {
-  protocol: string;
-  network?: string;
-  encryption?: string;
-  flow?: string;
-  security?: string;
-  mldsa65Verify?: string;
-  /** 证书 SHA-256 钉扎（调用方仅在 TLS（非 Reality）时传入，与提交映射一致）。 */
-  pinnedCert?: string;
-  useXrayCore?: boolean;
-}): XrayRequirement | null {
+export function formXrayRequirement(
+  v: {
+    protocol: string;
+    network?: string;
+    encryption?: string;
+    flow?: string;
+    security?: string;
+    mldsa65Verify?: string;
+    /** 证书 SHA-256 钉扎（调用方仅在 TLS（非 Reality）时传入，与提交映射一致）。 */
+    pinnedCert?: string;
+    useXrayCore?: boolean;
+  } & FormSsLayer
+): XrayRequirement | null {
   return xrayRequirement({
     id: '',
     name: '',
     address: '',
     port: 0,
-    protocol: v.protocol as ServerConfig['protocol'],
-    network: (v.network || 'tcp').toLowerCase() as ServerConfig['network'],
+    ...formLayerConfig(v),
     encryption: v.encryption,
     flow: v.flow,
-    security: (v.security || '').toLowerCase() as ServerConfig['security'],
     realitySettings: v.mldsa65Verify
       ? { publicKey: '', mldsa65Verify: v.mldsa65Verify }
       : undefined,
@@ -70,13 +101,8 @@ export function formXrayRequirement(v: {
 }
 
 /** 表单「当前协议是否允许手动切 Xray」：结构化协议 + 无 sing-box 独有附加层（复用 shared 谓词）。 */
-export function formCanUseXray(v: { protocol: string; network?: string }): boolean {
-  return canUseXrayCore({
-    id: '',
-    name: '',
-    address: '',
-    port: 0,
-    protocol: v.protocol as ServerConfig['protocol'],
-    network: (v.network || 'tcp').toLowerCase() as ServerConfig['network'],
-  });
+export function formCanUseXray(
+  v: { protocol: string; network?: string; security?: string } & FormSsLayer
+): boolean {
+  return canUseXrayCore({ id: '', name: '', address: '', port: 0, ...formLayerConfig(v) });
 }

@@ -15,6 +15,7 @@
  */
 import type { ServerConfig, LogLevel } from '../../shared/types';
 import { isVlessEncryptionEnabled, isXhttpNetwork } from '../../shared/xray';
+import { realityFingerprint } from '../../shared/reality';
 
 export type XrayLogLevel = 'debug' | 'info' | 'warning' | 'error' | 'none';
 
@@ -335,7 +336,8 @@ function buildStreamSettings(
     ss.security = 'reality';
     ss.realitySettings = compact({
       serverName: server.tlsSettings?.serverName?.trim(),
-      fingerprint: toXrayFingerprint(server.tlsSettings?.fingerprint) || 'chrome',
+      // REALITY 必须是浏览器指纹：'none'（→ Xray 'unsafe'）被 Xray 拒收 → 与 sing-box 同口径归一为 chrome。
+      fingerprint: realityFingerprint(server.tlsSettings?.fingerprint),
       publicKey: r.publicKey.trim(),
       shortId: r.shortId?.trim(),
       spiderX: r.spiderX?.trim(),
@@ -449,9 +451,12 @@ function buildProtocolSettings(server: ServerConfig): {
   }
   if (p === 'shadowsocks') {
     const ssCfg = server.shadowsocksSettings;
-    if (!ssCfg?.method || !ssCfg.password) throw new Error('Shadowsocks 节点缺少加密方法或密码');
+    // 方法名统一小写下发：Xray 仅对 AEAD 名做大小写归一，2022-blake3-* 按原样匹配（大写导入 → 「unknown cipher
+    // method」）；shared/xray#isXrayShadowsocksMethod 按大小写不敏感放行，两侧在此对齐。
+    const method = ssCfg?.method?.trim().toLowerCase();
+    if (!method || !ssCfg?.password) throw new Error('Shadowsocks 节点缺少加密方法或密码');
     if (ssCfg.plugin) throw new Error('Xray 内核不支持 Shadowsocks 插件');
-    validateShadowsocks2022Password(ssCfg.method, ssCfg.password);
+    validateShadowsocks2022Password(method, ssCfg.password);
     return {
       protocol: 'shadowsocks',
       settings: {
@@ -459,7 +464,7 @@ function buildProtocolSettings(server: ServerConfig): {
           {
             address: server.address,
             port: server.port,
-            method: ssCfg.method,
+            method,
             password: ssCfg.password,
           },
         ],
