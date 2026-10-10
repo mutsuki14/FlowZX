@@ -40,16 +40,16 @@ FlowZX is a fork of the cross-platform proxy client [FlowZ](https://github.com/d
 
 ## Download & install
 
-Download the latest version from [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Direct download links for v4.4.1:
+Download the latest version from [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Direct download links for v4.4.2:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-setup.exe) | Installer; installs for the current user only by default (can be changed to all users during setup), with a choice of directory |
-| Windows x64 | [FlowZ-4.4.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-portable.exe) | Portable; data is stored in `data\` next to the exe |
-| macOS | [FlowZ-4.4.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-arm64.dmg) | Apple silicon (M series) |
-| macOS | [FlowZ-4.4.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-x64.dmg) | Intel |
-| Linux x86_64 | [FlowZ-4.4.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-x86_64.AppImage) | No installation needed; requires FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-amd64.deb) | Debian / Ubuntu; installs to `/opt/FlowZ`; installing `policykit-1` as well is recommended |
+| Windows x64 | [FlowZ-4.4.2-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-setup.exe) | Installer; installs for the current user only by default (can be changed to all users during setup), with a choice of directory |
+| Windows x64 | [FlowZ-4.4.2-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-portable.exe) | Portable; data is stored in `data\` next to the exe |
+| macOS | [FlowZ-4.4.2-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-arm64.dmg) | Apple silicon (M series) |
+| macOS | [FlowZ-4.4.2-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-x64.dmg) | Intel |
+| Linux x86_64 | [FlowZ-4.4.2-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-x86_64.AppImage) | No installation needed; requires FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.2-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-amd64.deb) | Debian / Ubuntu; installs to `/opt/FlowZ`; installing `policykit-1` as well is recommended |
 
 | Platform | System requirements |
 |---|---|
@@ -73,7 +73,7 @@ Download the latest version from [Releases](https://github.com/mutsuki14/FlowZX/
 - Uninstalling the Windows installer version deletes `%APPDATA%\flowz` (all configuration: nodes, subscriptions, rules and so on) and the privileged service. To keep your data, export a backup first under **Settings → Advanced → Data Backup & Restore**. Upgrading in place does not delete data.
 
 > [!IMPORTANT]
-> Starting with 4.4.1, **Check for Updates** on the **About** page and in the tray menu, the automatic check at startup, and the repository link and **Report an issue** on the **About** page all point to this repository. In 4.4.0 they still point to upstream [dododook/FlowZ](https://github.com/dododook/FlowZ), so install 4.4.1 manually once from this repository's [Releases](https://github.com/mutsuki14/FlowZX/releases); after that you can update in-app. Upstream installers don't include the Xray core, so don't install them over FlowZX.
+> Starting with 4.4.1, **Check for Updates** on the **About** page and in the tray menu, the automatic check at startup, and the repository link and **Report an issue** on the **About** page all point to this repository. In 4.4.0 they still point to upstream [dododook/FlowZ](https://github.com/dododook/FlowZ), so install 4.4.1 or later manually once from this repository's [Releases](https://github.com/mutsuki14/FlowZX/releases); after that you can update in-app. Upstream installers don't include the Xray core, so don't install them over FlowZX.
 
 <a id="quick-start"></a>
 
@@ -100,11 +100,11 @@ Nodes run on sing-box by default; only nodes that use Xray-only features are han
 | VLESS / VMess / Trojan + XHTTP | — | ✅ Auto |
 | VLESS Encryption (`mlkem768x25519plus.*`, any transport except HTTP/2) | — | ✅ Auto |
 | `xtls-rprx-vision-udp443` flow | — | ✅ Auto |
-| REALITY ML-DSA-65 verification (`pqv`) | — | ✅ Auto |
+| REALITY ML-DSA-65 verification (`pqv`; TCP / gRPC / XHTTP transports only) | — | ✅ Auto |
 | TLS + certificate SHA-256 pinning (`pcs`) | — | ✅ Auto |
-| VLESS / VMess / Trojan (TCP / WebSocket / gRPC / HTTPUpgrade + TLS; VLESS also supports REALITY and `xtls-rprx-vision`) | ✅ Default | Opt-in |
+| VLESS / VMess / Trojan (TCP / WebSocket / gRPC / HTTPUpgrade + TLS; VLESS and Trojan also support REALITY, VLESS also supports `xtls-rprx-vision`) | ✅ Default | Opt-in (except REALITY over WebSocket / HTTPUpgrade) |
 | VLESS / VMess / Trojan + HTTP/2 transport | ✅ | — |
-| Shadowsocks / SS2022 (optionally with a plugin or Shadow-TLS v3) | ✅ | Imported combinations such as XHTTP only (auto; no toggle in the form) |
+| Shadowsocks / SS2022 (optionally with a plugin or Shadow-TLS v3) | ✅ Default | Opt-in (AEAD / 2022 methods only, without a plugin or Shadow-TLS); imported combinations such as XHTTP run on Xray automatically |
 | Hysteria2 (port hopping, salamander / gecko obfuscation), TUIC, AnyTLS, Snell v4 / v6 | ✅ | — |
 | NaiveProxy (Cronet, optional HTTP/3) | ✅ | — |
 | SOCKS5, HTTP(S), SSH | ✅ | — |
@@ -120,9 +120,9 @@ Nodes run on sing-box by default; only nodes that use Xray-only features are han
 | Share links: `vless`, `vmess`, `trojan`, `hysteria2` / `hy2`, `ss`, `tuic`, `anytls`, `snell`, `naive+https`, `socks5`, `http(s)` and more, optionally as a Base64 list | ✅ | ✅ |
 | Clash / mihomo YAML or JSON (including `xhttp-opts` and `proxy-providers`) | ✅ | ✅ |
 | sing-box JSON (`outbounds`) | ✅ | ✅ |
-| Xray JSON config | — | ✅ |
+| Xray JSON: a single config, a config array (the "v2ray-json" subscriptions of panels such as Marzban / 3x-ui) or a bare outbound array | ✅ | ✅ |
 
-When you import Xray JSON through Manual Import, nodes the form can represent become regular nodes; everything else (e.g. mKCP, finalmask, mux, custom sockopt) is imported as-is as custom Xray outbound JSON.
+When you import Xray JSON, nodes the form can represent become regular nodes; everything else (e.g. mKCP, TCP HTTP header obfuscation, finalmask, mux, custom sockopt) is imported as-is as custom Xray outbound JSON. Internal outbounds such as `freedom` / `direct`, `blackhole` / `block`, `dns` and `loopback` are ignored. Nodes from a config array are named after each config's `remarks` ("remarks · tag" when a config contains several proxy outbounds); without `remarks` they are named `address:port` (custom Xray outbound JSON nodes get the protocol name in front), and if two names still collide, the config's position is appended (e.g. `example.com:443 #2`). Proxy chains (`dialerProxy` / `proxySettings`) become the node's **Proxy Chain (Detour)** and are only resolved within the same config. See [docs/XRAY.md](docs/XRAY.md) for details.
 
 <a id="features"></a>
 
@@ -202,7 +202,7 @@ When you import Xray JSON through Manual Import, nodes the form can represent be
 
 ## Screenshots
 
-The screenshots use demo data (no real subscriptions or nodes). The UI shown comes from upstream FlowZ, so it doesn't include the Xray badge or the Xray core status.
+The screenshots show the current FlowZX UI with demo data (no real subscriptions or nodes). On the **Nodes** page, nodes with the **Xray** badge run on the Xray core (XHTTP, VLESS Encryption, custom Xray outbound JSON) and the rest run on sing-box; the **Settings** screenshot shows the Xray core (sidecar) status under **Advanced → Core Management**.
 
 | Light | Dark |
 |:---:|:---:|
@@ -301,10 +301,17 @@ Yes. The system proxy only affects apps that honor proxy settings, and DNS takeo
 - Xray 26 removed `allowInsecure`, so **Allow Insecure** has no effect on Xray nodes. For self-signed certificates, fill in **Certificate SHA-256 pin** instead; you can get the value with `xray tls hash --cert cert.pem`.
 - With ECH enabled, an ECHConfigList or a DNS query server must be provided; otherwise the node is invalid.
 - Nodes using the HTTP/2 transport, Shadow-TLS or SS plugins can't be switched to Xray.
+- Shadowsocks nodes using a stream cipher (e.g. `aes-*-cfb`, `aes-*-ctr`, `rc4-md5`, `chacha20-ietf`) can't be switched to Xray: Xray only supports AEAD and 2022 methods.
+- Xray's REALITY only supports the TCP (RAW) / gRPC / XHTTP transports, so REALITY nodes over WebSocket / HTTPUpgrade can only run on sing-box. ML-DSA-65 verification (`pqv`) is likewise limited to these three transports, and the form doesn't show the field for other transports.
 - sing-box Multiplex is not used; configure XHTTP connection reuse in `extra.xmux`.
 - `tag`, `proxySettings` and `sockopt.dialerProxy` in custom Xray JSON are managed by FlowZX; use the node's **Proxy Chain (Detour)** setting for chaining.
 - If the bundled Xray is missing, Xray nodes are skipped, with a notice if the selected node is an Xray node.
-- Subscription URLs don't support the Xray JSON format; it can only be imported via Manual Import.
+
+**Xray JSON import**
+
+- If a proxy chain points to an internal outbound (such as 3x-ui's `fragment` freedom outbound), the chain isn't kept and a warning is shown: the node connects to its server directly, and the fragment settings don't apply.
+- Internal outbounds such as `direct` / `block` (protocol aliases of `freedom` / `blackhole`) are ignored and not imported as nodes.
+- TCP (RAW) outbounds with HTTP header obfuscation are imported as-is as custom Xray outbound JSON and run on Xray; only their JSON can be edited.
 
 </details>
 
@@ -312,13 +319,13 @@ Yes. The system proxy only affects apps that honor proxy settings, and DNS takeo
 
 ## Reporting issues
 
-Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). Starting with 4.4.1, **Report an issue** on the in-app **About** page also opens this repository's new-issue page, prefilled with version and system information. Please include:
+Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). **Report an issue** on the in-app **About** page opens this repository's new-issue page (since 4.4.1). Starting with 4.4.2, it prefills the app version, operating system and architecture, sing-box version, Xray version and status, which core runs the selected node and why (including whether its detour chain goes through Xray), and the takeover and routing modes; no node addresses, node names or credentials are included. Please also include:
 
-- App version, operating system and architecture
-- sing-box and Xray versions (**Settings → Advanced → Core Management**)
-- Takeover mode and routing mode
-- Whether the problematic node has the Xray badge, and the reason the badge shows
-- The redacted diagnostic report exported from the **Logs** page
+- A description of the problem, steps to reproduce, and the log lines around the error (Xray core lines start with `[xray]`). The live log on the **Logs** page is not redacted, so mask node addresses and domains before pasting
+- If the problematic node isn't the selected node: whether it has the Xray badge, and the reason the badge shows
+- The redacted diagnostic report exported from the **Logs** page: it hides keys, node addresses and node names, but its log details may still contain other domains / IPs you visited and your subscription server's domain, so check it before uploading and remove anything you'd rather not share
+
+If you aren't using **Report an issue** (for example because the app won't start), fill in the version, system, core versions and status, and takeover and routing modes by hand following the issue template.
 
 If the problem also occurs on nodes without the Xray badge, it may exist in upstream FlowZ as well.
 
@@ -360,6 +367,7 @@ Tech stack: Electron 42 · React 19 · TypeScript · Vite · Tailwind CSS · Rad
 | Document | Contents |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray core: supported combinations, architecture, import parameters, caveats, verification |
+| [docs/releases/v4.4.2.md](docs/releases/v4.4.2.md) | v4.4.2 release notes |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 release notes |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 release notes |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release process |

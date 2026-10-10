@@ -24,11 +24,10 @@ import {
   formCanUseXray,
 } from './shared/xray-fields';
 import {
-  normalizeFormSecurity,
-  readRealityDefaults,
-  realityFingerprint,
+  readTrojanSecurityDefaults,
   buildRealityTlsSettings,
   buildRealitySettings,
+  realityXrayExtrasSupported,
   requireRealityPublicKey,
 } from './shared/reality-form-logic';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
@@ -104,22 +103,16 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
   // （传输显「选择传输协议」+ 保存 invalid input，issue #294）；同步初值让 Select 挂载即带正确值，结构性免疫。
   const getDefaultValues = (): TrojanFormValues => {
     if (serverConfig && serverConfig.protocol?.toLowerCase() === 'trojan') {
-      const security = normalizeFormSecurity(serverConfig.security);
-      const fp = serverConfig.tlsSettings?.fingerprint;
       return {
         address: serverConfig.address || '',
         port: serverConfig.port || 443,
         password: serverConfig.password || '',
         network: normalizeNetworkLower(serverConfig.network),
-        security,
-        tlsServerName: serverConfig.tlsSettings?.serverName || '',
+        // security / SNI / 指纹（TLS 缺省 none、REALITY 缺省 chrome）/ REALITY 字段：与往返单测共用同一读取函数。
+        ...readTrojanSecurityDefaults(serverConfig),
         tlsAllowInsecure: serverConfig.tlsSettings?.allowInsecure || false,
-        // TLS 缺省不挂 uTLS（none）；REALITY 必须挂 → 缺省 chrome（与两侧 builder 同口径）。
-        tlsFingerprint:
-          security === 'reality' ? realityFingerprint(fp) : (fp || 'none').toLowerCase(),
         tlsEngine: serverConfig.tlsSettings?.engine || 'go',
         alpn: serverConfig.tlsSettings?.alpn?.join(',') || '',
-        ...readRealityDefaults(serverConfig),
         ...readTransportDefaults(serverConfig),
         ...readEchDefault(serverConfig),
         ...readMultiplexDefaults(serverConfig),
@@ -132,13 +125,10 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
       port: 443,
       password: '',
       network: 'tcp',
-      security: 'tls',
-      tlsServerName: '',
+      ...readTrojanSecurityDefaults(),
       tlsAllowInsecure: false,
-      tlsFingerprint: 'none',
       tlsEngine: 'go',
       alpn: '',
-      ...readRealityDefaults(),
       ...readTransportDefaults(),
       ...echDefaults,
       ...multiplexDefaults,
@@ -180,7 +170,8 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
           : values.security === 'reality'
             ? buildRealityTlsSettings(values)
             : null,
-      realitySettings: values.security === 'reality' ? buildRealitySettings(values) : null,
+      realitySettings:
+        values.security === 'reality' ? buildRealitySettings('trojan', values) : null,
       ...buildTransportSettings(network, values),
       useXrayCore: values.useXrayCore ? true : undefined,
       multiplexSettings: buildMultiplexSettings(values),
@@ -196,12 +187,16 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
     watchedNetwork === 'ws' || watchedNetwork === 'httpupgrade' || watchedNetwork === 'http';
   const isGrpcEnabled = watchedNetwork === 'grpc';
   const isXhttpEnabled = watchedNetwork === 'xhttp';
+  // REALITY 的 Xray 扩展（spiderX / ML-DSA-65）仅在 RAW / gRPC / XHTTP 上显示；ML-DSA-65 也只在此时参与内核判定
+  //（与提交侧 buildRealitySettings 同一谓词）——ws / httpupgrade / HTTP/2 上的残留值不把节点误判成 Xray。
+  const realityXrayExtras =
+    isRealityEnabled && realityXrayExtrasSupported('trojan', watchedNetwork);
   // 内核判定（与主进程生成期同一谓词）：XHTTP / REALITY ML-DSA-65（pqv）/ 证书钉扎 / 手动勾选 → Xray。
   const xrayReq = formXrayRequirement({
     protocol: 'trojan',
     network: watchedNetwork,
     security: form.watch('security'),
-    mldsa65Verify: isRealityEnabled ? form.watch('realityMldsa65') : undefined,
+    mldsa65Verify: realityXrayExtras ? form.watch('realityMldsa65') : undefined,
     pinnedCert: isTlsEnabled ? form.watch('tlsPinnedSha256')?.trim() : undefined,
     useXrayCore: form.watch('useXrayCore'),
   });
@@ -312,7 +307,8 @@ export function TrojanForm({ serverConfig, onSubmit }: TrojanFormProps) {
                 <RealityPublicKeyField control={form.control} t={t} />
               </FieldSpan>
               <RealityShortIdField control={form.control} t={t} />
-              <RealityXrayFields control={form.control} t={t} />
+              {/* spiderX / ML-DSA-65 只有 Xray 消费：传输承载不了 Xray REALITY（ws / httpupgrade / HTTP/2）时不显示——填 pqv 即改走 Xray，在这些传输上只会产出 Xray 拒收的节点。 */}
+              {realityXrayExtras && <RealityXrayFields control={form.control} t={t} />}
             </FieldGrid>
           </div>
         )}

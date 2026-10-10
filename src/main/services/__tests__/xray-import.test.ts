@@ -1,7 +1,9 @@
 /**
  * xray-import 单测（node env，零 electron）。覆盖 vmess/vless/trojan/shadowsocks 映射 +
  * streamSettings(tls/reality/ws/grpc) + 不支持协议跳过 + 内部协议忽略 + 缺字段失败；
- * parseXrayJson 三形态（单份配置 / v2ray-json 配置数组 / 裸 outbound 数组）+ remarks 命名 + 链式作用域。
+ * parseXrayJson 三形态（单份配置 / v2ray-json 配置数组 / 裸 outbound 数组）+ remarks 命名 + 链式作用域；
+ * direct/block 协议别名按内部 outbound 忽略、TCP/RAW HTTP 伪装头透传、无 remarks 配置数组按地址命名、
+ * 混入 sing-box `type` 条目不判为 Xray。
  */
 import {
   looksLikeXrayOutbounds,
@@ -115,12 +117,14 @@ describe('parseXrayOutbounds', () => {
     expect(ss.shadowsocksSettings?.password).toBe('sspw');
   });
 
-  it('非结构化协议原样透传为自定义 Xray 节点；内部协议(freedom/blackhole) 忽略不计', () => {
+  it('非结构化协议原样透传为自定义 Xray 节点；内部协议(freedom/blackhole 及别名 direct/block) 忽略不计', () => {
     const r = parseXrayOutbounds(
       [
         { protocol: 'socks', tag: 's', settings: { servers: [{ address: 'x', port: 1 }] } },
         { protocol: 'freedom', tag: 'direct' },
         { protocol: 'blackhole', tag: 'block' },
+        { protocol: 'direct', tag: 'direct2' },
+        { protocol: 'Block', tag: 'block2' },
       ],
       NOW
     );
@@ -216,6 +220,48 @@ describe('parseXrayOutbounds', () => {
       'custom',
       'vless',
     ]);
+  });
+
+  it('TCP/RAW HTTP 伪装头（tcpSettings / rawSettings.header.type=http）→ 原样透传，伪装头不丢；type=none 仍结构化', () => {
+    const header = {
+      type: 'http',
+      request: { path: ['/'], headers: { Host: ['www.bing.com'] } },
+    };
+    const vmess = (stream: Record<string, unknown>) => ({
+      tag: 'vm',
+      protocol: 'vmess',
+      settings: {
+        vnext: [{ address: 'a.com', port: 80, users: [{ id: 'u', security: 'auto' }] }],
+      },
+      streamSettings: stream,
+    });
+    const r = parseXrayOutbounds(
+      [
+        vmess({ network: 'tcp', tcpSettings: { header } }),
+        vmess({ network: 'raw', rawSettings: { header: { type: 'HTTP' } } }),
+        vmess({ tcpSettings: { header }, sockopt: { dialerProxy: 'x' } }), // network 缺省 = tcp
+        vmess({ network: 'tcp', tcpSettings: { header: { type: 'none' } } }),
+        vmess({ network: 'raw', rawSettings: {} }),
+      ],
+      NOW
+    );
+    expect(r.servers.map((s) => s.protocol)).toEqual([
+      'custom',
+      'custom',
+      'custom',
+      'vmess',
+      'vmess',
+    ]);
+    const c = r.servers[0];
+    expect(c.customSettings?.engine).toBe('xray');
+    expect(c.customSettings?.outbound).toMatchObject({
+      protocol: 'vmess',
+      streamSettings: { network: 'tcp', tcpSettings: { header } },
+    });
+    expect(JSON.stringify(c)).toContain('www.bing.com');
+    expect(r.warnings).toContain(
+      '3 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: TCP 伪装头 http(3)'
+    );
   });
 
   it('XHTTP 顶层高级项（无 extra）→ 收进 extra，零语义丢失；path/host/mode 仍为结构化字段', () => {
@@ -505,6 +551,69 @@ describe('parseXrayJson', () => {
     expect(pass).toEqual(['7 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: sockopt(7)']);
   });
 
+  it('②内部 outbound 的协议别名 direct / block 忽略：单代理配置仍名 = remarks，无透传告警', () => {
+    const r = parseXrayJson(
+      [
+        {
+          remarks: 'DE-1',
+          outbounds: [
+            vless('proxy', 'de.com'),
+            { tag: 'direct', protocol: 'direct' },
+            { tag: 'block', protocol: 'block' },
+          ],
+        },
+      ],
+      NOW
+    )!;
+    expect(r.servers.map((s) => [s.name, s.protocol])).toEqual([['DE-1', 'vless']]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('②无 remarks 的配置数组：不按（各配置同名的）tag 命名，改按地址；同 host:port 仍撞名 → 追加 #配置序号', () => {
+    const kcp = (id: string) => ({
+      tag: 'proxy',
+      protocol: 'vless',
+      settings: { vnext: [{ address: 'kcp.com', port: 2053, users: [{ id }] }] },
+      streamSettings: { network: 'kcp' },
+    });
+    const r = parseXrayJson(
+      [
+        { outbounds: [vless('proxy', 'a.com'), ...internal] },
+        { remarks: '  ', outbounds: [vless('proxy', 'b.com'), ...internal] },
+        {
+          outbounds: [
+            vless('proxy', 'c.com', { streamSettings: { sockopt: { dialerProxy: 'relay' } } }),
+            vless('relay', 'relay.com'),
+            vless('proxy2', 'd.com', { proxySettings: { tag: 'missing' } }),
+          ],
+        },
+        { remarks: '有名', outbounds: [vless('proxy', 'e.com')] },
+        { outbounds: [kcp('k1')] },
+        { outbounds: [kcp('k2')] },
+        { outbounds: [vless('proxy', 'a.com', { tag: 'proxy' })] }, // 与第 1 份同 host:port
+      ],
+      NOW
+    )!;
+    expect(r.shape).toBe('config-list');
+    expect(r.servers.map((s) => s.name)).toEqual([
+      'a.com:443 #1',
+      'b.com:443',
+      'c.com:443',
+      'relay.com:443',
+      'd.com:443',
+      '有名',
+      'vless kcp.com:2053 #5',
+      'vless kcp.com:2053 #6',
+      'a.com:443 #7',
+    ]);
+    expect(new Set(r.servers.map((s) => s.name)).size).toBe(r.servers.length);
+    // 链式代理不受命名影响；告警引用定稿后的名字
+    expect(r.servers[2].detour).toBe(r.servers[3].id);
+    expect(r.warnings).toContain(
+      '节点「d.com:443」的链式代理前置「missing」不是已导入的节点，该链未保留（将直连服务器）'
+    );
+  });
+
   it('②配置数组里的非配置条目（非对象 / 无 outbounds）计 skipped，不影响其它配置', () => {
     const r = parseXrayJson(
       [{ remarks: 'ok', outbounds: [vless('proxy', 'ok.com')] }, 'junk', null, { remarks: 'x' }],
@@ -560,11 +669,25 @@ describe('parseXrayJson', () => {
     expect(parseXrayJson({ outbounds: [{ type: 'vless', protocol: 'vless' }] }, NOW)).toBeNull();
   });
 
-  it('looksLikeXrayOutbounds：protocol 无 type → true；sing-box type → false', () => {
+  it('looksLikeXrayOutbounds：protocol 无 type → true；任一条目带字符串 type（sing-box）→ false', () => {
     expect(looksLikeXrayOutbounds([{ protocol: 'freedom' }])).toBe(true);
-    expect(looksLikeXrayOutbounds([{ type: 'direct' }, { protocol: 'vless' }])).toBe(true);
+    expect(looksLikeXrayOutbounds([{ protocol: 'vless' }, null, 'x', { tag: 't' }])).toBe(true);
+    // 混入 sing-box `type` 条目 → 不是 Xray（防 sing-box 订阅里一条杂项 {protocol} 就整份被截走）
+    expect(looksLikeXrayOutbounds([{ type: 'direct' }, { protocol: 'vless' }])).toBe(false);
     expect(looksLikeXrayOutbounds([{ type: 'vless' }])).toBe(false);
     expect(looksLikeXrayOutbounds({ protocol: 'vless' })).toBe(false);
+    expect(
+      parseXrayJson(
+        {
+          outbounds: [
+            { type: 'vless', tag: 'n1', server: 'a.com', server_port: 443, uuid: 'u' },
+            { type: 'direct' },
+            { tag: 'weird', protocol: 'freedom' },
+          ],
+        },
+        NOW
+      )
+    ).toBeNull();
   });
 });
 

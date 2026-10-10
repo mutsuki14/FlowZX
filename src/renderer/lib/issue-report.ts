@@ -3,13 +3,15 @@
  * 无 electron / DOM 依赖，可单测。正文结构与 .github/ISSUE_TEMPLATE/bug_report.md 对齐，
  * 区别仅在「环境」段自动带值（手动走模板时该段为空待填）。
  *
- * 隐私红线：issue 是公开的 → 正文只含「环境形态」（版本 / 平台 / 内核运行态 / 当前节点走哪个内核及原因），
- * 绝不含节点地址、节点名、凭据、本机路径（Xray 状态的 path / overrideDir 带 OS 用户名）等可识别信息。结构性保证：
- *  - 节点只以 describeSelectedNodeCore 产出的闭合枚举进入正文（标签全部来自本文件的常量表）；
+ * 隐私红线：issue 是公开的 → 正文只含「环境形态」（版本 / 平台 / 内核运行态 / 当前节点走哪个内核及原因 /
+ * 代理模式 / 分流策略），绝不含节点地址、节点名、凭据、本机路径（Xray 状态的 path / overrideDir 带 OS 用户名）
+ * 等可识别信息。结构性保证：
+ *  - 节点（含其前置代理链）只以 describeSelectedNodeCore 产出的闭合枚举进入正文（标签全部来自本文件的常量表）；
  *  - Xray 状态只读 available / version / running / nodes 四个字段（可直接传整份 IPC 结果）；
- *  - 其余自由文本（版本号 / 系统串）一律过 sanitizeField：去控制字符与换行、剥 Markdown 结构字符、限长。
+ *  - 代理模式 / 分流策略按本文件标签表映射，表外值与其余自由文本（版本号 / 系统串）一律过 sanitizeField：
+ *    去控制字符与换行、剥 Markdown 结构字符、限长。
  */
-import type { ServerConfig } from '../../shared/types';
+import type { ProxyMode, ProxyModeType, ServerConfig } from '../../shared/types';
 import { xrayRequirement, type XrayRequirement } from '../../shared/xray';
 import { isDirectSelection } from '../../shared/direct-selection';
 
@@ -35,7 +37,8 @@ export type SelectedNodeCore =
   | { kind: 'none' } // 未选择节点
   | { kind: 'direct' } // 直连哨兵（DIRECT_SERVER_ID）
   | { kind: 'missing' } // selectedServerId 指向已不存在的节点
-  | { kind: 'sing-box' }
+  // 选中节点本身走 sing-box；detourXray = 其前置代理链（detour）上最近一个走 Xray 的节点之原因（流量仍过 Xray sidecar）
+  | { kind: 'sing-box'; detourXray?: XrayRequirement }
   | { kind: 'xray'; reason: XrayRequirement };
 
 export interface BugReportEnv {
@@ -48,8 +51,10 @@ export interface BugReportEnv {
   /** os.release()，如 macOS 的 24.5.0 / Windows 的 10.0.22631 */
   osVersion?: string;
   singBoxVersion?: string;
-  /** UserConfig.proxyModeType：'systemProxy' | 'tun' */
+  /** UserConfig.proxyModeType（接管方式）：'systemProxy' | 'tun' | 'manual' */
   proxyModeType?: string;
+  /** UserConfig.proxyMode（分流策略）：'smart' | 'global' | 'direct' */
+  routingMode?: string;
   /** api.proxy.getXrayStatus()；null / 缺省 = 未取到（该行留空待填）。 */
   xray?: BugReportXrayStatus | null;
   /** describeSelectedNodeCore(config.servers, config.selectedServerId)；缺省 = 配置未加载（留空待填）。 */
@@ -62,9 +67,18 @@ const PLATFORM_LABEL: Record<string, string> = {
   linux: 'Linux',
 };
 
-const PROXY_MODE_LABEL: Record<string, string> = {
+/** 接管方式 → 中文标签（与 zh-CN home.manualMode 等同义）。Record<ProxyModeType> 保证新增模式时编译期必须补标签。 */
+const PROXY_MODE_LABEL: Record<ProxyModeType, string> = {
   systemProxy: '系统代理',
   tun: 'TUN',
+  manual: '仅本地代理',
+};
+
+/** 分流策略 → 中文标签（与 zh-CN home.routingSmart / routingGlobal / routingDirect 同义）。 */
+const ROUTING_MODE_LABEL: Record<ProxyMode, string> = {
+  smart: '智能分流',
+  global: '全局',
+  direct: '直连',
 };
 
 /** Xray 承载原因 → 中文标签（与 zh-CN servers.xrayReason* 同义）。Record 保证新增原因时编译期必须补标签。 */
@@ -112,11 +126,18 @@ export function formatSystemInfo(env: BugReportEnv): string {
   return `${head}${rel}`.trim();
 }
 
-/** proxyModeType → 中文标签（系统代理 / TUN）；未知值原样返回（经净化），缺省空串。 */
+/** proxyModeType → 中文标签（系统代理 / TUN / 仅本地代理）；未知值原样返回（经净化），缺省空串。 */
 export function formatProxyMode(env: BugReportEnv): string {
   const mode = sanitizeField(env.proxyModeType);
   if (!mode) return '';
   return ownLabel(PROXY_MODE_LABEL, mode) ?? mode;
+}
+
+/** 分流策略 proxyMode → 中文标签（智能分流 / 全局 / 直连）；未知值原样返回（经净化），缺省空串。 */
+export function formatRoutingMode(env: BugReportEnv): string {
+  const mode = sanitizeField(env.routingMode);
+  if (!mode) return '';
+  return ownLabel(ROUTING_MODE_LABEL, mode) ?? mode;
 }
 
 /**
@@ -133,7 +154,10 @@ export function formatXrayStatus(env: BugReportEnv): string {
   return `${version}（运行中，${nodes} 个节点）`;
 }
 
-/** 当前节点内核：「Xray（xhttp：XHTTP 传输）」/「sing-box」/「直连」等。标签全部来自常量表，不回显任何节点数据。 */
+/**
+ * 当前节点内核：「Xray（xhttp：XHTTP 传输）」/「sing-box」/「sing-box（前置代理走 Xray，xhttp：XHTTP 传输）」/「直连」等。
+ * 标签全部来自常量表，不回显任何节点数据。
+ */
 export function formatSelectedNodeCore(env: BugReportEnv): string {
   const n = env.selectedNode;
   if (!n) return '';
@@ -144,8 +168,13 @@ export function formatSelectedNodeCore(env: BugReportEnv): string {
       return '直连';
     case 'missing':
       return '选中节点已不存在';
-    case 'sing-box':
-      return 'sing-box';
+    case 'sing-box': {
+      if (n.detourXray === undefined) return 'sing-box';
+      const label = ownLabel(XRAY_REASON_LABEL, n.detourXray);
+      return label
+        ? `sing-box（前置代理走 Xray，${n.detourXray}：${label}）`
+        : 'sing-box（前置代理走 Xray）';
+    }
     case 'xray': {
       // 运行时若混入枚举外的 reason，只报「Xray」，不回显原值。
       const label = ownLabel(XRAY_REASON_LABEL, n.reason);
@@ -157,8 +186,35 @@ export function formatSelectedNodeCore(env: BugReportEnv): string {
 }
 
 /**
- * 由 app store 的 config.servers + selectedServerId 判定当前出口走哪个内核（单一真值 shared/xray#xrayRequirement）。
- * 返回闭合枚举，节点本身（名称 / 地址 / 凭据）不出此函数。
+ * 沿 detour 前置代理链向上找最近一个走 Xray 的节点，返回其原因。链成环 → undefined（运行时同样整条忽略该链，
+ * 见 main/services/xray-bridge#resolveDetour）；链上某个 id 已不存在 → 只看到断点为止。
+ */
+function upstreamXrayReason(
+  servers: readonly ServerConfig[],
+  server: ServerConfig
+): XrayRequirement | undefined {
+  const byId = new Map(servers.map((s) => [s.id, s] as const));
+  const seen = new Set<string>([server.id]);
+  const chain: ServerConfig[] = [];
+  for (let cur = server.detour; cur; ) {
+    if (seen.has(cur)) return undefined;
+    seen.add(cur);
+    const next = byId.get(cur);
+    if (!next) break;
+    chain.push(next);
+    cur = next.detour;
+  }
+  for (const node of chain) {
+    const reason = xrayRequirement(node);
+    if (reason) return reason;
+  }
+  return undefined;
+}
+
+/**
+ * 由 app store 的 config.servers + selectedServerId 判定当前出口走哪个内核（单一真值 shared/xray#xrayRequirement）；
+ * 选中节点走 sing-box 时再看其前置代理链是否经 Xray（docs/XRAY.md「前置代理」）。
+ * 返回闭合枚举，节点本身（名称 / 地址 / 凭据 / 前置节点）不出此函数。
  */
 export function describeSelectedNodeCore(
   servers: readonly ServerConfig[] | null | undefined,
@@ -167,9 +223,11 @@ export function describeSelectedNodeCore(
   if (isDirectSelection(selectedServerId)) return { kind: 'direct' };
   if (!selectedServerId) return { kind: 'none' };
   const server = servers?.find((s) => s.id === selectedServerId);
-  if (!server) return { kind: 'missing' };
+  if (!servers || !server) return { kind: 'missing' };
   const reason = xrayRequirement(server);
-  return reason ? { kind: 'xray', reason } : { kind: 'sing-box' };
+  if (reason) return { kind: 'xray', reason };
+  const detourXray = upstreamXrayReason(servers, server);
+  return detourXray ? { kind: 'sing-box', detourXray } : { kind: 'sing-box' };
 }
 
 /**
@@ -191,6 +249,7 @@ function renderBody(env: BugReportEnv, level: BodyLevel): string {
     `- Xray 内核版本 + 状态：${formatXrayStatus(env)}`,
     `- 当前节点内核：${formatSelectedNodeCore(env)}`,
     `- 代理模式：${formatProxyMode(env)}`,
+    `- 分流策略：${formatRoutingMode(env)}`,
     '',
   ];
   if (level >= 2) {
@@ -224,10 +283,10 @@ function renderBody(env: BugReportEnv, level: BodyLevel): string {
     '',
     '## 原始日志（最关键）',
     ...hint(
-      '<!-- 侧栏「日志」页，复制报错末尾方括号 [...] 内核日志前后几行贴进下方代码块；Xray 内核日志以 [xray] 开头 -->'
+      '<!-- 侧栏「日志」页，复制报错末尾方括号 [...] 内核日志前后几行贴进下方代码块；Xray 内核日志以 [xray] 开头；其中的节点地址 / 域名请先打码 -->'
     ),
     ...hint(
-      '<!-- 更完整：日志 →「日志与诊断」→「导出诊断报告」（密钥 / 节点地址 / 节点名已脱敏），把文件拖进本框作附件 -->'
+      '<!-- 更完整：日志 →「日志与诊断」→「导出诊断报告」（密钥 / 节点地址 / 节点名已脱敏；日志明细仍可能含访问过的其它域名 / IP 与订阅服务器域名，介意先删减），把文件拖进本框作附件 -->'
     ),
     '',
     '```',

@@ -1236,12 +1236,20 @@
    不撑破布局、不挤占固定的数字列（速率/流量/时长恒显）。应用侧 connections-table.tsx 挂 .ctbl-fit。 */
 .ctbl-fit td { overflow: hidden; }
 .ctbl-fit .ell, .ctbl-fit .ell.md, .ctbl-fit .ell.sm { max-width: 100%; }
+/* 源列（IP + .pt 端口，未挂 .ell）：窄列时与 .ell 同样省略号截断，不再在端口数字半个字形处硬裁切。
+   选择器只命中源列——其余文本列是 .ell / .pill / .rule-cell，td.num 里的 .mono.tnum（流量/时长）不受影响。 */
+.ctbl-fit td:not(.num) > .mono.tnum { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 /* 类型 pill：形+色区分，均中性(teal 不外借)——tcp 实底灰 / udp 描边 */
 .pill.tcp { background: hsl(var(--surface-3)); color: hsl(var(--fg-dim)); text-transform: lowercase; }
 .pill.udp { background: transparent; border: 1px solid hsl(var(--hair)); color: hsl(var(--fg-faint)); text-transform: lowercase; }
+/* 规则单元格 = action pill + 条件类型 rc-cond。窄列（默认 800 宽窗口 / 长 rule-sel-<id>）：pill 优先占位，放不下时
+   自身省略号截断（pill 默认 inline-flex，文本落在匿名 flex 项里吃不到 text-overflow → 此处改 block）；rc-cond 至少
+   4ch 才与 pill 同行，否则整体折到第二行，由定高 20px（= pill 16px 行高 + 上下 2px 内边距）+ overflow:hidden 藏掉，
+   不再被挤成半个字形。 */
+.rule-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; min-width: 0; height: 20px; overflow: hidden; }
+.rule-cell .pill { display: block; min-width: 0; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-cell .rc-cond { flex: 1 1 0; min-width: 4ch; font-size: 11px; color: hsl(var(--fg-faint)); }
 /* 规则 action badge：direct 灰 / proxy 主色 / block 红 */
-.rule-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.rule-cell .rc-cond { flex: 1; min-width: 0; font-size: 11px; color: hsl(var(--fg-faint)); }
 .pill.direct { background: hsl(var(--surface-3)); color: hsl(var(--fg-dim)); }
 .pill.proxy { background: hsl(var(--flow-weak)); color: hsl(var(--flow-hi)); }
 .pill.block { background: hsl(var(--err-weak)); color: hsl(var(--err)); }

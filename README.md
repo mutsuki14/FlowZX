@@ -40,16 +40,16 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 下载安装
 
-从 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下载最新版本。下表为 v4.4.1 的直接下载链接：
+从 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下载最新版本。下表为 v4.4.2 的直接下载链接：
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-setup.exe) | 安装版，默认仅为当前用户安装（安装时可改为所有用户），可自选目录 |
-| Windows x64 | [FlowZ-4.4.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-win-x64-portable.exe) | 便携版，数据保存在 exe 同目录的 `data\` |
-| macOS | [FlowZ-4.4.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-arm64.dmg) | Apple 芯片（M 系列） |
-| macOS | [FlowZ-4.4.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-mac-x64.dmg) | Intel 芯片 |
-| Linux x86_64 | [FlowZ-4.4.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-x86_64.AppImage) | 免安装，依赖 FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.1/FlowZ-4.4.1-linux-amd64.deb) | Debian / Ubuntu，安装到 `/opt/FlowZ`，建议同时安装 `policykit-1` |
+| Windows x64 | [FlowZ-4.4.2-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-setup.exe) | 安装版，默认仅为当前用户安装（安装时可改为所有用户），可自选目录 |
+| Windows x64 | [FlowZ-4.4.2-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-portable.exe) | 便携版，数据保存在 exe 同目录的 `data\` |
+| macOS | [FlowZ-4.4.2-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-arm64.dmg) | Apple 芯片（M 系列） |
+| macOS | [FlowZ-4.4.2-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-x64.dmg) | Intel 芯片 |
+| Linux x86_64 | [FlowZ-4.4.2-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-x86_64.AppImage) | 免安装，依赖 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.2-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-amd64.deb) | Debian / Ubuntu，安装到 `/opt/FlowZ`，建议同时安装 `policykit-1` |
 
 | 平台 | 系统要求 |
 |---|---|
@@ -73,7 +73,7 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 - Windows 安装版在卸载时会删除 `%APPDATA%\flowz`（节点、订阅、规则等全部配置）和提权服务。需要保留时，请先在「设置 → 高级 → 数据备份与恢复」导出备份。覆盖升级不会删除数据。
 
 > [!IMPORTANT]
-> 从 4.4.1 起，「关于」页和托盘菜单中的「检查更新」、启动时的自动检查，以及「关于」页的仓库链接与「报告问题」都指向本仓库。4.4.0 的这些入口仍指向上游 [dododook/FlowZ](https://github.com/dododook/FlowZ)：请从本仓库 [Releases](https://github.com/mutsuki14/FlowZX/releases) 手动安装一次 4.4.1，之后即可在应用内更新。上游安装包不含 Xray 内核，不要用它覆盖安装 FlowZX。
+> 从 4.4.1 起，「关于」页和托盘菜单中的「检查更新」、启动时的自动检查，以及「关于」页的仓库链接与「报告问题」都指向本仓库。4.4.0 的这些入口仍指向上游 [dododook/FlowZ](https://github.com/dododook/FlowZ)：请从本仓库 [Releases](https://github.com/mutsuki14/FlowZX/releases) 手动安装一次 4.4.1 或更高版本，之后即可在应用内更新。上游安装包不含 Xray 内核，不要用它覆盖安装 FlowZX。
 
 <a id="quick-start"></a>
 
@@ -100,11 +100,11 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 | VLESS / VMess / Trojan + XHTTP | — | ✅ 自动 |
 | VLESS Encryption（`mlkem768x25519plus.*`，HTTP/2 以外的传输） | — | ✅ 自动 |
 | `xtls-rprx-vision-udp443` 流控 | — | ✅ 自动 |
-| REALITY ML-DSA-65 验证（`pqv`） | — | ✅ 自动 |
+| REALITY ML-DSA-65 验证（`pqv`，限 TCP / gRPC / XHTTP 传输） | — | ✅ 自动 |
 | TLS + 证书 SHA-256 钉扎（`pcs`） | — | ✅ 自动 |
-| VLESS / VMess / Trojan（TCP / WebSocket / gRPC / HTTPUpgrade + TLS；VLESS 另支持 REALITY 与 `xtls-rprx-vision`） | ✅ 默认 | 可手动切换 |
+| VLESS / VMess / Trojan（TCP / WebSocket / gRPC / HTTPUpgrade + TLS；VLESS 与 Trojan 另支持 REALITY，VLESS 另支持 `xtls-rprx-vision`） | ✅ 默认 | 可手动切换（WebSocket / HTTPUpgrade 上的 REALITY 除外） |
 | VLESS / VMess / Trojan + HTTP/2 传输 | ✅ | — |
-| Shadowsocks / SS2022（可附加插件或 Shadow-TLS v3） | ✅ | 仅导入的 XHTTP 等组合（自动，表单无开关） |
+| Shadowsocks / SS2022（可附加插件或 Shadow-TLS v3） | ✅ 默认 | 可手动切换（仅 AEAD / 2022 加密方法，且不带插件或 Shadow-TLS）；导入的 XHTTP 等组合自动 |
 | Hysteria2（端口跳跃，salamander / gecko 混淆）、TUIC、AnyTLS、Snell v4 / v6 | ✅ | — |
 | NaiveProxy（Cronet，可选 HTTP/3） | ✅ | — |
 | SOCKS5、HTTP(S)、SSH | ✅ | — |
@@ -120,9 +120,9 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 | 分享链接：`vless`、`vmess`、`trojan`、`hysteria2` / `hy2`、`ss`、`tuic`、`anytls`、`snell`、`naive+https`、`socks5`、`http(s)` 等，可为 Base64 列表 | ✅ | ✅ |
 | Clash / mihomo YAML 或 JSON（含 `xhttp-opts`、`proxy-providers`） | ✅ | ✅ |
 | sing-box JSON（`outbounds`） | ✅ | ✅ |
-| Xray JSON 配置 | — | ✅ |
+| Xray JSON：单份配置、配置数组（Marzban / 3x-ui 等面板的「v2ray-json」订阅）、裸 outbound 数组 | ✅ | ✅ |
 
-手动导入 Xray JSON 时，表单能表达的节点转为普通节点，其余（如 mKCP、finalmask、mux、自定义 sockopt）作为「自定义 Xray 出站 JSON」原样导入。
+导入 Xray JSON 时，表单能表达的节点转为普通节点，其余（如 mKCP、TCP 的 HTTP 伪装头、finalmask、mux、自定义 sockopt）作为「自定义 Xray 出站 JSON」原样导入；`freedom` / `direct`、`blackhole` / `block`、`dns`、`loopback` 等内部出站会被忽略。配置数组中的节点以各份配置的 `remarks` 命名（一份配置含多个代理出站时为「remarks · tag」）；没有 `remarks` 时以 `地址:端口` 命名（自定义 Xray 出站 JSON 节点前加协议名），仍重名时再追加配置序号（如 `example.com:443 #2`）。链式代理（`dialerProxy` / `proxySettings`）转为节点的「前置代理」，只在同一份配置内解析。详见 [docs/XRAY.md](docs/XRAY.md)。
 
 <a id="features"></a>
 
@@ -202,7 +202,7 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 截图
 
-截图使用演示数据（非真实订阅 / 节点），界面来自上游 FlowZ，未包含 Xray 角标和 Xray 内核状态。
+截图来自 FlowZX 当前界面，使用演示数据（非真实订阅 / 节点）。「节点」页中带 **Xray** 角标的节点由 Xray 内核运行（XHTTP、VLESS Encryption、自定义 Xray 出站 JSON），其余由 sing-box 运行；「设置」截图展示「高级 → 内核管理」中的 Xray 内核（sidecar）状态。
 
 | 浅色 | 深色 |
 |:---:|:---:|
@@ -301,10 +301,17 @@ sing-box 不能在运行中增删出站，部分修改需要重启内核。重�
 - Xray 26 移除了 `allowInsecure`，Xray 节点上的「允许不安全连接」不会生效。自签证书请填写「证书 SHA-256 指纹」，可用 `xray tls hash --cert cert.pem` 获取。
 - 开启 ECH 时必须提供 ECHConfigList 或 DNS 查询地址，否则节点无效。
 - 使用 HTTP/2 传输、Shadow-TLS 或 SS 插件的节点不能改用 Xray。
+- 使用流加密（如 `aes-*-cfb`、`aes-*-ctr`、`rc4-md5`、`chacha20-ietf`）的 Shadowsocks 节点不能改用 Xray：Xray 只支持 AEAD 与 2022 加密方法。
+- Xray 的 REALITY 只支持 TCP（RAW）/ gRPC / XHTTP 传输：WebSocket / HTTPUpgrade 上的 REALITY 节点只能由 sing-box 运行。ML-DSA-65 验证（`pqv`）同样只能用于这三种传输，表单在其它传输上不显示该字段。
 - 不使用 sing-box 的 Multiplex；XHTTP 的连接复用请在 `extra.xmux` 中配置。
 - 自定义 Xray JSON 中的 `tag`、`proxySettings`、`sockopt.dialerProxy` 由 FlowZX 接管，代理链请用节点的「前置代理」。
 - 随包 Xray 缺失时，Xray 节点会被跳过；选中的正是 Xray 节点时会提示。
-- 订阅链接不支持 Xray JSON 格式，只能手动导入。
+
+**Xray JSON 导入**
+
+- 链式代理的前置指向内部出站（如 3x-ui 的 `fragment` 分片 freedom）时，该链不保留并给出告警：节点直连服务器，分片设置不生效。
+- `direct` / `block`（`freedom` / `blackhole` 的协议别名）等内部出站会被忽略，不会作为节点导入。
+- TCP（RAW）带 HTTP 伪装头的出站作为「自定义 Xray 出站 JSON」原样导入，由 Xray 运行，只能编辑其 JSON。
 
 </details>
 
@@ -312,13 +319,13 @@ sing-box 不能在运行中增删出站，部分修改需要重启内核。重�
 
 ## 反馈问题
 
-请在本仓库的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 反馈。从 4.4.1 起，应用内「关于」页的「报告问题」也会打开本仓库的新建 issue 页面，并预填版本与系统信息。请附上：
+请在本仓库的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 反馈。应用内「关于」页的「报告问题」会打开本仓库的新建 issue 页面（4.4.1 起）。从 4.4.2 起，它会预填应用版本、系统与架构、sing-box 版本、Xray 版本与运行状态、当前选中节点由哪个内核运行及原因（含前置代理是否经过 Xray）、接管方式与分流策略，不含节点地址、节点名或凭据。请另外附上：
 
-- 应用版本、操作系统与架构
-- sing-box 与 Xray 版本（设置 → 高级 → 内核管理）
-- 接管方式与分流策略
-- 出问题的节点是否带 Xray 角标，以及角标显示的原因
-- 「日志」页导出的脱敏诊断报告
+- 问题描述、复现步骤，以及报错前后的日志（Xray 内核的日志以 `[xray]` 开头）。「日志」页的实时日志未脱敏，粘贴前请给节点地址和域名打码
+- 出问题的节点不是当前选中的节点时：它是否带 Xray 角标，以及角标显示的原因
+- 「日志」页导出的脱敏诊断报告：报告会隐去密钥、节点地址与节点名，但日志明细仍可能含访问过的其它域名 / IP 与订阅服务器域名，上传前请检查，介意可先删减
+
+没有通过「报告问题」入口提交（例如应用无法启动）时，请按 issue 模板手动填写版本、系统、内核版本与状态、接管方式与分流策略。
 
 如果问题在不带 Xray 角标的节点上同样出现，它也可能存在于上游 FlowZ。
 
@@ -360,6 +367,7 @@ npm run dev            # Vite + Electron 开发模式
 | 文档 | 内容 |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 内核：支持的组合、架构、导入参数、注意事项、验证方法 |
+| [docs/releases/v4.4.2.md](docs/releases/v4.4.2.md) | v4.4.2 发布说明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 发布说明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 发布说明 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 发布流程 |

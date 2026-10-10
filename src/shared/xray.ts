@@ -60,7 +60,8 @@ export function isVlessEncryptionEnabled(encryption: string | undefined): boolea
 
 /**
  * Shadowsocks 加密方法 Xray 是否支持：仅 AEAD（aes-128/256-gcm、(x)chacha20(-ietf)-poly1305）、SS2022（2022-blake3-*）
- * 与 none/plain（大小写不敏感，与 Xray 一致）。流加密（aes-*-cfb/ctr、rc4-md5、chacha20-ietf…）已被 Xray 移除，
+ * 与 none/plain（大小写不敏感：Xray 自身只对 AEAD 名归一大小写、2022-blake3-* 按原样匹配，故 xray-config-builder
+ * 统一小写下发）。流加密（aes-*-cfb/ctr、rc4-md5、chacha20-ietf…）已被 Xray 移除，
  * `xray run -test` 报「unknown cipher method」——这类节点只能留在 sing-box。
  */
 export function isXrayShadowsocksMethod(method: string | undefined): boolean {

@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   formatSystemInfo,
   formatProxyMode,
+  formatRoutingMode,
   formatXrayStatus,
   formatSelectedNodeCore,
   describeSelectedNodeCore,
@@ -16,6 +17,17 @@ import {
 } from '../issue-report';
 import type { ServerConfig } from '../../../shared/types';
 import { DIRECT_SERVER_ID } from '../../../shared/direct-selection';
+
+/** 环境段字段标签（顺序即正文 / 模板顺序）。 */
+const ENV_LABELS = [
+  'FlowZX 版本',
+  '系统 + 架构',
+  'sing-box 内核版本',
+  'Xray 内核版本 + 状态',
+  '当前节点内核',
+  '代理模式',
+  '分流策略',
+];
 
 /** 解出 URL 里的 body（URLSearchParams 已还原 + / %XX）。 */
 const bodyOf = (url: string): string => new URLSearchParams(url.split('?')[1]).get('body') ?? '';
@@ -71,6 +83,17 @@ const plainVlessNode: ServerConfig = {
   realitySettings: { publicKey: SENTINELS.publicKey },
 };
 
+/** sing-box 原生节点（Hysteria2），可挂前置代理。 */
+const hy2Node = (id: string, detour?: string): ServerConfig => ({
+  id,
+  name: `hy2 ${id}`,
+  protocol: 'hysteria2',
+  address: `${id}.hy2.example.org`,
+  port: 8443,
+  password: SENTINELS.password,
+  ...(detour ? { detour } : {}),
+});
+
 /** 完整 IPC 结果（含 path / overrideDir / pid：带 OS 用户名，绝不能进正文）。 */
 const fullXrayStatus = {
   available: true,
@@ -89,6 +112,7 @@ const fullEnv = (overrides: Partial<BugReportEnv> = {}): BugReportEnv => ({
   osVersion: '10.0.22631',
   singBoxVersion: '1.14.0-rc.1',
   proxyModeType: 'tun',
+  routingMode: 'smart',
   xray: fullXrayStatus,
   selectedNode: describeSelectedNodeCore([plainVlessNode, xhttpVlessNode], SENTINELS.id),
   ...overrides,
@@ -116,6 +140,7 @@ describe('issue-report', () => {
     it('maps known modes to Chinese labels', () => {
       expect(formatProxyMode({ proxyModeType: 'systemProxy' })).toBe('系统代理');
       expect(formatProxyMode({ proxyModeType: 'tun' })).toBe('TUN');
+      expect(formatProxyMode({ proxyModeType: 'manual' })).toBe('仅本地代理');
     });
     it('returns empty for missing and passes through unknown', () => {
       expect(formatProxyMode({})).toBe('');
@@ -124,6 +149,19 @@ describe('issue-report', () => {
     it('does not resolve prototype keys to functions', () => {
       expect(formatProxyMode({ proxyModeType: 'constructor' })).toBe('constructor');
       expect(formatSystemInfo({ platform: 'toString', arch: 'x64' })).toBe('toString x64');
+    });
+  });
+
+  describe('formatRoutingMode', () => {
+    it('maps every routing strategy to its Chinese label', () => {
+      expect(formatRoutingMode({ routingMode: 'smart' })).toBe('智能分流');
+      expect(formatRoutingMode({ routingMode: 'global' })).toBe('全局');
+      expect(formatRoutingMode({ routingMode: 'direct' })).toBe('直连');
+    });
+    it('returns empty for missing, passes through unknown (sanitized), ignores prototype keys', () => {
+      expect(formatRoutingMode({})).toBe('');
+      expect(formatRoutingMode({ routingMode: 'rule\n## 伪造' })).toBe('rule ## 伪造');
+      expect(formatRoutingMode({ routingMode: 'hasOwnProperty' })).toBe('hasOwnProperty');
     });
   });
 
@@ -213,6 +251,38 @@ describe('issue-report', () => {
       expect(describeSelectedNodeCore([plainVlessNode], 'gone')).toEqual({ kind: 'missing' });
       expect(describeSelectedNodeCore(undefined, 'gone')).toEqual({ kind: 'missing' });
     });
+    it('flags a sing-box node whose upstream (detour) chain runs on Xray', () => {
+      // 直接前置是 Xray 节点
+      const viaXray = hy2Node('a', SENTINELS.id);
+      expect(describeSelectedNodeCore([viaXray, xhttpVlessNode], 'a')).toEqual({
+        kind: 'sing-box',
+        detourXray: 'xhttp',
+      });
+      // 多级链：a → b(sing-box) → Xray 节点，取链上最近的 Xray 节点
+      const servers = [hy2Node('a', 'b'), hy2Node('b', SENTINELS.id), xhttpVlessNode];
+      expect(describeSelectedNodeCore(servers, 'a')).toEqual({
+        kind: 'sing-box',
+        detourXray: 'xhttp',
+      });
+    });
+    it('keeps plain sing-box for native / dangling / cyclic chains, and Xray wins for the node itself', () => {
+      expect(describeSelectedNodeCore([hy2Node('a', 'b'), hy2Node('b')], 'a')).toEqual({
+        kind: 'sing-box',
+      });
+      expect(describeSelectedNodeCore([hy2Node('a', 'gone')], 'a')).toEqual({ kind: 'sing-box' });
+      // 成环（运行时整条链被忽略）→ 即便环上有 Xray 节点也不报
+      const cyclicXray: ServerConfig = { ...xhttpVlessNode, detour: 'a' };
+      expect(describeSelectedNodeCore([hy2Node('a', SENTINELS.id), cyclicXray], 'a')).toEqual({
+        kind: 'sing-box',
+      });
+      expect(describeSelectedNodeCore([hy2Node('a', 'a')], 'a')).toEqual({ kind: 'sing-box' });
+      // 选中节点本身走 Xray → 报其自身原因（前置是什么不影响）
+      const xrayWithDetour: ServerConfig = { ...xhttpVlessNode, detour: 'b' };
+      expect(describeSelectedNodeCore([xrayWithDetour, hy2Node('b')], SENTINELS.id)).toEqual({
+        kind: 'xray',
+        reason: 'xhttp',
+      });
+    });
   });
 
   describe('formatSelectedNodeCore', () => {
@@ -224,6 +294,9 @@ describe('issue-report', () => {
         formatSelectedNodeCore({ selectedNode: { kind: 'xray', reason: 'tls-pinned-cert' } })
       ).toBe('Xray（tls-pinned-cert：证书 SHA-256 指纹）');
       expect(formatSelectedNodeCore({ selectedNode: { kind: 'sing-box' } })).toBe('sing-box');
+      expect(
+        formatSelectedNodeCore({ selectedNode: { kind: 'sing-box', detourXray: 'custom-xray' } })
+      ).toBe('sing-box（前置代理走 Xray，custom-xray：自定义 Xray 出站 JSON）');
       expect(formatSelectedNodeCore({ selectedNode: { kind: 'direct' } })).toBe('直连');
       expect(formatSelectedNodeCore({ selectedNode: { kind: 'none' } })).toBe('未选择节点');
       expect(formatSelectedNodeCore({ selectedNode: { kind: 'missing' } })).toBe(
@@ -241,6 +314,13 @@ describe('issue-report', () => {
       expect(formatSelectedNodeCore({ selectedNode: proto })).toBe('Xray');
       const bogusKind = { kind: SENTINELS.name } as unknown as SelectedNodeCore;
       expect(formatSelectedNodeCore({ selectedNode: bogusKind })).toBe('');
+      const bogusDetour = {
+        kind: 'sing-box',
+        detourXray: SENTINELS.address,
+      } as unknown as SelectedNodeCore;
+      expect(formatSelectedNodeCore({ selectedNode: bogusDetour })).toBe(
+        'sing-box（前置代理走 Xray）'
+      );
     });
   });
 
@@ -258,6 +338,7 @@ describe('issue-report', () => {
       expect(body).toContain('- 系统 + 架构：macOS arm64 (24.5.0)');
       expect(body).toContain('- sing-box 内核版本：1.10.0');
       expect(body).toContain('- 代理模式：TUN');
+      expect(body).toContain('- 分流策略：\n');
       expect(body).toContain('## 问题描述');
       expect(body).toContain('## 原始日志（最关键）');
       expect(body).toContain('## 旁证（选填，但往往是定位关键）');
@@ -267,19 +348,16 @@ describe('issue-report', () => {
       const body = buildBugReportBody(fullEnv());
       expect(body).toContain('- Xray 内核版本 + 状态：26.3.27（运行中，3 个节点）');
       expect(body).toContain('- 当前节点内核：Xray（xhttp：XHTTP 传输）');
+      expect(body).toContain('- 代理模式：TUN');
+      expect(body).toContain('- 分流策略：智能分流');
       // 环境段顺序与 .github/ISSUE_TEMPLATE/bug_report.md 一致
-      const order = [
-        'FlowZX 版本',
-        '系统 + 架构',
-        'sing-box 内核版本',
-        'Xray 内核版本 + 状态',
-        '当前节点内核',
-        '代理模式',
-      ].map((k) => body.indexOf(`- ${k}：`));
+      const order = ENV_LABELS.map((k) => body.indexOf(`- ${k}：`));
       expect(order.every((i) => i >= 0)).toBe(true);
       expect([...order].sort((a, b) => a - b)).toEqual(order);
-      // 指向诊断报告
+      // 指向诊断报告，并提醒日志仍可能含访问过的域名 / 订阅服务器域名（未脱敏部分）
       expect(body).toContain('导出诊断报告');
+      expect(body).toContain('其它域名');
+      expect(body).toContain('订阅服务器域名');
     });
 
     it('tolerates fully missing env (manual-fill placeholders)', () => {
@@ -289,6 +367,7 @@ describe('issue-report', () => {
       expect(body).toContain('- Xray 内核版本 + 状态：\n');
       expect(body).toContain('- 当前节点内核：\n');
       expect(body).toContain('- 代理模式：\n');
+      expect(body).toContain('- 分流策略：\n');
     });
 
     it('keeps the env field labels in sync with the issue template', () => {
@@ -296,16 +375,18 @@ describe('issue-report', () => {
         path.join(__dirname, '../../../../.github/ISSUE_TEMPLATE/bug_report.md'),
         'utf-8'
       );
-      for (const label of [
-        'FlowZX 版本',
-        '系统 + 架构',
-        'sing-box 内核版本',
-        'Xray 内核版本 + 状态',
-        '当前节点内核',
-        '代理模式',
-      ]) {
+      for (const label of ENV_LABELS) {
         expect(tpl).toContain(`- ${label}`);
       }
+      // 模板的可选值提示覆盖每个枚举值的标签（与预填正文同词）
+      const modeLine = tpl.split('\n').find((l) => l.startsWith('- 代理模式')) ?? '';
+      for (const m of ['systemProxy', 'tun', 'manual'])
+        expect(modeLine).toContain(formatProxyMode({ proxyModeType: m }));
+      const routingLine = tpl.split('\n').find((l) => l.startsWith('- 分流策略')) ?? '';
+      for (const m of ['smart', 'global', 'direct'])
+        expect(routingLine).toContain(formatRoutingMode({ routingMode: m }));
+      // Xray 原因在角标悬停提示里（自定义 Xray JSON 等节点没有「使用 Xray 内核」开关）
+      expect(tpl).toContain('悬停角标');
       for (const heading of [
         '## 问题描述',
         '## 复现步骤',
@@ -317,6 +398,9 @@ describe('issue-report', () => {
         expect(buildBugReportBody({})).toContain(heading);
       }
       expect(tpl).toContain('导出诊断报告');
+      // 隐私提醒不夸大脱敏范围
+      expect(tpl).toContain('其它域名');
+      expect(tpl).toContain('订阅服务器域名');
     });
   });
 
@@ -339,6 +423,19 @@ describe('issue-report', () => {
       }
       // 只有 Xray 判定结论进正文
       expect(decoded).toContain('- 当前节点内核：Xray（xhttp：XHTTP 传输）');
+    });
+
+    it('never leaks the upstream (detour) node of a sing-box selection', () => {
+      const selected = hy2Node('hop', SENTINELS.id);
+      const url = buildBugReportUrl(
+        'https://github.com/mutsuki14/FlowZX',
+        fullEnv({ selectedNode: describeSelectedNodeCore([selected, xhttpVlessNode], 'hop') })
+      );
+      const decoded = bodyOf(url);
+      for (const v of [...Object.values(SENTINELS), 'hop.hy2.example.org', 'hy2 hop', '8443']) {
+        expect(decoded).not.toContain(v);
+      }
+      expect(decoded).toContain('- 当前节点内核：sing-box（前置代理走 Xray，xhttp：XHTTP 传输）');
     });
 
     it('only the four whitelisted Xray status fields are read', () => {
@@ -383,6 +480,7 @@ describe('issue-report', () => {
         osVersion: huge,
         singBoxVersion: huge,
         proxyModeType: huge,
+        routingMode: huge,
         xray: { ...fullXrayStatus, version: huge, nodes: 1e12 },
       });
       const url = buildBugReportUrl('https://github.com/mutsuki14/FlowZX', env);
@@ -402,6 +500,8 @@ describe('issue-report', () => {
       expect(noHints.length).toBeLessThan(full.length);
       const noHintsBody = bodyOf(noHints);
       expect(noHintsBody).not.toContain('导出诊断报告');
+      expect(noHintsBody).not.toContain('其它域名');
+      expect(noHintsBody).toContain('- 分流策略：智能分流');
       expect(noHintsBody).toContain('## 旁证（选填，但往往是定位关键）');
       expect(noHintsBody).toContain('- 当前节点内核：Xray（xhttp：XHTTP 传输）');
 
@@ -411,6 +511,7 @@ describe('issue-report', () => {
       expect(envOnly.length).toBeLessThan(noHints.length);
       expect(envOnlyBody).toContain('正文过长，已自动精简');
       expect(envOnlyBody).toContain('- Xray 内核版本 + 状态：26.3.27（运行中，3 个节点）');
+      expect(envOnlyBody).toContain('- 分流策略：智能分流');
       expect(envOnlyBody).not.toContain('（在此粘贴日志）');
 
       // 3) 硬截断：正文为精简版的前缀，URL 不超限

@@ -4,8 +4,10 @@
  *  - remarks 命名、链式代理只在同一配置内解析、内部 outbound 忽略、subscriptionId 归属；
  *  - 0 节点 throw + 预检分类 empty；体积上限沿用；
  *  - 对账：两次更新（解析期 id 每次不同、配置顺序打乱）→ id / detour 稳定、contentChanged=false（不打断）；
- *    同 host:port 的并列透传节点按凭据区分；
- *  - 既有格式（sing-box type / JSON·YAML Clash / Base64 链接）探测不变，不被误判为 Xray。
+ *    同 host:port 的并列透传节点按凭据区分；多份配置共用完全相同的中转 outbound → 同指纹按名配对，重排不判变化；
+ *  - 内部 outbound 协议别名 direct / block 不成节点；
+ *  - 既有格式（sing-box type / JSON·YAML Clash / Base64 链接）探测不变，不被误判为 Xray（含 sing-box 里混入一条
+ *    `{protocol}` 杂项条目）。
  */
 
 // ── electron mock（必须在 import SubscriptionService 之前）──────────────────────
@@ -147,6 +149,24 @@ describe('Xray JSON 订阅 — 三形态', () => {
     expect(log.text('info')).toMatch(/检测到 Xray JSON 格式（outbound 数组）/);
   });
 
+  it('内部 outbound 的协议别名 direct / block 不成节点（不会被当作可选、最易被测速选中的「直连节点」）', async () => {
+    const log = new FakeLog();
+    const [hk] = v2rayJsonSubscription() as { outbounds: Record<string, unknown>[] }[];
+    serve([
+      {
+        remarks: 'DE-1',
+        outbounds: [
+          hk.outbounds[0],
+          { tag: 'direct', protocol: 'direct' },
+          { tag: 'block', protocol: 'block' },
+        ],
+      },
+    ]);
+    const r = await newService(log).fetchSubscription(URL, SUB_ID);
+    expect(r.servers.map((s) => [s.name, s.protocol])).toEqual([['DE-1', 'vless']]);
+    expect(log.text('warn')).not.toMatch(/自定义 Xray JSON/);
+  });
+
   it('只有内部 outbound → throw「0 个可用节点」（防 reconcile 删光）；预检分类 empty', async () => {
     const body = [{ remarks: 'x', outbounds: [{ protocol: 'freedom', tag: 'direct' }] }];
     serve(body);
@@ -254,6 +274,64 @@ describe('Xray JSON 订阅 — 对账稳定性（更新不打断）', () => {
     expect(r.servers.filter((s) => s.detour).every((s) => ids.has(s.detour!))).toBe(true);
   });
 
+  it('多份配置链经完全相同的中转（同指纹）→ 配置重排：中转按名配对，id / detour 稳定、contentChanged=false', async () => {
+    const relay = {
+      tag: 'relay',
+      protocol: 'shadowsocks',
+      settings: {
+        servers: [
+          { address: 'relay.example.com', port: 8388, method: 'aes-128-gcm', password: 'pw' },
+        ],
+      },
+    };
+    const cfg = (remarks: string, uuid: string) => ({
+      remarks,
+      outbounds: [
+        {
+          tag: 'proxy',
+          protocol: 'vless',
+          settings: {
+            vnext: [{ address: `${remarks}.example.com`, port: 443, users: [{ id: uuid }] }],
+          },
+          streamSettings: { network: 'tcp', security: 'tls', sockopt: { dialerProxy: 'relay' } },
+        },
+        relay,
+        { tag: 'direct', protocol: 'freedom' },
+      ],
+    });
+    const body = [cfg('a', XRAY_SUB_UUID.hk), cfg('b', XRAY_SUB_UUID.jp)];
+    const svc = newService(new FakeLog());
+    serve(body);
+    const stored = persist(
+      SubscriptionService.reconcileServers(
+        [],
+        (await svc.fetchSubscription(URL, SUB_ID)).servers,
+        'T1'
+      ).servers
+    );
+    const before = byName(stored);
+    expect(before['a · proxy'].detour).toBe(before['a · relay'].id);
+    expect(before['b · proxy'].detour).toBe(before['b · relay'].id);
+    // 两个中转指纹相同（同协议/地址/端口/凭据/传输）——正是需按名配对的场景
+    expect(SubscriptionService.serverFingerprint(before['a · relay'])).toBe(
+      SubscriptionService.serverFingerprint(before['b · relay'])
+    );
+
+    serve([...body].reverse());
+    const r = SubscriptionService.reconcileServers(
+      stored,
+      (await svc.fetchSubscription(URL, SUB_ID)).servers,
+      'T2'
+    );
+    expect(r).toMatchObject({ added: 0, deleted: 0, contentChanged: false });
+    const after = byName(r.servers);
+    for (const name of ['a · proxy', 'a · relay', 'b · proxy', 'b · relay']) {
+      expect(after[name].id).toBe(before[name].id);
+    }
+    expect(after['a · proxy'].detour).toBe(before['a · relay'].id);
+    expect(after['b · proxy'].detour).toBe(before['b · relay'].id);
+  });
+
   it('serverFingerprint：透传 Xray 节点展开内层凭据/传输；sing-box 自定义节点口径不变', () => {
     const custom = (outbound: Record<string, unknown>, engine?: 'xray'): ServerConfig =>
       ({
@@ -319,6 +397,21 @@ describe('既有格式探测不变（不误判为 Xray）', () => {
     });
     const r = await newService(log).fetchSubscription(URL, SUB_ID);
     expect(r.servers.map((s) => [s.name, s.protocol])).toEqual([['sb', 'vless']]);
+    expect(log.text('info')).toMatch(/检测到 sing-box JSON 格式/);
+    expect(log.text('info')).not.toMatch(/Xray/);
+  });
+
+  it('sing-box JSON 混入一条 {protocol} 杂项条目 → 仍走 sing-box 分支（不被 Xray 分支截走、节点不丢）', async () => {
+    const log = new FakeLog();
+    serve({
+      outbounds: [
+        { type: 'vless', tag: 'n1', server: 'a.example.com', server_port: 443, uuid: 'u' },
+        { type: 'direct' },
+        { tag: 'weird', protocol: 'freedom' },
+      ],
+    });
+    const r = await newService(log).fetchSubscription(URL, SUB_ID);
+    expect(r.servers.map((s) => s.name)).toEqual(['n1']);
     expect(log.text('info')).toMatch(/检测到 sing-box JSON 格式/);
     expect(log.text('info')).not.toMatch(/Xray/);
   });

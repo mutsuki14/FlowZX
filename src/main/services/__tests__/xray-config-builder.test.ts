@@ -347,6 +347,27 @@ describe('buildXrayOutbound — 其它传输 / 协议', () => {
       streamSettings: { network: 'raw', security: 'none' },
     });
   });
+
+  it('SS 方法名小写下发（Xray 对 2022-blake3-* 大小写敏感；大写导入的节点也能起）；空白方法 → throw', () => {
+    const ss = (method: string, password: string) =>
+      ({
+        id: 's',
+        name: 's',
+        protocol: 'shadowsocks',
+        address: 'a',
+        port: 1,
+        shadowsocksSettings: { method, password },
+      }) as ServerConfig;
+    expect(buildXrayOutbound(ss(' 2022-BLAKE3-AES-128-GCM ', SS16), 't').settings).toEqual({
+      servers: [{ address: 'a', port: 1, method: '2022-blake3-aes-128-gcm', password: SS16 }],
+    });
+    expect(buildXrayOutbound(ss('AES-256-GCM', 'pw'), 't').settings).toEqual({
+      servers: [{ address: 'a', port: 1, method: 'aes-256-gcm', password: 'pw' }],
+    });
+    // 大写 2022 方法同样走密钥预校验（不因大小写漏检）。
+    expect(() => buildXrayOutbound(ss('2022-BLAKE3-AES-256-GCM', SS16), 't')).toThrow(/32 字节/);
+    expect(() => buildXrayOutbound(ss('  ', 'pw'), 't')).toThrow(/缺少加密方法/);
+  });
 });
 
 describe('buildXrayOutbound — 自定义 Xray JSON 透传', () => {

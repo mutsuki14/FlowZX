@@ -37,8 +37,6 @@ export function AboutSettings() {
   // F28：App 更新可用信息放 store（本组件随设置子节切换会卸载，本地 state 无法持久承载入口）
   const availableAppUpdate = useAppStore((s) => s.availableAppUpdate);
   const setAvailableAppUpdate = useAppStore((s) => s.setAvailableAppUpdate);
-  // 「报告问题」按钮自动带上当前代理模式（系统代理/TUN），是 #57 类问题的关键定位信息
-  const proxyModeType = useAppStore((s) => s.config?.proxyModeType);
   // Xray sidecar 状态（版本 / 运行态 / 节点数）同样带进报告；代理启停改变运行态 → 随 proxyPhase 刷新（同 xray-core-row）。
   const proxyPhase = useAppStore((s) => s.proxyPhase);
   const [xrayStatus, setXrayStatus] = useState<BugReportXrayStatus | null>(null);
@@ -192,14 +190,16 @@ export function AboutSettings() {
     await openExternal(url);
   };
 
-  // 打开 GitHub 新建 issue 页，正文已自动带上版本/系统/架构/内核（含 Xray 运行态与当前节点所用内核）/代理模式，
-  // 报告者只需补问题描述与日志。节点只以「走哪个内核 + 原因」的枚举进入正文，名称/地址/凭据不出 describeSelectedNodeCore。
+  // 打开 GitHub 新建 issue 页，正文已自动带上版本/系统/架构/内核（含 Xray 运行态与当前节点所用内核）/代理模式/分流策略，
+  // 报告者只需补问题描述与日志。代理模式（系统代理/TUN/仅本地代理）是 #57 类问题的关键定位信息。
+  // 节点只以「走哪个内核 + 原因」的枚举进入正文，名称/地址/凭据不出 describeSelectedNodeCore。
   const handleReportIssue = async () => {
     // 点击时再取一次 Xray 状态（页面打开期间配置重载可能改变运行态 / 节点数）；1.5s 未回则用挂载时的快照，不让按钮卡住。
     const freshXray = await Promise.race([
       api.proxy.getXrayStatus().catch(() => null),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
     ]);
+    // 点击时读 store：代理模式 / 分流策略 / 选中节点都取当下值。
     const config = useAppStore.getState().config;
     const url = buildBugReportUrl(versionInfo?.repositoryUrl || REPO_URL, {
       appVersion: versionInfo?.appVersion,
@@ -207,7 +207,8 @@ export function AboutSettings() {
       arch: versionInfo?.arch,
       osVersion: versionInfo?.osVersion,
       singBoxVersion: versionInfo?.singBoxVersion,
-      proxyModeType,
+      proxyModeType: config?.proxyModeType,
+      routingMode: config?.proxyMode,
       xray: freshXray ?? xrayStatus,
       selectedNode: config
         ? describeSelectedNodeCore(config.servers, config.selectedServerId)

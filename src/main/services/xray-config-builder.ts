@@ -451,9 +451,12 @@ function buildProtocolSettings(server: ServerConfig): {
   }
   if (p === 'shadowsocks') {
     const ssCfg = server.shadowsocksSettings;
-    if (!ssCfg?.method || !ssCfg.password) throw new Error('Shadowsocks 节点缺少加密方法或密码');
+    // 方法名统一小写下发：Xray 仅对 AEAD 名做大小写归一，2022-blake3-* 按原样匹配（大写导入 → 「unknown cipher
+    // method」）；shared/xray#isXrayShadowsocksMethod 按大小写不敏感放行，两侧在此对齐。
+    const method = ssCfg?.method?.trim().toLowerCase();
+    if (!method || !ssCfg?.password) throw new Error('Shadowsocks 节点缺少加密方法或密码');
     if (ssCfg.plugin) throw new Error('Xray 内核不支持 Shadowsocks 插件');
-    validateShadowsocks2022Password(ssCfg.method, ssCfg.password);
+    validateShadowsocks2022Password(method, ssCfg.password);
     return {
       protocol: 'shadowsocks',
       settings: {
@@ -461,7 +464,7 @@ function buildProtocolSettings(server: ServerConfig): {
           {
             address: server.address,
             port: server.port,
-            method: ssCfg.method,
+            method,
             password: ssCfg.password,
           },
         ],

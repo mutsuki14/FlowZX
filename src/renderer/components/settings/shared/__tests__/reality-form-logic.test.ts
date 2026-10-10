@@ -1,15 +1,20 @@
 /**
- * reality-form-logic 单测：trojan 表单 REALITY 的读默认值 / 提交映射往返 + publicKey 条件必填（真实 zodResolver）。
+ * reality-form-logic 单测：trojan 表单 REALITY 的读默认值 / 提交映射往返 + publicKey 条件必填（真实 zodResolver）
+ * + ML-DSA-65（pqv）按传输门控（trojan / vless 共用）。
  * 回归对象：trojan 表单此前只认 none/tls，编辑一个 trojan+REALITY 节点再保存会被折成 TLS、realitySettings 丢失；
- * 以及 trojan 的 TLS 指纹缺省 'none' 带进 REALITY 会让两侧内核拒收。
+ * trojan 的 TLS 指纹缺省 'none' 带进 REALITY 会让两侧内核拒收；ws / httpupgrade / HTTP/2 上填 pqv 会把节点送进
+ * 必然拒收它的 Xray。
  */
 import * as z from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { ServerConfig } from '../../../../../shared/types';
+import { xrayRequirement } from '../../../../../shared/xray';
 import {
   normalizeFormSecurity,
   readRealityDefaults,
+  readTrojanSecurityDefaults,
   realityFingerprint,
+  realityXrayExtrasSupported,
   buildRealityTlsSettings,
   buildRealitySettings,
   requireRealityPublicKey,
@@ -49,19 +54,46 @@ describe('REALITY 读 / 写往返（trojan 表单 getDefaultValues → handleSub
     realitySettings: { publicKey: 'PBK', shortId: 'ab12', spiderX: '/s', mldsa65Verify: 'pq' },
   } as ServerConfig;
 
-  /** 与 trojan-form.tsx getDefaultValues 的 REALITY 分支同构。 */
+  // 读侧直接用 trojan-form.tsx getDefaultValues 展开的同一个函数（不复刻映射）；network 在表单里来自
+  // readTransportDefaults（trojan 小写），此处按节点原值给出。
   const load = (s: ServerConfig) => ({
-    security: normalizeFormSecurity(s.security),
-    tlsServerName: s.tlsSettings?.serverName || '',
-    tlsFingerprint: realityFingerprint(s.tlsSettings?.fingerprint),
-    ...readRealityDefaults(s),
+    network: (s.network || 'tcp').toLowerCase(),
+    ...readTrojanSecurityDefaults(s),
   });
 
   it('保存 = 原节点（security / tlsSettings / realitySettings 不丢、不折成 TLS）', () => {
-    const v = load(node);
-    expect(v.security).toBe('reality');
-    expect(buildRealityTlsSettings(v)).toEqual(node.tlsSettings);
-    expect(buildRealitySettings(v)).toEqual(node.realitySettings);
+    for (const network of [undefined, 'tcp', 'grpc', 'xhttp'] as const) {
+      const n = { ...node, network } as ServerConfig;
+      const v = load(n);
+      expect(v.security).toBe('reality');
+      expect(buildRealityTlsSettings(v)).toEqual(node.tlsSettings);
+      expect(buildRealitySettings('trojan', v)).toEqual(node.realitySettings);
+    }
+  });
+
+  it('REALITY 指纹 none / 缺省 → chrome；TLS 节点指纹缺省 none、原值小写', () => {
+    const fp = (security: string, fingerprint?: string) =>
+      readTrojanSecurityDefaults({
+        ...node,
+        security,
+        tlsSettings: { serverName: 'h', fingerprint },
+      } as ServerConfig).tlsFingerprint;
+    expect(fp('reality', 'none')).toBe('chrome');
+    expect(fp('Reality', undefined)).toBe('chrome');
+    expect(fp('tls', undefined)).toBe('none');
+    expect(fp('tls', 'Firefox')).toBe('firefox');
+  });
+
+  it('新建（无节点）→ TLS + 指纹 none + 空 SNI / REALITY 字段（与表单新建初值一致）', () => {
+    expect(readTrojanSecurityDefaults()).toEqual({
+      security: 'tls',
+      tlsServerName: '',
+      tlsFingerprint: 'none',
+      realityPublicKey: '',
+      realityShortId: '',
+      realitySpiderX: '',
+      realityMldsa65: '',
+    });
   });
 
   it('可选项留空 → undefined（不写空串）；前后空白 trim', () => {
@@ -75,7 +107,7 @@ describe('REALITY 读 / 写往返（trojan 表单 getDefaultValues → handleSub
       allowInsecure: false,
       fingerprint: 'chrome',
     });
-    expect(buildRealitySettings(v)).toEqual({
+    expect(buildRealitySettings('trojan', v)).toEqual({
       publicKey: 'PBK',
       shortId: undefined,
       spiderX: undefined,
@@ -99,6 +131,78 @@ describe('REALITY 读 / 写往返（trojan 表单 getDefaultValues → handleSub
       realitySpiderX: '',
       realityMldsa65: '',
     });
+  });
+});
+
+describe('ML-DSA-65（pqv）按传输门控：Xray 的 REALITY 仅支持 RAW / gRPC / XHTTP', () => {
+  const values = (network: string) => ({
+    network,
+    realityPublicKey: 'PBK',
+    realitySpiderX: '/s',
+    realityMldsa65: ' pq ',
+  });
+
+  it.each([
+    ['trojan', 'tcp', 'reality-pqv'],
+    ['trojan', 'grpc', 'reality-pqv'],
+    ['trojan', 'xhttp', 'xhttp'], // XHTTP 本就优先判 Xray
+    ['vless', 'Tcp', 'reality-pqv'],
+    ['vless', 'Grpc', 'reality-pqv'],
+    ['vless', 'Xhttp', 'xhttp'],
+  ])('%s + %s → 可用：pqv 提交（trim）→ 节点经 Xray（%s）', (protocol, network, reason) => {
+    expect(realityXrayExtrasSupported(protocol, network)).toBe(true);
+    const rs = buildRealitySettings(protocol, values(network));
+    expect(rs.mldsa65Verify).toBe('pq');
+    expect(
+      xrayRequirement({
+        id: 'n',
+        name: 'n',
+        address: 'a',
+        port: 443,
+        protocol,
+        network: network.toLowerCase(),
+        security: 'reality',
+        realitySettings: rs,
+      } as ServerConfig)
+    ).toBe(reason);
+  });
+
+  it.each([
+    ['trojan', 'ws'],
+    ['trojan', 'httpupgrade'],
+    ['trojan', 'http'],
+    ['vless', 'Ws'],
+    ['vless', 'HttpUpgrade'],
+    ['vless', 'Http'],
+  ])(
+    '%s + %s → 不可用：残留 pqv 不提交 → 节点留在 sing-box；spiderX 原样保留（不改内核归属）',
+    (protocol, network) => {
+      expect(realityXrayExtrasSupported(protocol, network)).toBe(false);
+      const rs = buildRealitySettings(protocol, values(network));
+      expect(rs).toEqual({
+        publicKey: 'PBK',
+        shortId: undefined,
+        spiderX: '/s',
+        mldsa65Verify: undefined,
+      });
+      expect(
+        xrayRequirement({
+          id: 'n',
+          name: 'n',
+          address: 'a',
+          port: 443,
+          protocol,
+          network: network.toLowerCase(),
+          security: 'reality',
+          realitySettings: rs,
+        } as ServerConfig)
+      ).toBeNull();
+    }
+  );
+
+  it('缺省传输按 tcp（可用）', () => {
+    expect(realityXrayExtrasSupported('trojan', undefined)).toBe(true);
+    expect(buildRealitySettings('trojan', { realityMldsa65: 'pq' }).mldsa65Verify).toBe('pq');
   });
 });
 

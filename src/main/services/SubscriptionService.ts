@@ -232,7 +232,7 @@ export class SubscriptionService {
    *   —— 订阅节点不保留本地 detour，需长期自定义请用「克隆到自建」。
    * - 仅新订阅有：新增。
    * - 仅旧配置有：删除（id 收入 deletedIds 供清理 selectedServerId）。
-   * 用桶（数组）承接同指纹的多个节点，按出现顺序成对匹配，避免 Map 覆盖丢 id。
+   * 用桶（数组）承接同指纹的多个节点，同名优先、其余按出现顺序成对匹配，避免 Map 覆盖丢 id。
    */
   static reconcileServers(
     oldServers: ServerConfig[],
@@ -266,15 +266,23 @@ export class SubscriptionService {
     }
 
     // 第一遍：按指纹配对，记「本批解析期 id → 落盘 id」（命中沿用旧 id）。
+    // 同指纹多候选（如多份 v2ray-json 配置共用完全相同的中转 outbound）：先配「同指纹且同名」，余者再按出现顺序——
+    // 否则订阅重排后同指纹节点按顺序互换 id，名字 / 链式前置（detour）随之互换，无实质变化也判「有变化」而重启。
+    // 只在同指纹候选间择优，指纹仍不含 name：改名照常命中（落到按序配对），指纹唯一时结果与纯按序完全相同。
+    const keys = fetchedServers.map((ns) => SubscriptionService.serverFingerprint(ns));
+    const sameNameOld = fetchedServers.map((ns, i) => {
+      const bucket = oldBuckets.get(keys[i]);
+      const j = bucket ? bucket.findIndex((o) => o.name === ns.name) : -1;
+      return bucket && j >= 0 ? bucket.splice(j, 1)[0] : undefined;
+    });
     const pairs: { ns: ServerConfig; old?: ServerConfig }[] = [];
     const finalId = new Map<string, string>();
-    for (const ns of fetchedServers) {
-      const key = SubscriptionService.serverFingerprint(ns);
-      const bucket = oldBuckets.get(key);
-      const old = bucket && bucket.length > 0 ? bucket.shift() : undefined;
+    fetchedServers.forEach((ns, i) => {
+      const bucket = oldBuckets.get(keys[i]);
+      const old = sameNameOld[i] ?? (bucket && bucket.length > 0 ? bucket.shift() : undefined);
       pairs.push({ ns, old });
       finalId.set(ns.id, old ? old.id : ns.id);
-    }
+    });
 
     const kept: ServerConfig[] = [];
     let added = 0;
