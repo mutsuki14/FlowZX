@@ -65,7 +65,8 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
 
    `freedom` / `blackhole`（及其协议别名 `direct` / `block`）/ `dns` / `loopback` 等内部 outbound 忽略。链式代理
    （`sockopt.dialerProxy` / `proxySettings.tag`）转为节点的「前置代理」，且只在**同一份配置内**解析；前置指向内部
-   outbound（如 3x-ui 的 `fragment` 分片 freedom）时该链不保留并告警——节点直连服务器，分片设置不生效。结构化表单
+   outbound（如 3x-ui 的 `fragment` 分片 freedom）时该链不保留并告警（订阅更新时记入「日志」页，手动导入时在导入
+   对话框中提示）——节点直连服务器，分片设置不生效。结构化表单
    无法表达的 outbound（mKCP、TCP / RAW 的 HTTP 伪装头、finalmask、mux、sockopt、wireguard / hysteria 等）以
    「自定义 Xray JSON」原样导入。订阅更新按「协议 + 地址 + 端口 + 凭据 + 传输」对账（自定义 Xray JSON 节点取其
    outbound 内的凭据与传输；多个节点该五项完全相同时——如多份配置链经同一中转——再按节点名配对），节点 id 与前置

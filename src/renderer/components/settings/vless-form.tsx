@@ -23,7 +23,11 @@ import {
   formXrayRequirement,
   formCanUseXray,
 } from './shared/xray-fields';
-import { buildRealitySettings, realityXrayExtrasSupported } from './shared/reality-form-logic';
+import {
+  buildRealitySettings,
+  realityFingerprint,
+  realityXrayExtrasSupported,
+} from './shared/reality-form-logic';
 import { FormSection, FieldGrid, FieldSpan } from './shared/form-layout';
 import { InfoTooltip } from './shared/info-tooltip';
 import { normalizeNetworkUpper } from './shared/normalize-network';
@@ -173,7 +177,12 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
           ? {
               serverName: values.tlsServerName?.trim() || null,
               allowInsecure: security === 'tls' ? values.tlsAllowInsecure : false,
-              fingerprint: values.tlsFingerprint || 'chrome',
+              // REALITY 必须挂 uTLS：none / 空 → chrome（与 trojan 的 buildRealityTlsSettings、两侧 builder 同口径），
+              // 否则表单存 none、实际下发 chrome，分享链导出 fp=none 被其它客户端拒收。
+              fingerprint:
+                security === 'reality'
+                  ? realityFingerprint(values.tlsFingerprint)
+                  : values.tlsFingerprint || 'chrome',
               engine:
                 security === 'tls' && values.tlsEngine && values.tlsEngine !== 'go'
                   ? values.tlsEngine
@@ -335,7 +344,7 @@ export function VlessForm({ serverConfig, onSubmit }: VlessFormProps) {
                 descKey="servers.realityTargetDesc"
                 placeholder="www.microsoft.com"
               />
-              <FingerprintField control={form.control} t={t} />
+              <FingerprintField control={form.control} t={t} reality />
               <FieldSpan>
                 <RealityPublicKeyField control={form.control} t={t} />
               </FieldSpan>

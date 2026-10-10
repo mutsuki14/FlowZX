@@ -401,6 +401,9 @@ describe('issue-report', () => {
       // 隐私提醒不夸大脱敏范围
       expect(tpl).toContain('其它域名');
       expect(tpl).toContain('订阅服务器域名');
+      // 实时日志未脱敏：出站 tag 即节点名（sing-box 行 / 热切换行）→ 打码提示须含节点名，模板与预填正文同词
+      expect(tpl).toContain('节点地址 / 节点名 / 域名');
+      expect(buildBugReportBody({})).toContain('节点地址 / 节点名 / 域名请先打码');
     });
   });
 

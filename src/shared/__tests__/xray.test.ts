@@ -195,13 +195,24 @@ describe('辅助谓词', () => {
       'xchacha20-ietf-poly1305',
       'xchacha20-poly1305',
       '2022-blake3-aes-128-gcm',
+      '2022-blake3-aes-256-gcm',
       '2022-blake3-chacha20-poly1305',
       'none',
       'plain',
     ]) {
       expect(isXrayShadowsocksMethod(m)).toBe(true);
     }
-    for (const m of ['aes-256-cfb', 'aes-128-ctr', 'rc4-md5', 'chacha20-ietf', '', undefined]) {
+    for (const m of [
+      'aes-256-cfb',
+      'aes-128-ctr',
+      'rc4-md5',
+      'chacha20-ietf',
+      // SS2022 按显式名单：Xray 26 报 unknown cipher method（不按 2022-blake3-* 前缀放行）
+      '2022-blake3-chacha8-poly1305',
+      '2022-blake3-',
+      '',
+      undefined,
+    ]) {
       expect(isXrayShadowsocksMethod(m)).toBe(false);
     }
   });
@@ -223,6 +234,8 @@ describe('辅助谓词', () => {
     );
     expect(canUseXrayCore(ss({ method: 'aes-256-cfb' }))).toBe(false);
     expect(xrayRequirement(ss({ method: 'rc4-md5' }))).toBeNull();
+    expect(canUseXrayCore(ss({ method: '2022-blake3-chacha8-poly1305' }))).toBe(false);
+    expect(xrayRequirement(ss({ method: '2022-blake3-chacha8-poly1305' }))).toBeNull();
   });
 
   it('canUseXrayCore（REALITY）：Xray 仅支持 RAW / XHTTP / gRPC → ws / httpupgrade + REALITY 不可切', () => {
@@ -254,6 +267,26 @@ describe('辅助谓词', () => {
       });
     expect(xrayRequirement(tr())).toBeNull();
     expect(xrayRequirement(tr('pq'))).toBe('reality-pqv');
+  });
+
+  it('REALITY pqv 仅在能切 Xray 的传输上要求 Xray：ws / httpupgrade / h2 → null（与表单 realityXrayExtrasSupported 同口径）', () => {
+    const pqv = (protocol: 'vless' | 'trojan', network: ServerConfig['network']) =>
+      node({
+        protocol,
+        ...(protocol === 'trojan' ? { uuid: undefined, password: 'p' } : {}),
+        network,
+        security: 'reality',
+        realitySettings: { publicKey: 'k', mldsa65Verify: 'pq' },
+      });
+    for (const protocol of ['vless', 'trojan'] as const) {
+      // Xray REALITY 仅 RAW / XHTTP / gRPC（xray run -test：「REALITY only supports RAW, XHTTP and gRPC」）
+      for (const network of ['ws', 'httpupgrade', 'http', 'h2'] as ServerConfig['network'][]) {
+        expect(xrayRequirement(pqv(protocol, network))).toBeNull();
+      }
+      expect(xrayRequirement(pqv(protocol, 'tcp'))).toBe('reality-pqv');
+      expect(xrayRequirement(pqv(protocol, 'grpc'))).toBe('reality-pqv');
+      expect(xrayRequirement(pqv(protocol, 'xhttp'))).toBe('xhttp'); // 更高优先级的特性项
+    }
   });
 
   it('isValidXrayOutbound 要求非空字符串 protocol', () => {

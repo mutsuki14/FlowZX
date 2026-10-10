@@ -60,8 +60,9 @@ function obj(v: unknown): Record<string, unknown> {
 
 /**
  * 该 outbound 是否需原样透传（结构化映射会丢语义）：未知传输、TCP/RAW 伪装头（header.type≠none，如 http）、
- * finalmask、mux 开启、除 dialerProxy 外的 sockopt、遗留 xtls 安全层。dialerProxy 不算——链路由 FlowZ 的 detour
- * 接管（与 sing-box 自定义剥 detour 同理），导入时映射为 ServerConfig.detour（见 parseXrayOutbounds 第二遍）。
+ * SS 套传输 / TLS、无 TLS 的 trojan、finalmask、mux 开启、除 dialerProxy 外的 sockopt、遗留 xtls 安全层。
+ * dialerProxy 不算——链路由 FlowZ 的 detour 接管（与 sing-box 自定义剥 detour 同理），导入时映射为
+ * ServerConfig.detour（见 parseXrayOutbounds 第二遍）。
  */
 function needsPassthrough(o: Record<string, unknown>): string | null {
   const ss = obj(o.streamSettings);
@@ -75,8 +76,19 @@ function needsPassthrough(o: Record<string, unknown>): string | null {
       if (ht !== 'none') return `TCP 伪装头 ${ht}`;
     }
   }
-  if (ss.finalmask !== undefined) return 'finalmask';
+  const proto = (str(o.protocol) || '').toLowerCase();
   const security = (str(ss.security) || 'none').toLowerCase();
+  // Xray 允许 SS 套 ws / grpc / tls（3x-ui 可下发），sing-box 的 shadowsocks 出站却无 transport / tls 字段
+  //（sing-box check：unknown field）→ 结构化即成 sing-box 拒收的节点（且 SS 恒按 sing-box 原生建模）→ 透传。
+  if (
+    proto === 'shadowsocks' &&
+    (!(network === 'tcp' || network === 'raw') || security !== 'none')
+  ) {
+    return `SS ${network}${security !== 'none' ? `+${security}` : ''}`;
+  }
+  // 两侧 builder 对 trojan 恒开 TLS（无 security 字段可表达明文）→ 结构化会把明文 trojan 变成 TLS 握手 → 透传。
+  if (proto === 'trojan' && security === 'none') return 'trojan 无 TLS';
+  if (ss.finalmask !== undefined) return 'finalmask';
   if (security === 'xtls') return 'xtls';
   const sockopt = obj(ss.sockopt);
   if (Object.keys(sockopt).some((k) => k !== 'dialerProxy')) return 'sockopt';
@@ -587,6 +599,10 @@ export function xrayOutboundIdentity(outbound: unknown): {
   const vnext = first('vnext');
   const server = first('servers');
   const ss = obj(o.streamSettings);
+  // 传输名按结构化导入同口径归一（raw→tcp、splithttp→xhttp、h2→http）：面板模板改拼写（如 Xray 的 tcp→raw 更名）
+  // 时透传节点指纹不变，对账不至于删旧增新换 id（选中回落、内核重启）——与其结构化同胞一致。
+  const n = (str(ss.network) || 'tcp').toLowerCase();
+  const network = n === 'raw' ? 'tcp' : n === 'splithttp' ? 'xhttp' : n === 'h2' ? 'http' : n;
   const cred =
     str(firstUser(vnext).id) ||
     str(server.password) ||
@@ -599,9 +615,5 @@ export function xrayOutboundIdentity(outbound: unknown): {
     str(first('peers').publicKey) ||
     str(obj(ss.hysteriaSettings).auth) ||
     '';
-  return {
-    protocol: (str(o.protocol) || '').toLowerCase(),
-    cred,
-    network: (str(ss.network) || 'tcp').toLowerCase(),
-  };
+  return { protocol: (str(o.protocol) || '').toLowerCase(), cred, network };
 }

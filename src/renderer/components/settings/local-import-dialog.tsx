@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
+  AlertTriangle,
   Loader2,
   HardDriveDownload,
   Server,
@@ -31,6 +32,9 @@ import { cn } from '@/lib/utils';
 import type { ServerConfig, ImportParseResult } from '@/bridge/types';
 import { useTranslation } from 'react-i18next';
 import { isXrayCustomNode } from '../../../shared/xray';
+
+/** 解析告警（链式代理未保留 / 透传为自定义 Xray 节点 / Clash 跳过原因…）在预览里默认展示的条数，其余折叠为「+N」。 */
+const WARNINGS_SHOWN = 3;
 
 interface LocalImportDialogProps {
   open: boolean;
@@ -53,12 +57,14 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
   const [editingName, setEditingName] = useState('');
   // 空输入字段级校验内联（红框 + 红字，取代 toast）；系统级错误（读文件/格式/导入失败）仍走 toast。
   const [contentError, setContentError] = useState(false);
+  const [showAllWarnings, setShowAllWarnings] = useState(false);
 
   const resetResult = () => {
     setParsed(null);
     setNodes([]);
     setSubs([]);
     setEditingIndex(null);
+    setShowAllWarnings(false);
   };
 
   // 走主进程 dialog.showOpenDialog（系统原生文件框，跟随系统语言）选文件 + 读内容；替代 HTML <input type=file>，
@@ -103,6 +109,7 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
       setNodes(result.nodes);
       setSubs(result.subscriptions);
       setEditingIndex(null);
+      setShowAllWarnings(false);
       if (result.nodes.length === 0 && result.subscriptions.length === 0) {
         toast.warning(t('localImport.errEmpty', 'No usable nodes found'));
       } else {
@@ -226,6 +233,11 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
 
   const total = nodes.length + subs.length;
   const dropped = (parsed?.stats.skipped ?? 0) + (parsed?.stats.failed ?? 0);
+  // 解析告警（主进程文案）：此前只有订阅路径写「日志」页，手动导入静默丢弃——如链式代理前置是 3x-ui 的 fragment
+  //（freedom）时该链不保留、节点直连服务器，用户无从得知。预览里列出，过长折叠。
+  const warnings = parsed?.warnings ?? [];
+  const shownWarnings = showAllWarnings ? warnings : warnings.slice(0, WARNINGS_SHOWN);
+  const hiddenWarnings = warnings.length - shownWarnings.length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -453,6 +465,32 @@ export function LocalImportDialog({ open, onOpenChange, onImportSuccess }: Local
                 count: dropped,
               })}
             </p>
+          )}
+
+          {warnings.length > 0 && (
+            <div className="space-y-1 text-xs text-muted-foreground" role="status">
+              <p className="flex items-center gap-1.5 font-medium text-warning">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                {t('localImport.warningsTitle', 'Parse notes')}
+              </p>
+              <ul className="list-disc space-y-0.5 break-words ps-5">
+                {shownWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+              {hiddenWarnings > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllWarnings(true)}
+                  className="ps-5 text-warning underline underline-offset-2 hover:opacity-80"
+                >
+                  {t('localImport.warningsMore', {
+                    defaultValue: '+{{count}} more',
+                    count: hiddenWarnings,
+                  })}
+                </button>
+              )}
+            </div>
           )}
         </div>
 

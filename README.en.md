@@ -309,7 +309,7 @@ Yes. The system proxy only affects apps that honor proxy settings, and DNS takeo
 
 **Xray JSON import**
 
-- If a proxy chain points to an internal outbound (such as 3x-ui's `fragment` freedom outbound), the chain isn't kept and a warning is shown: the node connects to its server directly, and the fragment settings don't apply.
+- If a proxy chain points to an internal outbound (such as 3x-ui's `fragment` freedom outbound), the chain isn't kept and a warning is given: the node connects to its server directly, and the fragment settings don't apply. Subscription updates log the warning on the **Logs** page; Manual Import shows it in the **Manual Import** dialog.
 - Internal outbounds such as `direct` / `block` (protocol aliases of `freedom` / `blackhole`) are ignored and not imported as nodes.
 - TCP (RAW) outbounds with HTTP header obfuscation are imported as-is as custom Xray outbound JSON and run on Xray; only their JSON can be edited.
 
@@ -319,13 +319,13 @@ Yes. The system proxy only affects apps that honor proxy settings, and DNS takeo
 
 ## Reporting issues
 
-Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). **Report an issue** on the in-app **About** page opens this repository's new-issue page (since 4.4.1). Starting with 4.4.2, it prefills the app version, operating system and architecture, sing-box version, Xray version and status, which core runs the selected node and why (including whether its detour chain goes through Xray), and the takeover and routing modes; no node addresses, node names or credentials are included. Please also include:
+Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). **Report an issue** on the in-app **About** page opens this repository's new-issue page and prefills the app version, operating system and architecture, sing-box version and takeover mode (since 4.4.1); since 4.4.2 it also prefills the Xray version and status, which core runs the selected node and why (including whether its detour chain goes through Xray), and the routing mode. No node addresses, node names or credentials are prefilled. Please also include:
 
-- A description of the problem, steps to reproduce, and the log lines around the error (Xray core lines start with `[xray]`). The live log on the **Logs** page is not redacted, so mask node addresses and domains before pasting
+- A description of the problem, steps to reproduce, and the log lines around the error (Xray core lines start with `[xray]`). The live log on the **Logs** page is not redacted, so mask node addresses, node names and domains before pasting
 - If the problematic node isn't the selected node: whether it has the Xray badge, and the reason the badge shows
-- The redacted diagnostic report exported from the **Logs** page: it hides keys, node addresses and node names, but its log details may still contain other domains / IPs you visited and your subscription server's domain, so check it before uploading and remove anything you'd rather not share
+- The redacted diagnostic report exported from the **Logs** page: it hides keys, node addresses and node names, but its log details may still contain other domains / IPs you visited, your subscription server's domain and local file paths (which may include your OS user name), so check it before uploading and remove anything you'd rather not share
 
-If you aren't using **Report an issue** (for example because the app won't start), fill in the version, system, core versions and status, and takeover and routing modes by hand following the issue template.
+If you aren't using **Report an issue** (for example because the app won't start), fill in the version, system, core versions and status, the selected node's core, and takeover and routing modes by hand following the issue template.
 
 If the problem also occurs on nodes without the Xray badge, it may exist in upstream FlowZ as well.
 

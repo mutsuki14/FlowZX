@@ -2,8 +2,9 @@
  * xray-import 单测（node env，零 electron）。覆盖 vmess/vless/trojan/shadowsocks 映射 +
  * streamSettings(tls/reality/ws/grpc) + 不支持协议跳过 + 内部协议忽略 + 缺字段失败；
  * parseXrayJson 三形态（单份配置 / v2ray-json 配置数组 / 裸 outbound 数组）+ remarks 命名 + 链式作用域；
- * direct/block 协议别名按内部 outbound 忽略、TCP/RAW HTTP 伪装头透传、无 remarks 配置数组按地址命名、
- * 混入 sing-box `type` 条目不判为 Xray。
+ * direct/block 协议别名按内部 outbound 忽略、TCP/RAW HTTP 伪装头透传、SS 套传输 / TLS 与无 TLS trojan 透传、
+ * 无 remarks 配置数组按地址命名、混入 sing-box `type` 条目不判为 Xray；透传节点对账身份的传输名归一
+ *（唯一一个对账用例隔离加载 SubscriptionService 并 mock electron，其余零 electron）。
  */
 import {
   looksLikeXrayOutbounds,
@@ -98,6 +99,7 @@ describe('parseXrayOutbounds', () => {
           protocol: 'trojan',
           tag: 't1',
           settings: { servers: [{ address: 'a.com', port: 443, password: 'pw' }] },
+          streamSettings: { security: 'tls', tlsSettings: { serverName: 'a.com' } },
         },
         {
           protocol: 'shadowsocks',
@@ -112,9 +114,70 @@ describe('parseXrayOutbounds', () => {
     expect(r.servers).toHaveLength(2);
     const trojan = r.servers.find((s) => s.protocol === 'trojan')!;
     expect(trojan.password).toBe('pw');
+    expect(trojan.security).toBe('tls');
     const ss = r.servers.find((s) => s.protocol === 'shadowsocks')!;
     expect(ss.shadowsocksSettings?.method).toBe('aes-256-gcm');
     expect(ss.shadowsocksSettings?.password).toBe('sspw');
+  });
+
+  it('sing-box 表达不了的 SS / trojan 组合 → 原样透传（SS 套 ws / grpc / tls、trojan 无 TLS）；SS 裸 TCP 与 trojan+TLS 仍结构化', () => {
+    const ssOb = (stream?: Record<string, unknown>) => ({
+      protocol: 'shadowsocks',
+      settings: {
+        servers: [{ address: 'ss.com', port: 8388, method: 'aes-256-gcm', password: 'p' }],
+      },
+      ...(stream ? { streamSettings: stream } : {}),
+    });
+    const trojanOb = (stream?: Record<string, unknown>) => ({
+      protocol: 'trojan',
+      settings: { servers: [{ address: 'tj.com', port: 80, password: 'p' }] },
+      ...(stream ? { streamSettings: stream } : {}),
+    });
+    const ssWs = { network: 'ws', wsSettings: { path: '/ss', host: 'cdn.com' } };
+    const ssGrpcTls = {
+      network: 'grpc',
+      security: 'tls',
+      grpcSettings: { serviceName: 'svc' },
+      tlsSettings: { serverName: 'ss.com' },
+    };
+    const ssTcpTls = { network: 'tcp', security: 'tls', tlsSettings: { serverName: 'ss.com' } };
+    const trojanWsPlain = { network: 'ws', security: 'none', wsSettings: { path: '/tj' } };
+    const r = parseXrayOutbounds(
+      [
+        ssOb(ssWs),
+        ssOb(ssGrpcTls),
+        ssOb(ssTcpTls),
+        trojanOb(trojanWsPlain),
+        trojanOb(), // 无 streamSettings = 明文 trojan（Xray 语义）
+        ssOb(),
+        ssOb({ network: 'raw', security: 'none' }),
+        trojanOb({ network: 'ws', security: 'tls', wsSettings: { path: '/t' } }),
+      ],
+      NOW
+    );
+    expect(r.servers.map((s) => s.protocol)).toEqual([
+      'custom',
+      'custom',
+      'custom',
+      'custom',
+      'custom',
+      'shadowsocks',
+      'shadowsocks',
+      'trojan',
+    ]);
+    // 透传：streamSettings 原样保留，由 Xray 内核运行（不再落成 sing-box 拒收 / 被偷偷改成 TLS 的结构化节点）
+    for (const [i, stream] of [ssWs, ssGrpcTls, ssTcpTls, trojanWsPlain].entries()) {
+      expect(r.servers[i].customSettings?.engine).toBe('xray');
+      expect(r.servers[i].customSettings?.outbound).toMatchObject({ streamSettings: stream });
+    }
+    expect(r.servers[4].customSettings?.outbound).not.toHaveProperty('streamSettings');
+    expect(r.servers[0].name).toBe('shadowsocks ss.com:8388');
+    expect(r.servers[3]).toMatchObject({ address: 'tj.com', port: 80 });
+    expect(r.servers[6]).toMatchObject({ network: 'tcp', security: 'none' });
+    expect(r.servers[7]).toMatchObject({ network: 'ws', security: 'tls' });
+    expect(r.warnings).toContain(
+      '5 个节点以「自定义 Xray JSON」原样导入，由 Xray 内核运行: SS ws(1), SS grpc+tls(1), SS tcp+tls(1), trojan 无 TLS(2)'
+    );
   });
 
   it('非结构化协议原样透传为自定义 Xray 节点；内部协议(freedom/blackhole 及别名 direct/block) 忽略不计', () => {
@@ -730,5 +793,57 @@ describe('xrayOutboundIdentity（透传节点对账身份）', () => {
       })
     ).toEqual({ protocol: 'hysteria', cred: 'hy', network: 'hysteria' });
     expect(xrayOutboundIdentity(undefined)).toEqual({ protocol: '', cred: '', network: 'tcp' });
+  });
+
+  it('传输名与结构化导入同口径归一（raw→tcp、splithttp→xhttp、h2→http）：面板改拼写不改身份', () => {
+    const id = (network: string) =>
+      xrayOutboundIdentity({
+        protocol: 'vless',
+        settings: { vnext: [{ address: 'a', port: 1, users: [{ id: 'u' }] }] },
+        streamSettings: { network },
+      }).network;
+    expect(id('raw')).toBe(id('tcp'));
+    expect(id('RAW')).toBe('tcp');
+    expect(id('splithttp')).toBe('xhttp');
+    expect(id('h2')).toBe('http');
+    expect(id('kcp')).toBe('kcp');
+  });
+
+  it('订阅对账：透传节点的 network 由 tcp 改名 raw → 沿用旧 id（不删旧增新），contentChanged 只反映内容差异', () => {
+    // SubscriptionService 依赖 electron：仅本用例隔离加载（本文件其余用例保持零 electron）。
+    let reconcile!: (typeof import('../SubscriptionService'))['SubscriptionService']['reconcileServers'];
+    jest.isolateModules(() => {
+      jest.doMock('electron', () => ({ app: {}, net: {}, session: {} }));
+      reconcile = require('../SubscriptionService').SubscriptionService.reconcileServers;
+    });
+    // TCP + HTTP 伪装头（透传）：Xray 的 tcp→raw 更名后面板模板改发 raw + rawSettings。
+    const cfg = (network: 'tcp' | 'raw') => ({
+      remarks: 'HTTP 伪装',
+      outbounds: [
+        {
+          tag: 'proxy',
+          protocol: 'vless',
+          settings: { vnext: [{ address: 'h.example.com', port: 443, users: [{ id: 'uuid-1' }] }] },
+          streamSettings: {
+            network,
+            [network === 'tcp' ? 'tcpSettings' : 'rawSettings']: { header: { type: 'http' } },
+          },
+        },
+      ],
+    });
+    const before = parseXrayJson(cfg('tcp'), NOW)!.servers;
+    expect(before.map((s) => s.protocol)).toEqual(['custom']);
+    const r = reconcile(before, parseXrayJson(cfg('raw'), NOW)!.servers, 'T1');
+    expect({ added: r.added, deleted: r.deleted, updated: r.updated }).toEqual({
+      added: 0,
+      deleted: 0,
+      updated: 1,
+    });
+    expect(r.servers[0].id).toBe(before[0].id);
+    expect(r.contentChanged).toBe(true); // outbound JSON 确有变化（raw / rawSettings）
+    // 同一份 raw 配置再刷新：id 不变、无内容变化 → 不打断
+    const again = reconcile(r.servers, parseXrayJson(cfg('raw'), NOW)!.servers, 'T2');
+    expect(again.servers[0].id).toBe(before[0].id);
+    expect(again.contentChanged).toBe(false);
   });
 });

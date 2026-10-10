@@ -1659,6 +1659,8 @@
     "unsupportedBadge": "不支持",
     "unsupportedTip": "当前内核不支持此协议，导入后置灰，但可编辑 / 删除",
     "skippedTitle": "已跳过 {{count}} 项（协议不支持或解析失败）",
+    "warningsTitle": "解析提示",
+    "warningsMore": "还有 {{count}} 条",
     "importing": "导入中...",
     "submit": "导入 {{count}} 项",
     "resultOk": "已导入 {{imported}} 个节点、{{subs}} 个订阅",

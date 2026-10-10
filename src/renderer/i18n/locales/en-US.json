@@ -1659,6 +1659,8 @@
     "unsupportedBadge": "Unsupported",
     "unsupportedTip": "Protocol not supported by the current core; dimmed after import, but editable/deletable",
     "skippedTitle": "{{count}} item(s) skipped (unsupported protocol or parse error)",
+    "warningsTitle": "Parse notes",
+    "warningsMore": "+{{count}} more",
     "importing": "Importing...",
     "submit": "Import {{count}} item(s)",
     "resultOk": "Imported {{imported}} node(s), {{subs}} subscription(s)",

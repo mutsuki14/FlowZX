@@ -3,7 +3,7 @@
  *（`sing-box check`）双重校验，覆盖单测 toEqual 管不到的值域与跨字段引用：
  *  - Xray 侧：VLESS-XHTTP-REALITY-ENC / RAW-REALITY-Vision-ENC / XHTTP-TLS 证书钉扎 / Reality ML-DSA-65 /
  *    vision-udp443 / VMess-XHTTP / Trojan-XHTTP-REALITY / Trojan-gRPC-REALITY 强制 Xray / SS2022 与 SS-AEAD 强制 Xray /
- *    自定义 Xray JSON（XHTTP 上下行分离）+ 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）+ Xray JSON 订阅（v2ray-json 配置数组）的解析产物；
+ *    自定义 Xray JSON（XHTTP 上下行分离）/ Xray JSON 导入的 SS 套 ws+TLS（透传）+ 前置代理链（Xray→sing-box 节点、Xray→Xray 节点）+ Xray JSON 订阅（v2ray-json 配置数组）的解析产物；
  *  - sing-box 侧：socks 桥出站 / xray-dial-in 回环入站（users）/ auth_user 钉死路由 / xray-dial-direct 出站
  *    在完整 generateSingBoxConfig 产物中引用完整、check 通过；原生 trojan + REALITY（指纹 none → chrome）与
  *    勾了 Xray 却因流加密留在 sing-box 的 SS 节点同场 check。
@@ -38,6 +38,7 @@ import { canUseXrayCore, requiresXrayCore } from '../../../shared/xray';
 import { SubscriptionService } from '../SubscriptionService';
 import { ProtocolParser } from '../ProtocolParser';
 import { V2RAY_JSON_NODE_NAMES, v2rayJsonSubscription } from './xray-subscription-fixtures';
+import { parseXrayOutbounds } from '../xray-import';
 import {
   buildXrayConfig,
   buildXrayOutbound,
@@ -232,6 +233,31 @@ function corpus(pqv: string): ServerConfig[] {
       wsSettings: { path: '/ws?ed=2048', headers: { Host: 'w.example.com' } },
       tlsSettings: { serverName: 'w.example.com' },
     }),
+    // Xray JSON 导入的 SS 套 ws + TLS（3x-ui 可下发）：sing-box 的 shadowsocks 出站无 transport / tls 字段，
+    // 导入即透传为自定义 Xray 节点（xray-import needsPassthrough）——此处取真实导入产物交两核。
+    {
+      ...parseXrayOutbounds(
+        [
+          {
+            protocol: 'shadowsocks',
+            settings: {
+              servers: [
+                { address: 'ss.example.com', port: 443, method: 'aes-256-gcm', password: 'pw' },
+              ],
+            },
+            streamSettings: {
+              network: 'ws',
+              security: 'tls',
+              wsSettings: { path: '/ss', host: 'ss.example.com' },
+              tlsSettings: { serverName: 'ss.example.com' },
+            },
+          },
+        ],
+        '2026-01-01T00:00:00.000Z'
+      ).servers[0],
+      id: 'ss-ws-tls-imported',
+      name: 'ss-ws-tls-imported',
+    },
     {
       id: 'custom-xhttp-split',
       name: 'custom-xhttp-split',
@@ -352,7 +378,7 @@ describe('Xray 侧：xray run -test', () => {
     expect(xrayNodes.map((s) => s.id)).not.toContain('hy2-hop');
     // 自检：表单新形态确实分到了预期内核（否则「通过」不含它们）。
     expect(xrayNodes.map((s) => s.id)).toEqual(
-      expect.arrayContaining(['ss-aead-forced', 'trojan-grpc-reality-forced'])
+      expect.arrayContaining(['ss-aead-forced', 'trojan-grpc-reality-forced', 'ss-ws-tls-imported'])
     );
     expect(xrayNodes.map((s) => s.id)).not.toContain('ss-stream-forced');
     expect(xrayNodes.map((s) => s.id)).not.toContain('trojan-raw-reality');
