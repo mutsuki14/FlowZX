@@ -32,6 +32,7 @@ FlowZX is a fork of the cross-platform proxy client [FlowZ](https://github.com/d
 
 - **Xray-only combinations**: XHTTP (auto / packet-up / stream-up / stream-one, with `extra` support), VLESS Encryption (`mlkem768x25519plus.*`), REALITY ML-DSA-65 (`pqv`), `xtls-rprx-vision-udp443`, certificate SHA-256 pinning (`pcs`), and arbitrary custom Xray outbound JSON.
 - **Automatic core selection**: FlowZX decides from a node's parameters whether it needs Xray, hands it to Xray automatically when it does, and marks the node with an **Xray** badge. Xray nodes also support hot switching, rule-targeted nodes, latency tests and proxy chains.
+- **Choose your Xray version**: under **Settings → Advanced → Xray core**, install an official XTLS release online (26.1.23 or newer; pre-releases optional). Downloads are checked against the official SHA2-256 before switching, and you can go back to the bundled version at any time.
 - **Authorize once**: a launchd helper on macOS, a system service on Windows and a systemd helper on Linux. Install it once, and starting or stopping TUN no longer asks for administrator rights every time.
 - **Fewer restarts**: switching nodes and changing a rule's target node hot-switch over gRPC; for rules with only domain / IP / port / process conditions, editing the match values hot-reloads a local rule set.
 - **Mesh nodes**: WireGuard, Cloudflare WARP (one-click anonymous registration) and Tailscale (browser login, Headscale supported) can be selected and routed just like regular nodes.
@@ -203,7 +204,7 @@ When you import Xray JSON, nodes the form can represent become regular nodes; ev
 
 ## Screenshots
 
-The screenshots show the current FlowZX UI with demo data (no real subscriptions or nodes). On the **Nodes** page, nodes with the **Xray** badge run on the Xray core (XHTTP, VLESS Encryption, custom Xray outbound JSON) and the rest run on sing-box; the **Settings** screenshot shows the Xray core (sidecar) status under **Advanced → Core Management**.
+The screenshots show the current FlowZX UI with demo data (no real subscriptions or nodes). On the **Nodes** page, nodes with the **Xray** badge run on the Xray core (XHTTP, VLESS Encryption, custom Xray outbound JSON) and the rest run on sing-box; the **Settings** screenshot shows the separate **Xray core (sidecar)** card under **Advanced** (run state, source and version picker).
 
 | Light | Dark |
 |:---:|:---:|
@@ -255,7 +256,7 @@ flowchart LR
 
 ### How do I know which core runs a node?
 
-Nodes with an **Xray** badge run on Xray; hover over the badge to see why (e.g. "XHTTP transport", "certificate SHA-256 pin"). Xray's version and status are shown under **Settings → Advanced → Core Management → Xray core (sidecar)**.
+Nodes with an **Xray** badge run on Xray; hover over the badge to see why (e.g. "XHTTP transport", "certificate SHA-256 pin"). Xray's version, source and status are shown under **Settings → Advanced → Xray core (sidecar)**.
 
 ### Why does a plain VLESS / Trojan node show the Xray badge?
 
@@ -263,7 +264,7 @@ TLS nodes with **Certificate SHA-256 pin** (`pcs`) filled in automatically run o
 
 ### How do I change the Xray version?
 
-Xray has no online updates. Put `xray` (`xray.exe` on Windows) in the `<userData>/xray_core/` directory; when present, it takes precedence over the bundled version. The exact path is shown in the Xray row of **Core Management**. On macOS / Linux, `chmod +x` the file first; otherwise it is ignored and the bundled version is used.
+Pick a version under **Settings → Advanced → Xray core (sidecar)** and click **Install**: FlowZX downloads it from the official XTLS/Xray-core releases, verifies it against the official SHA2-256, self-tests it and switches (restarting the proxy once if it is running). Turn on **Include pre-releases** to see pre-releases; versions older than 26.1.23 are not offered, and **Restore bundled** goes back at any time. You can still put your own `xray` (`xray.exe` on Windows) in the `<userData>/xray_core/` directory; when present, it takes precedence over the bundled version (on macOS / Linux, `chmod +x` it first). Installing a version online later replaces it and keeps the original as `xray.custom-bak`. See [docs/XRAY.md](docs/XRAY.md#切换-xray-版本) for details.
 
 ### Connections drop briefly after changing settings?
 

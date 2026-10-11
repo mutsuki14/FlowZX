@@ -5,7 +5,8 @@
  *   防撞半替换核致 sing-box FATAL。门控分两层：
  *
  * T1 ProxyManager 门控（src/main/services/ProxyManager.ts）：
- *   - setCoreSwapInProgress(b)：置/清 private coreSwapInProgress 字段（CoreUpdateService 调）。
+ *   - setCoreSwapInProgress(b, owner='singbox')：按持有者置/清 private coreSwapOwners（CoreUpdateService 缺省 owner、
+ *     XrayCoreUpdateService 用 'xray'）；isCoreSwapInProgress() = 任一持有。一方清位不打开另一方仍持有的窗口。
  *   - rejectIfCoreSwapInProgress(action)：true → 抛带 CORE_UPDATE_IN_PROGRESS code 的 Error；false → 放行。
  *   - 真实调用方：startInternal（start 经之）+ switchMode 开头各调一次。
  *
@@ -92,13 +93,53 @@ describe('T1：ProxyManager core-swap 手动轴门控', () => {
     } as UserConfig;
   }
 
-  it('setCoreSwapInProgress 置/清 private coreSwapInProgress 字段', () => {
+  it('setCoreSwapInProgress 置/清门控（isCoreSwapInProgress 反映之；缺省 owner = sing-box）', () => {
     const svc = makeSvc();
-    expect(svc.coreSwapInProgress).toBe(false); // 初始 false
+    expect(svc.isCoreSwapInProgress()).toBe(false); // 初始未持有
     svc.setCoreSwapInProgress(true);
-    expect(svc.coreSwapInProgress).toBe(true);
+    expect(svc.isCoreSwapInProgress()).toBe(true);
+    expect([...svc.coreSwapOwners]).toEqual(['singbox']);
     svc.setCoreSwapInProgress(false);
-    expect(svc.coreSwapInProgress).toBe(false);
+    expect(svc.isCoreSwapInProgress()).toBe(false);
+  });
+
+  it('两个 owner（sing-box / Xray）交错：一方清位不打开另一方仍持有的门控', async () => {
+    const svc = makeSvc();
+    svc.setCoreSwapInProgress(true); // sing-box 核更新进入替换窗口
+    svc.setCoreSwapInProgress(true, 'xray'); // Xray 切换同时进入
+    svc.setCoreSwapInProgress(false, 'xray'); // Xray 先结束
+    expect(svc.isCoreSwapInProgress()).toBe(true); // sing-box 仍在替换 → 门控仍生效
+    await expect(svc.start(makeConfig())).rejects.toMatchObject({
+      code: ProxyErrorCode.CORE_UPDATE_IN_PROGRESS,
+    });
+    expect(() => svc.rejectIfCoreSwapInProgress('启动代理')).toThrow(/内核更新进行中/);
+    svc.setCoreSwapInProgress(false); // sing-box 结束
+    expect(svc.isCoreSwapInProgress()).toBe(false);
+    expect(() => svc.rejectIfCoreSwapInProgress('启动代理')).not.toThrow();
+
+    // 反向：sing-box 先结束，Xray 仍持有
+    svc.setCoreSwapInProgress(true, 'xray');
+    svc.setCoreSwapInProgress(true);
+    svc.setCoreSwapInProgress(false);
+    expect(svc.isCoreSwapInProgress()).toBe(true);
+    await expect(svc.switchMode(makeConfig())).rejects.toThrow(/内核更新进行中/);
+    svc.setCoreSwapInProgress(false, 'xray');
+    expect(svc.isCoreSwapInProgress()).toBe(false);
+  });
+
+  it('getLifecycleRequestCounts：public stop()/start() 各计一次；被门控拒绝的 start 也计（调用方只在放行窗口比较 starts）', async () => {
+    const svc = makeSvc();
+    jest.spyOn(svc, 'stopInner').mockResolvedValue(undefined); // 只验计数，不跑真实停核清理
+    expect(svc.getLifecycleRequestCounts()).toEqual({ starts: 0, stops: 0, last: null });
+    await svc.stop();
+    expect(svc.getLifecycleRequestCounts()).toEqual({ starts: 0, stops: 1, last: 'stop' });
+    svc.setCoreSwapInProgress(true);
+    await expect(svc.start(makeConfig())).rejects.toThrow(/内核更新进行中/);
+    expect(svc.getLifecycleRequestCounts()).toEqual({ starts: 1, stops: 1, last: 'start' });
+    // 返回的是快照（改它不影响内部计数）
+    const snap = svc.getLifecycleRequestCounts();
+    snap.stops = 99;
+    expect(svc.getLifecycleRequestCounts().stops).toBe(1);
   });
 
   it('rejectIfCoreSwapInProgress：置位时抛带 CORE_UPDATE_IN_PROGRESS code 的 Error', () => {
@@ -388,6 +429,95 @@ describe('T2：CoreUpdateService 4 写核路径 setCoreSwapInProgress try/finall
     await expect(svc.rollbackCore()).rejects.toThrow('disk full');
     // 关键：异常路径 finally 仍清位
     expect(calls).toEqual([true, false]);
+  });
+
+  // --- 与 Xray 版本切换互斥（XrayCoreUpdateService.isBusy 注入为 setXrayBusyCheck）---
+  describe('与 Xray 版本切换互斥', () => {
+    const XRAY_BUSY = /Xray 内核正在切换/;
+
+    it('Xray 切换进行中：updateCore 拒绝（不下载、不停代理、不动门控），isBusy 不残留', async () => {
+      const { proxy, calls } = makeProxyWithSpy();
+      const svc = makeSvc(proxy);
+      svc.setXrayBusyCheck(() => true);
+      jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('official');
+      const dl = jest.spyOn((svc as any).coreDownloader, 'downloadFile');
+      await expect(svc.updateCore('https://x/sing-box.tar.gz')).rejects.toThrow(XRAY_BUSY);
+      expect(dl).not.toHaveBeenCalled();
+      expect(proxy.stop).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(svc.isBusy()).toBe(false);
+      expect((svc as any).isUpdating).toBe(false);
+    });
+
+    it('Xray 切换进行中：tryApplyStaged → deferred，staged 保留、不落位', async () => {
+      const { proxy, calls } = makeProxyWithSpy();
+      const svc = makeSvc(proxy);
+      svc.setXrayBusyCheck(() => true);
+      jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('official');
+      jest.spyOn(svc as any, 'loadAutoState').mockReturnValue({
+        staged: { version: '1.13.14', dir: stagedDir, stagedAt: 'now' },
+      });
+      const clear = jest.spyOn(svc as any, 'clearStaged').mockImplementation(() => {});
+      jest.spyOn(svc as any, 'emitAutoStatus').mockImplementation(() => {});
+      const install = jest.spyOn(svc as any, 'installCoreFromDir').mockResolvedValue(undefined);
+      await expect(svc.tryApplyStaged('proxy-stopped')).resolves.toBe('deferred');
+      expect(install).not.toHaveBeenCalled();
+      expect(clear).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(svc.isBusy()).toBe(false);
+      expect((svc as any).isUpdating).toBe(false);
+    });
+
+    it('Xray 切换进行中：applyStagedNow / rollbackCore 拒绝、replaceManualCore 返回错误，均不停代理', async () => {
+      const { proxy, calls } = makeProxyWithSpy();
+      proxy.getStatus.mockReturnValue({ running: true });
+      const svc = makeSvc(proxy);
+      svc.setXrayBusyCheck(() => true);
+      jest.spyOn(svc as any, 'loadAutoState').mockReturnValue({
+        staged: { version: '1.13.14', dir: stagedDir, stagedAt: 'now' },
+      });
+      jest.spyOn(svc as any, 'hasBackup').mockReturnValue(true);
+      const preflight = jest.spyOn(svc as any, 'preflightValidate');
+      await expect(svc.applyStagedNow()).rejects.toThrow(XRAY_BUSY);
+      await expect(svc.rollbackCore()).rejects.toThrow(XRAY_BUSY);
+      await expect(svc.replaceManualCore({ filePath: '/tmp/x', force: true })).resolves.toEqual({
+        ok: false,
+        error: expect.stringMatching(XRAY_BUSY),
+      });
+      expect(preflight).not.toHaveBeenCalled();
+      expect(proxy.stop).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(svc.isBusy()).toBe(false);
+    });
+
+    it('isBusy：换核类操作全程为 true（Xray 据此拒绝开始），结束（含失败）后归零', async () => {
+      const { proxy } = makeProxyWithSpy();
+      const svc = makeSvc(proxy);
+      const seen: boolean[] = [];
+      jest.spyOn((svc as any).coreDownloader, 'downloadFile').mockResolvedValue('/tmp/fake.tar.gz');
+      jest.spyOn(svc as any, 'resolveAssetSha256').mockResolvedValue('a'.repeat(64));
+      jest
+        .spyOn((svc as any).coreDownloader, 'extractCore')
+        .mockResolvedValue({ corePath: '/tmp/x/sing-box', extractDir: '/tmp/x' });
+      jest.spyOn(svc as any, 'preflightValidate').mockResolvedValue({
+        ok: true,
+        version: '1.13.14',
+        versionLine: 'sing-box version 1.13.14',
+      });
+      jest.spyOn(svc as any, 'installCoreFromDir').mockImplementation(async () => {
+        seen.push(svc.isBusy());
+      });
+      jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('official');
+      expect(svc.isBusy()).toBe(false);
+      await svc.updateCore('https://x/sing-box.tar.gz');
+      expect(seen).toEqual([true]);
+      expect(svc.isBusy()).toBe(false);
+
+      jest.spyOn(svc as any, 'hasBackup').mockReturnValue(true);
+      jest.spyOn(svc as any, 'isProtectedCoreActive').mockRejectedValue(new Error('probe failed'));
+      await expect(svc.rollbackCore()).rejects.toThrow('probe failed');
+      expect(svc.isBusy()).toBe(false);
+    });
   });
 });
 

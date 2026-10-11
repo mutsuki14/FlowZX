@@ -150,10 +150,20 @@ export class DiagnosticService {
     } catch {
       xrayStatus = null; // best-effort：采集失败不阻断报告
     }
+    // 来源：随包 / 在线安装（tag + 是否预发布）/ 自定义文件；低于最低支持版本时显式标出（Xray 会静默忽略新安全字段）。
+    const xraySource = xrayStatus
+      ? xrayStatus.source === 'downloaded'
+        ? `在线安装${xrayStatus.tag ? ` ${xrayStatus.tag}` : ''}${xrayStatus.prerelease ? ' · 预发布' : ''}`
+        : xrayStatus.source === 'custom'
+          ? '自定义文件'
+          : '随包'
+      : '';
     const xray = xrayStatus
       ? xrayStatus.available
-        ? `${xrayStatus.version ?? 'unknown'}（${xrayStatus.running ? `运行中，${xrayStatus.nodes} 个节点` : '未运行'}）`
-        : '缺失'
+        ? `${xrayStatus.version ?? 'unknown'}（${xrayStatus.running ? `运行中，${xrayStatus.nodes} 个节点` : '未运行'}；来源：${xraySource}${
+            xrayStatus.belowMinimum ? `；低于最低支持版本 ${xrayStatus.minVersion}` : ''
+          }）`
+        : `缺失（来源：${xraySource}）`
       : undefined;
     const status = this.proxyManager.getStatus();
     const sysProxy = await this.systemProxyManager.getProxyStatus().catch(() => null);

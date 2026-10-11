@@ -236,6 +236,8 @@ summarize('sing-box cores', sb, VERSION, 'coreBinarySha256');
 // ── Xray 内核（sidecar，承载 XHTTP / VLESS Encryption 等 Xray 独有协议组合，见 docs/XRAY.md）──
 // XTLS 官方 release：zip 平铺（xray[.exe] 在包根，另含 geoip/geosite/LICENSE，本脚本只取 xray 本体——
 // FlowZ 的 Xray 配置不引用 geo 文件）。archive sha == release 附带的 `<asset>.dgst` 中 SHA2-256。
+// 平台→资产名表与 src/shared/xray-release.ts 的 XRAY_ASSET_BY_PLATFORM（应用内切换 Xray 版本用）同源，
+// 本脚本是 .mjs 无法 import TS，故各持一份——改资产名须两处同步。
 const XRAY_VERSION = manifest.bundledXrayVersion;
 const XRAY_TARGETS = [
   { dir: 'resources/linux', asset: 'Xray-linux-64.zip', bin: 'xray', key: 'linux' },

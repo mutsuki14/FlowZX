@@ -866,6 +866,18 @@ export class ConfigManager implements IConfigManager {
       this.log('warn', 'builtinGeoMeta must be an object; resetting to default');
       delete config.builtinGeoMeta;
     }
+    // xrayIncludePrerelease：纯 UI 偏好开关（Xray 版本列表含预发布）。非 boolean 一律删除而非 throw（同 appRoutingEnabled
+    // 标准，不回填默认；读取端 === true 判定 ⇒ 删后视为关）。
+    if (
+      config.xrayIncludePrerelease !== undefined &&
+      typeof config.xrayIncludePrerelease !== 'boolean'
+    ) {
+      this.log(
+        'warn',
+        'xrayIncludePrerelease must be a boolean; dropping it (falls back to disabled)'
+      );
+      delete config.xrayIncludePrerelease;
+    }
     // mainSessionViaProxy 新增字段：非法类型 sanitize（undefined=true 兼容老配置，gate 用 !== false）
     if (
       config.mainSessionViaProxy !== undefined &&

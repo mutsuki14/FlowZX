@@ -38,6 +38,11 @@
   .nd-dd-dir { font-weight: 700; font-size: 12px; line-height: 1; }
   .btn.danger { background: hsl(var(--err-weak)); border-color: hsl(var(--err) / 0.32); color: hsl(var(--err)); } .btn.danger:hover { background: hsl(var(--err) / 0.16); border-color: hsl(var(--err) / 0.5); }
   .btn.sm { padding: 5px 11px; font-size: 12px; } .btn.icon { padding: 0; width: 33px; height: 33px; justify-content: center; }
+  /* 禁用态（系统级）：变淡 + 禁止指针，悬停不再变色——否则「已是当前版本」这类禁用按钮看起来仍可点。 */
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn.flow:disabled:hover { background: hsl(var(--flow-solid)); }
+  .btn.ghost:disabled:hover { background: transparent; border-color: hsl(var(--hair)); }
+  .btn.danger:disabled:hover { background: hsl(var(--err-weak)); border-color: hsl(var(--err) / 0.32); }
   .pill { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px; letter-spacing: 0.01em; white-space: nowrap; }
   .pill.proto { background: hsl(var(--flow-weak)); color: hsl(var(--flow-hi)); }
   .pill.region { background: hsl(var(--surface-3)); color: hsl(var(--fg-dim)); }

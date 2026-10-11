@@ -5,6 +5,10 @@
  * 仅依赖 logManager（日志）+ configProvider（读 ghProxyPrefix 镜像前缀）；不耦合安装/回滚/版本状态流程，
  * 故可独立成块。网络/解压均为 runtime 行为，本机不可单测——逐字保留原实现；纯逻辑（资产挑选）已下沉
  * singbox-asset.findSuitableSingboxAsset 单测覆盖。
+ *
+ * Xray 版本选择（XrayCoreUpdateService）复用同一类型：fetchGithubJson（按 tag 取 release）/ fetchGithubText
+ *（直连 github.com 取 .dgst，绝不经镜像）/ downloadFile 的 opts（临时文件前缀 + 进度回调）。sing-box 调用路径不传
+ * 新参数，行为与报错文案逐字不变（core-downloader-integrity 单测钉住）。
  */
 
 import { app, net, session, Session } from 'electron';
@@ -21,6 +25,17 @@ import { powershellPath } from '../utils/win-system32';
 import { MAX_GITHUB_JSON_BYTES } from '../utils/http-limits';
 import { findSuitableSingboxAsset } from './singbox-asset';
 import { UpdateNetwork } from './UpdateNetwork';
+
+/** downloadFile 的可选参数（sing-box 调用方不传 → 行为与原实现逐字相同）。 */
+export interface DownloadFileOptions {
+  tempPrefix?: string;
+  onProgress?: (receivedBytes: number, totalBytes: number) => void;
+}
+
+/** 给 Error 挂机器可读字段（code/status），不改 message——sing-box 侧文案与既有断言保持不变。 */
+function withErrorFields(err: Error, fields: { code?: string; status?: number }): Error {
+  return Object.assign(err, fields);
+}
 
 export class CoreDownloader {
   // direct 自举兜底会话（强制 mode:direct）：核下载是自举链路，UpdateNetwork 未注入 / update-in 端口不可用 /
@@ -62,21 +77,31 @@ export class CoreDownloader {
   }
 
   async fetchReleases(): Promise<any[]> {
+    return this.fetchGithubJson('https://api.github.com/repos/SagerNet/sing-box/releases');
+  }
+
+  /**
+   * GET 一个 GitHub API JSON（从 fetchReleases 抽出，sing-box 行为与报错文案逐字不变；Xray 版本选择复用）。
+   * 经核更新链路会话（UpdateNetwork）直连 api.github.com，**不走 gh-proxy 镜像**——摘要/资产清单是完整性锚，
+   * 必须来自官方源。护栏：15s 兜底超时、MAX_GITHUB_JSON_BYTES 上限、request/response 双错误源单点 settle。
+   * 失败的 Error 带机器可读字段：403 → `code='RATE_LIMITED'`；其它非 200 → `status=<HTTP 码>`（如 404）。
+   */
+  async fetchGithubJson(url: string): Promise<any> {
     const sess = await this.updateSession();
     return new Promise((resolve, reject) => {
       let settled = false;
       const request = net.request({
         method: 'GET',
-        url: 'https://api.github.com/repos/SagerNet/sing-box/releases',
+        url,
         session: sess,
       });
       // 单点收口：防 request/response 双错误源重复 settle；clear timeout；之后任何回调都 no-op。
-      const finish = (err: Error | null, val?: any[]) => {
+      const finish = (err: Error | null, val?: any) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (err) reject(err);
-        else resolve(val as any[]);
+        else resolve(val);
       };
       // 兜底超时：net.request 在连接被中间设备静默吞掉时可能长时间不触发 error → 前端永久转圈。15s 后主动 abort+reject。
       const timer = setTimeout(() => {
@@ -118,13 +143,89 @@ export class CoreDownloader {
               finish(new Error('解析 GitHub 响应失败'));
             }
           } else if (res.statusCode === 403) {
-            finish(new Error('GitHub API 访问频率限制 (403)，请稍后再试或使用代理'));
+            finish(
+              withErrorFields(new Error('GitHub API 访问频率限制 (403)，请稍后再试或使用代理'), {
+                code: 'RATE_LIMITED',
+                status: 403,
+              })
+            );
           } else {
-            finish(new Error(`GitHub API 错误: ${res.statusCode}`));
+            finish(
+              withErrorFields(new Error(`GitHub API 错误: ${res.statusCode}`), {
+                status: res.statusCode,
+              })
+            );
           }
         });
         // 关键：response 阶段断连（ERR_CONNECTION_CLOSED 等）从 res emit 'error'，缺此 handler 会逃逸成
         // 主进程 uncaughtException，且 Promise 永不 settle → checkUpdate await 永挂 → 前端检查更新永久转圈。
+        res.on('error', (err: Error) => finish(err));
+      });
+
+      request.on('error', (err: Error) => finish(err));
+      request.end();
+    });
+  }
+
+  /**
+   * GET 一个 **github.com** 上的小文本（如 Xray 的 `<asset>.zip.dgst` 摘要文件），**绝不回落 gh-proxy 镜像**：
+   * 摘要若经镜像取，镜像就同时掌控了二进制与它的「校验值」，校验形同虚设。非 https://github.com/ 的 URL 直接拒绝。
+   * 护栏同 fetchGithubJson：15s 超时 + maxBytes 上限 + 单点 settle；非 200 → Error 带 `status`。
+   */
+  async fetchGithubText(url: string, maxBytes: number): Promise<string> {
+    if (!url.startsWith('https://github.com/')) {
+      throw new Error(`拒绝从非 github.com 地址读取摘要: ${url}`);
+    }
+    const sess = await this.updateSession();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const request = net.request({ method: 'GET', url, session: sess });
+      const finish = (err: Error | null, val?: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve(val as string);
+      };
+      const timer = setTimeout(() => {
+        try {
+          request.abort();
+        } catch {
+          /* ignore */
+        }
+        finish(new Error('读取 GitHub 文件超时（GitHub 不可达或被网络拦截）'));
+      }, 15000);
+
+      request.setHeader('User-Agent', APP_USER_AGENT);
+
+      request.on('response', (res) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on('data', (chunk) => {
+          if (settled) return;
+          size += chunk.length;
+          if (size > maxBytes) {
+            try {
+              request.abort();
+            } catch {
+              /* ignore */
+            }
+            finish(new Error(`GitHub 文件过大（>${maxBytes} 字节）`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            finish(null, Buffer.concat(chunks).toString('utf8'));
+          } else {
+            finish(
+              withErrorFields(new Error(`读取 GitHub 文件失败: HTTP ${res.statusCode}`), {
+                status: res.statusCode,
+              })
+            );
+          }
+        });
         res.on('error', (err: Error) => finish(err));
       });
 
@@ -145,8 +246,16 @@ export class CoreDownloader {
    *   下载失败会回落 gh-proxy 第三方镜像，而 Content-Length 只能挡截断、挡不住「长度一样但内容被换」。
    *   摘要取自 api.github.com 直连响应、不经镜像，故拿它校验镜像给的字节是有意义的。
    *   传 undefined 时不校验——仅为兼容尚未接线的调用方保留，新调用方不要这么用（服务层已 fail-closed）。
+   * @param opts.tempPrefix 临时文件名前缀（默认 `sing-box-core-update`；Xray 传自己的，便于排查残留）。
+   * @param opts.onProgress 每收到数据回调 (已收字节, 总字节)；总字节取 Content-Length，未知时为 0。回调抛错被吞，
+   *   不影响下载。镜像重试腿沿用同一 opts（进度从 0 重新计）。
    */
-  async downloadFile(url: string, isRetry = false, expectedSha256?: string): Promise<string> {
+  async downloadFile(
+    url: string,
+    isRetry = false,
+    expectedSha256?: string,
+    opts: DownloadFileOptions = {}
+  ): Promise<string> {
     let ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
     try {
       const urlObj = new URL(url);
@@ -174,7 +283,7 @@ export class CoreDownloader {
     // 后果视时序而定：轻则解压 ENOENT，重则校验读不到文件。macOS CI 实测命中，Windows 因时序不同侥幸躲过。
     const tempPath = path.join(
       app.getPath('temp'),
-      `sing-box-core-update-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`
+      `${opts.tempPrefix ?? 'sing-box-core-update'}-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`
     );
     const file = fs.createWriteStream(tempPath);
     const sess = await this.updateSession();
@@ -227,7 +336,7 @@ export class CoreDownloader {
               `下载出错，尝试使用加速镜像: ${err.message}`,
               'CoreDownloader'
             );
-            this.downloadFile(mirrorUrl, true, expectedSha256).then(resolve).catch(reject);
+            this.downloadFile(mirrorUrl, true, expectedSha256, opts).then(resolve).catch(reject);
             return;
           }
           reject(err);
@@ -257,6 +366,13 @@ export class CoreDownloader {
           idle.arm(); // 每收到数据重置停滞计时
           receivedBytes += chunk.length;
           file.write(chunk);
+          if (opts.onProgress) {
+            try {
+              opts.onProgress(receivedBytes, isNaN(expectedBytes) ? 0 : expectedBytes);
+            } catch {
+              /* 进度回调失败不影响下载 */
+            }
+          }
         });
 
         response.on('end', () => {

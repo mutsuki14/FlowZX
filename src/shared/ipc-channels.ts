@@ -126,6 +126,11 @@ export const IPC_CHANNELS = {
   CORE_UPDATE_APPLY_STAGED: 'core:applyStaged', // 用户点「立即应用」：停代理→换核→重启（唯一允许主动断流）
   CORE_UPDATE_ACK_VERSION_CHANGE: 'core:ackVersionChange', // banner 展示版本变更通知后 ack 清除 pendingChangeNotice（show→ack，弹一次非每启）
   CORE_RESET_FACTORY: 'core-update:reset-factory', // B6：把内核恢复为随 App 出厂的版本
+  // Xray 内核版本选择（含预发布）：渲染端只回传 tag，下载 URL / sha256 一律由主进程按 tag 现取（见 XrayCoreUpdateService）
+  XRAY_CORE_LIST_RELEASES: 'xray-core:listReleases', // ({force?}) → XrayReleaseList（主进程缓存 10 分钟）
+  XRAY_CORE_INSTALL: 'xray-core:install', // ({tag, force?}) → XrayInstallResult（force 跳过当前配置 run -test）
+  XRAY_CORE_RESTORE_BUNDLED: 'xray-core:restoreBundled', // 移除槽位二进制（自定义文件改名备份）→ 回落随包 Xray
+  XRAY_CORE_GET_INSTALL_STATE: 'xray-core:getInstallState', // 进行中的安装进度（设置卡卸载重挂后找回）
   APP_UNINSTALL_ALL: 'app:uninstall-all', // B6：完全卸载 FlowZ（提权 helper / 受保护目录内核 / 用户配置 / 应用本体）
 
   // Shell 操作
@@ -171,6 +176,7 @@ export const IPC_CHANNELS = {
   EVENT_CORE_VERSION_CHANGED: 'event:coreVersionChanged',
   EVENT_CORE_AUTO_UPDATE_STATUS: 'event:coreAutoUpdateStatus', // 内核自动更新状态变更（staged 待生效 / 跨带提示）
   EVENT_CORE_BASELINE_WARNING: 'event:coreBaselineWarning', // 非官方核 ≤ 随包基线：启动 reconcile 发兼容风险提醒
+  EVENT_XRAY_CORE_INSTALL_PROGRESS: 'event:xrayCoreInstallProgress', // Xray 安装/恢复进度（XrayInstallProgress；null=已结束）
   EVENT_HELPER_UPGRADEABLE: 'event:helperUpgradeable', // 提权 helper proto < 期望（如属主根治 v6）：启动后发，渲染端 toast 引导升级
   EVENT_AUTO_NODE_SWITCHED: 'event:autoNodeSwitched', // 自动换节点成功通知
   EVENT_PROXY_INVALID_NODES: 'proxy:invalid-nodes', // 启动 gate 剔除的非法节点（空数组=清陈旧标灰）
