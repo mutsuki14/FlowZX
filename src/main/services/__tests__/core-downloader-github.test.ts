@@ -205,7 +205,11 @@ describe('downloadFile opts（tempPrefix / onProgress）', () => {
   it('不传 opts → 沿用 sing-box 默认前缀（行为不变）', async () => {
     serve(200, [BODY], { 'content-length': String(BODY.length) });
     const p = await newDownloader().downloadFile('https://example.com/core.tar.gz', false, SHA);
-    expect(path.basename(p)).toMatch(/^sing-box-core-update-\d+-[0-9a-f]{8}\.tar\.gz$/);
+    // Windows 上 sing-box 资产恒为 .zip，downloadFile 强制 .zip 扩展名（既有行为）
+    const ext = process.platform === 'win32' ? 'zip' : 'tar\\.gz';
+    expect(path.basename(p)).toMatch(
+      new RegExp(`^sing-box-core-update-\\d+-[0-9a-f]{8}\\.${ext}$`)
+    );
   });
 
   it('GitHub 直连失败 → 镜像重试腿沿用 opts（前缀 / 进度回调 / 摘要）', async () => {
