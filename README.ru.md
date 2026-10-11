@@ -40,16 +40,16 @@ FlowZX — форк кроссплатформенного прокси-клие
 
 ## Скачать и установить
 
-Последнюю версию можно скачать на странице [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Ниже — прямые ссылки на файлы v4.4.2:
+Последнюю версию можно скачать на странице [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Ниже — прямые ссылки на файлы v4.4.3:
 
 | Платформа | Файл | Описание |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.2-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-setup.exe) | Установщик: по умолчанию устанавливается только для текущего пользователя (при установке можно выбрать всех пользователей), каталог установки можно выбрать |
-| Windows x64 | [FlowZ-4.4.2-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-win-x64-portable.exe) | Портативная версия, данные хранятся в папке `data\` рядом с exe |
-| macOS | [FlowZ-4.4.2-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-arm64.dmg) | Apple Silicon (чипы серии M) |
-| macOS | [FlowZ-4.4.2-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-mac-x64.dmg) | Процессоры Intel |
-| Linux x86_64 | [FlowZ-4.4.2-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-x86_64.AppImage) | Без установки, требуется FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.2-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.2/FlowZ-4.4.2-linux-amd64.deb) | Debian / Ubuntu, устанавливается в `/opt/FlowZ`; рекомендуется также установить `policykit-1` |
+| Windows x64 | [FlowZ-4.4.3-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-setup.exe) | Установщик: по умолчанию устанавливается только для текущего пользователя (при установке можно выбрать всех пользователей), каталог установки можно выбрать |
+| Windows x64 | [FlowZ-4.4.3-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-portable.exe) | Портативная версия, данные хранятся в папке `data\` рядом с exe |
+| macOS | [FlowZ-4.4.3-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-arm64.dmg) | Apple Silicon (чипы серии M) |
+| macOS | [FlowZ-4.4.3-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-x64.dmg) | Процессоры Intel |
+| Linux x86_64 | [FlowZ-4.4.3-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-x86_64.AppImage) | Без установки, требуется FUSE 2 |
+| Linux x86_64 | [FlowZ-4.4.3-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-amd64.deb) | Debian / Ubuntu, устанавливается в `/opt/FlowZ`; рекомендуется также установить `policykit-1` |
 
 | Платформа | Системные требования |
 |---|---|
@@ -367,7 +367,7 @@ npm run dev            # режим разработки Vite + Electron
 | Документ | Содержание |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Ядро Xray: поддерживаемые комбинации, архитектура, параметры импорта, особенности, способы проверки |
-| [docs/releases/v4.4.2.md](docs/releases/v4.4.2.md) | Примечания к выпуску v4.4.2 |
+| [docs/releases/v4.4.3.md](docs/releases/v4.4.3.md) | Примечания к выпуску v4.4.3 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | Примечания к выпуску v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | Примечания к выпуску v4.4.0 |
 | [docs/RELEASE.md](docs/RELEASE.md) | Процесс выпуска |
