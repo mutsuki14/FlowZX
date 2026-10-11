@@ -35,7 +35,8 @@
         "to": ".",
         "filter": [
           "app.png",
-          "app-gray.png"
+          "app-gray.png",
+          "tray-win-*.ico"
         ]
       },
       {
@@ -124,7 +125,8 @@
         "to": ".",
         "filter": [
           "app.png",
-          "app-gray.png"
+          "app-gray.png",
+          "tray-mac-*.png"
         ]
       }
     ]

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- FlowZX app icon (macOS Big Sur grid: 824 tile on a 1024 canvas).
+       An italic Z (12% forward lean) cut along its "\" axis into two interlocking halves:
+       the Z's "/" stroke and the "\" channel between the halves cross to form the X.
+       Upper half = sing-box (main core), lower half = Xray sidecar: one route through both cores.
+       The deeper facet left of the channel lets the X read on the tile; it fades out before the corners. -->
+  <defs>
+    <linearGradient id="tileFill" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17B3B8"/>
+      <stop offset="1" stop-color="#0B6385"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="512" y1="100" x2="512" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#05293A" stop-opacity="0"/>
+      <stop offset="0.24" stop-color="#05293A" stop-opacity="0.14"/>
+      <stop offset="0.76" stop-color="#05293A" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#05293A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="upper" x1="256" y1="512" x2="768" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F2FCFC"/>
+    </linearGradient>
+    <linearGradient id="lower" x1="256" y1="512" x2="768" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DDF7F6"/>
+      <stop offset="1" stop-color="#C2EDEF"/>
+    </linearGradient>
+    <clipPath id="tileClip">
+      <rect x="100" y="100" width="824" height="824" rx="184"/>
+    </clipPath>
+    <filter id="tileShadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0A2A38" flood-opacity=".24"/>
+    </filter>
+    <filter id="markShadow" x="100" y="100" width="824" height="824" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#06303F" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#tileFill)" filter="url(#tileShadow)"/>
+  <path d="M149.4 100L874.6 924H100V100Z" fill="url(#facet)" clip-path="url(#tileClip)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="182.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <g filter="url(#markShadow)">
+    <path d="M427.7 365.3A5.9 5.9 0 0 1 423.2 363.3L345.3 274.8A9.9 9.9 0 0 1 352.7 258.3L742.5 258.3A29.7 29.7 0 0 1 772 291.6L766 341.5A63.4 63.4 0 0 1 745.3 381.3L578.2 530.4A5.9 5.9 0 0 1 569.8 529.9L501.2 452A5.9 5.9 0 0 1 501.7 443.6L581.6 372.3A4 4 0 0 0 579 365.3Z" fill="url(#upper)"/>
+    <path d="M596.3 658.7A5.9 5.9 0 0 1 600.8 660.7L678.7 749.2A9.9 9.9 0 0 1 671.3 765.7L281.5 765.7A29.7 29.7 0 0 1 252 732.4L258 682.5A63.4 63.4 0 0 1 278.7 642.7L445.8 493.6A5.9 5.9 0 0 1 454.2 494.1L522.8 572A5.9 5.9 0 0 1 522.3 580.4L442.4 651.7A4 4 0 0 0 445 658.7Z" fill="url(#lower)"/>
+  </g>
+</svg>

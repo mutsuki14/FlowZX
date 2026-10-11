@@ -28,7 +28,10 @@ resources/
 │   └── LICENSE
 ├── dashboard/                    # sing-box 官方面板静态资源（fetch 产物，不入库）
 ├── data/                         # 共享数据：随包内置 geo 规则集（geoip-*.srs / geosite-*.srs，入库）
-├── app.png / app-gray.png        # 托盘图标（常态/置灰）
+├── app.png / app-gray.png        # 窗口图标 + Linux 托盘图标（已连接/未连接）；mac / win 专用托盘图标缺失时回退
+├── tray-mac-{connected,idle}.png # macOS 菜单栏托盘图标（18pt；同目录 @2x 由 nativeImage 自动加载）
+├── tray-mac-{connected,idle}@2x.png
+├── tray-win-{connected,idle}.ico # Windows 托盘图标（16/20/24/32/40/48 多尺寸，按显示缩放取帧）
 ├── README.md                     # 本文档（简体中文）
 └── README.en.md                  # English
 ```
@@ -42,7 +45,9 @@ resources/
 > - `npm run fetch:dashboard`→ `dashboard/`（官方面板，gh-pages 构建产物）
 > - `npm run build:helper` → 各平台 `com.flowz.helper{,.exe}`（提权服务，交叉编译）
 >
-> 应用图标本体见 `build/icon.ico` / `build/icon.icns`（electron-builder 打包用）；`resources/app*.png` 仅作托盘图标。
+> 应用图标本体见 `build/icon.ico` / `build/icon.icns` / `build/icons/`（electron-builder 打包用）。这些文件与 `resources/` 下的
+> `app*.png`、`tray-mac-*.png`、`tray-win-*.ico` 均由 `npx electron scripts/generate-icon.js`（Linux 无桌面 / root：
+> `xvfb-run -a npx electron scripts/generate-icon.js --no-sandbox`）从 `build/logo/*.svg` 矢量母版生成，改图标请改母版后重新生成，勿手改。
 
 ## 资源管理
 

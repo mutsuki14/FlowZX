@@ -28,7 +28,10 @@ resources/
 │   └── LICENSE
 ├── dashboard/                    # official sing-box dashboard static assets (fetched, not committed)
 ├── data/                         # shared data: bundled geo rule-sets (geoip-*.srs / geosite-*.srs, committed)
-├── app.png / app-gray.png        # tray icons (normal / grayed)
+├── app.png / app-gray.png        # window icon + Linux tray icons (connected / disconnected); mac / win tray fallback
+├── tray-mac-{connected,idle}.png # macOS menu bar tray icons (18 pt; the @2x siblings are loaded by nativeImage)
+├── tray-mac-{connected,idle}@2x.png
+├── tray-win-{connected,idle}.ico # Windows tray icons (16/20/24/32/40/48 px, frame picked by display scale)
 ├── README.md                     # this doc (Simplified Chinese)
 └── README.en.md                  # English
 ```
@@ -41,7 +44,7 @@ resources/
 > - `npm run fetch:dashboard` → `dashboard/` (official panel, gh-pages build output)
 > - `npm run build:helper` → per-platform `com.flowz.helper{,.exe}` (privilege service, cross-compiled)
 >
-> The app icon itself is `build/icon.ico` / `build/icon.icns` (used by electron-builder); `resources/app*.png` are tray icons only.
+> The app icon itself is `build/icon.ico` / `build/icon.icns` / `build/icons/` (used by electron-builder). These, and `app*.png`, `tray-mac-*.png` and `tray-win-*.ico` in `resources/`, are all generated from the SVG masters in `build/logo/` by `npx electron scripts/generate-icon.js` (headless Linux / root: `xvfb-run -a npx electron scripts/generate-icon.js --no-sandbox`). To change an icon, edit the masters and regenerate; don't edit the generated files by hand.
 
 ## Resource management
 
