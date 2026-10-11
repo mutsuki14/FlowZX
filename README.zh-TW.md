@@ -1,8 +1,9 @@
 <div align="center">
 
-<img src="docs/logo.png" width="96" alt="FlowZX" />
-
-# FlowZX
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png" />
+  <img src="docs/banner.png" width="100%" alt="FlowZX — sing-box + Xray-core" />
+</picture>
 
 以 sing-box 為基礎的跨平台代理用戶端，內建 Xray-core 執行 Xray 獨有的協定組合
 
