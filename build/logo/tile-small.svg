@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- FlowZX small-size icon (16-32 px .ico / Linux frames): full-bleed tile, larger mark, wider channel, no facet or shadow. -->
+  <defs>
+    <linearGradient id="tileFill" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#15AAB3"/>
+      <stop offset="1" stop-color="#0B6E8E"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="url(#tileFill)"/>
+  <path d="M399.5 320A7.5 7.5 0 0 1 393.8 317.5L301.7 212.8A12.5 12.5 0 0 1 311.1 192L804.4 192A37.5 37.5 0 0 1 841.7 234L834.9 290A80 80 0 0 1 808.8 340.1L593.2 532.6A7.5 7.5 0 0 1 582.6 532L500.7 438.9A7.5 7.5 0 0 1 501.4 428.4L613 328.7A5 5 0 0 0 609.6 320Z" fill="#FFFFFF"/>
+  <path d="M624.5 704A7.5 7.5 0 0 1 630.2 706.5L722.3 811.2A12.5 12.5 0 0 1 712.9 832L219.6 832A37.5 37.5 0 0 1 182.3 790L189.1 734A80 80 0 0 1 215.2 683.9L430.8 491.4A7.5 7.5 0 0 1 441.4 492L523.3 585.1A7.5 7.5 0 0 1 522.6 595.6L411 695.3A5 5 0 0 0 414.4 704Z" fill="#CFF1F2"/>
+</svg>

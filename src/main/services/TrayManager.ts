@@ -7,6 +7,7 @@ import {
   MenuItemConstructorOptions,
   shell,
 } from 'electron';
+import * as path from 'path';
 import { LogManager } from './LogManager';
 import { releaseWindowMemory } from './window-memory';
 import { ServerConfig, ProxyMode, ProxyModeType, SubscriptionConfig } from '../../shared/types';
@@ -454,12 +455,12 @@ export class TrayManager implements ITrayManager {
       icon = nativeImage.createFromPath(iconPath);
       this.logManager.addLog('debug', `Loaded tray icon from: ${iconPath}`, 'TrayManager');
 
-      // macOS 托盘图标需要调整大小为 22x22（或 16x16）
-      // 高 DPI 屏幕会自动使用 @2x 版本
-      if (process.platform === 'darwin') {
+      // macOS 菜单栏图标 18pt：专用 tray-mac-*.png 已是 18px（@2x 由 nativeImage 自动加载），不能再 resize
+      // （resize 只留 1x 表示、丢掉 @2x，Retina 上发糊）；只有回退到 1024 的 app.png 时才缩。
+      // 不用模板图：模板图强制单色，会抹掉「已连接(彩色)/未连接(灰)」的颜色区分，菜单栏看起来恒亮。
+      // 连接态用彩色 / 灰色两套图标区分（updateTrayIcon 按状态切换）。
+      if (process.platform === 'darwin' && !path.basename(iconPath).startsWith('tray-mac-')) {
         icon = icon.resize({ width: 18, height: 18 });
-        // 不用模板图：模板图强制单色，会抹掉「已连接(蓝)/未连接(灰)」的颜色区分，菜单栏看起来恒亮。
-        // 连接态用彩色 app.png / 灰色 app-gray.png 区分（updateTrayIcon 按状态切换）。
       }
     } else {
       this.logManager.addLog(

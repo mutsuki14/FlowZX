@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { existsSync } from 'fs';
 import type { LogLevel } from '../../shared/types';
 import type { LogManager } from './LogManager';
 import { sha256File } from '../../shared/file-hash';
@@ -233,13 +234,25 @@ export class ResourceManager {
     return path.join(process.resourcesPath, 'app.png');
   }
 
-  /** @param connected 是否已连接，true 返回彩色图标，false 返回灰色图标 */
+  /**
+   * 托盘图标。mac / win 优先用按托盘尺寸原生栅格化的专用文件（scripts/generate-icon.js 产出）：
+   * mac `tray-mac-*.png`（18pt，同目录 @2x 由 nativeImage 自动加载）、win `tray-win-*.ico`（多尺寸，按系统小图标尺寸取帧）；
+   * 缺失（旧包 / 未生成）或 Linux 回退 1024 的 app.png / app-gray.png。
+   * @param connected 是否已连接，true 返回彩色图标，false 返回灰色图标
+   */
   getTrayIconPath(connected: boolean = false): string {
-    const filename = connected ? 'app.png' : 'app-gray.png';
-    if (this.isDev) {
-      return path.join(process.cwd(), 'resources', filename);
+    const dir = this.isDev ? path.join(process.cwd(), 'resources') : process.resourcesPath;
+    const state = connected ? 'connected' : 'idle';
+    const native =
+      this.platform === 'darwin'
+        ? `tray-mac-${state}.png`
+        : this.platform === 'win32'
+          ? `tray-win-${state}.ico`
+          : null;
+    if (native && existsSync(path.join(dir, native))) {
+      return path.join(dir, native);
     }
-    return path.join(process.resourcesPath, filename);
+    return path.join(dir, connected ? 'app.png' : 'app-gray.png');
   }
 
   /** 随包 data 目录内任意资源文件的出厂路径（供内置 app 分流 geo .srs 等通用 bundle 项取 bundledPath）。 */
