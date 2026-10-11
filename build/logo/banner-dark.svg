@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="880" viewBox="0 0 2560 880" role="img" aria-label="FlowZX: Cross-platform proxy client, sing-box + Xray-core">
+  <!-- FlowZX README banner (GitHub dark theme).
+       Centred lockup: the app tile (build/logo/tile.svg, unchanged) + "FlowZX" wordmark, ZX in the tile's teal-to-petrol.
+       Below: tagline, then the core claim in mono. Two hairline routes fade in from the card edges and end at the claim:
+       teal from the left into "sing-box" (upper half of the mark), petrol from the right into "Xray-core" (lower half). -->
+  <title>FlowZX</title>
+  <defs>
+    <linearGradient id="card-bg" x1="0" y1="0" x2="0" y2="880" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#13232C"/>
+      <stop offset="1" stop-color="#0C171E"/>
+    </linearGradient>
+    <radialGradient id="card-wash" cx="1280.0" cy="440.0" r="1400" gradientTransform="translate(0 440.0) scale(1 0.55) translate(0 -440.0)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17B3B8" stop-opacity="0.11"/>
+      <stop offset="1" stop-color="#17B3B8" stop-opacity="0.033"/>
+    </radialGradient>
+    <radialGradient id="tile-glow" cx="789.0" cy="309.0" r="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17B3B8" stop-opacity="0.26"/>
+      <stop offset="0.45" stop-color="#17B3B8" stop-opacity="0.091"/>
+      <stop offset="1" stop-color="#17B3B8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wordmark-zx" x1="1595.0" y1="214.0" x2="1925.5" y2="408.0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5CDDDC"/>
+      <stop offset="1" stop-color="#27AFC4"/>
+    </linearGradient>
+    <linearGradient id="route-sb" x1="0" y1="0" x2="800.0" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0.04" stop-color="#2CC3CB" stop-opacity="0"/>
+      <stop offset="0.75" stop-color="#2CC3CB" stop-opacity="0.75"/>
+    </linearGradient>
+    <linearGradient id="route-xr" x1="2560" y1="0" x2="1760.0" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0.04" stop-color="#6FB9D6" stop-opacity="0"/>
+      <stop offset="0.75" stop-color="#6FB9D6" stop-opacity="0.75"/>
+    </linearGradient>
+    <clipPath id="card-clip"><rect width="2560" height="880" rx="48"/></clipPath>
+    <filter id="tile-ambient" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="26"/></filter>
+    <!-- logo: build/logo/tile.svg, unchanged; ids prefixed "lg-" -->
+    <linearGradient id="lg-tileFill" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17B3B8"/>
+      <stop offset="1" stop-color="#0B6385"/>
+    </linearGradient>
+    <linearGradient id="lg-rim" x1="512" y1="100" x2="512" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lg-facet" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#05293A" stop-opacity="0"/>
+      <stop offset="0.24" stop-color="#05293A" stop-opacity="0.14"/>
+      <stop offset="0.76" stop-color="#05293A" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#05293A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lg-upper" x1="256" y1="512" x2="768" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F2FCFC"/>
+    </linearGradient>
+    <linearGradient id="lg-lower" x1="256" y1="512" x2="768" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DDF7F6"/>
+      <stop offset="1" stop-color="#C2EDEF"/>
+    </linearGradient>
+    <clipPath id="lg-tileClip">
+      <rect x="100" y="100" width="824" height="824" rx="184"/>
+    </clipPath>
+    <filter id="lg-tileShadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0A2A38" flood-opacity=".24"/>
+    </filter>
+    <filter id="lg-markShadow" x="100" y="100" width="824" height="824" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#06303F" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <g id="card" clip-path="url(#card-clip)">
+    <rect width="2560" height="880" fill="url(#card-bg)"/>
+    <rect width="2560" height="880" fill="url(#card-wash)"/>
+    <rect width="2560" height="880" fill="url(#tile-glow)"/>
+  </g>
+  <rect x="1" y="1" width="2558" height="878" rx="47" fill="none" stroke="#22343C" stroke-width="2"/>
+  <g id="routes">
+    <path d="M0 687.0H800.0" stroke="url(#route-sb)" stroke-width="4"/>
+    <circle cx="800.0" cy="687.0" r="7" fill="#2CC3CB" fill-opacity="0.75"/>
+    <path d="M2560 687.0H1760.0" stroke="url(#route-xr)" stroke-width="4"/>
+    <circle cx="1760.0" cy="687.0" r="7" fill="#6FB9D6" fill-opacity="0.75"/>
+  </g>
+  <rect id="tile-ambient-shadow" x="659.2" y="197.8" width="259.6" height="278.1" rx="61.8" fill="#000000" opacity="0.45" filter="url(#tile-ambient)"/>
+  <g id="logo" transform="translate(597.0 117.0) scale(0.375)">
+    <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#lg-tileFill)" filter="url(#lg-tileShadow)"/>
+    <path d="M149.4 100L874.6 924H100V100Z" fill="url(#lg-facet)" clip-path="url(#lg-tileClip)"/>
+    <rect x="101.5" y="101.5" width="821" height="821" rx="182.5" fill="none" stroke="url(#lg-rim)" stroke-width="3"/>
+    <g filter="url(#lg-markShadow)">
+      <path d="M427.7 365.3A5.9 5.9 0 0 1 423.2 363.3L345.3 274.8A9.9 9.9 0 0 1 352.7 258.3L742.5 258.3A29.7 29.7 0 0 1 772 291.6L766 341.5A63.4 63.4 0 0 1 745.3 381.3L578.2 530.4A5.9 5.9 0 0 1 569.8 529.9L501.2 452A5.9 5.9 0 0 1 501.7 443.6L581.6 372.3A4 4 0 0 0 579 365.3Z" fill="url(#lg-upper)"/>
+      <path d="M596.3 658.7A5.9 5.9 0 0 1 600.8 660.7L678.7 749.2A9.9 9.9 0 0 1 671.3 765.7L281.5 765.7A29.7 29.7 0 0 1 252 732.4L258 682.5A63.4 63.4 0 0 1 278.7 642.7L445.8 493.6A5.9 5.9 0 0 1 454.2 494.1L522.8 572A5.9 5.9 0 0 1 522.3 580.4L442.4 651.7A4 4 0 0 0 445 658.7Z" fill="url(#lg-lower)"/>
+    </g>
+  </g>
+  <text x="1009.5" y="408.0" font-family="Space Grotesk" font-weight="700" font-size="276" letter-spacing="-4" fill="#EEF5F6">Flow<tspan fill="url(#wordmark-zx)">ZX</tspan></text>
+  <text x="1280.0" y="591.5" text-anchor="middle" font-family="IBM Plex Sans" font-weight="500" font-size="80" fill="#AFC0C6">Cross-platform proxy client</text>
+  <text x="846.0" y="709.5" font-family="IBM Plex Mono" font-weight="500" font-size="74" fill="#5FD3D6">sing-box<tspan dx="-10" fill="#8BA0A8"> + </tspan><tspan dx="-10" fill="#79BEDB">Xray-core</tspan></text>
+</svg>
