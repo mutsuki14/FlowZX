@@ -140,7 +140,7 @@ function createRasterizer(win) {
   };
 }
 
-/** ICO 内 32 位 BMP 帧：BITMAPINFOHEADER（高度 ×2 含 AND 掩码）+ 自底向上 BGRA + 全 0 AND 掩码（透明度走 alpha）。 */
+/** ICO 内 32 位 BMP 帧：BITMAPINFOHEADER（高度 ×2 含 AND 掩码）+ 自底向上 BGRA + AND 掩码（alpha=0 处置 1，供只认掩码的绘制路径）。 */
 function bmpFrame(size, rgba) {
   const maskRow = Math.ceil(size / 32) * 4;
   const header = Buffer.alloc(40);
@@ -152,17 +152,20 @@ function bmpFrame(size, rgba) {
   header.writeUInt32LE(0, 16); // BI_RGB
   header.writeUInt32LE(size * size * 4 + maskRow * size, 20);
   const pixels = Buffer.alloc(size * size * 4);
+  const mask = Buffer.alloc(maskRow * size);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const s = (y * size + x) * 4;
-      const d = ((size - 1 - y) * size + x) * 4;
+      const row = size - 1 - y;
+      const d = (row * size + x) * 4;
       pixels[d] = rgba[s + 2];
       pixels[d + 1] = rgba[s + 1];
       pixels[d + 2] = rgba[s];
       pixels[d + 3] = rgba[s + 3];
+      if (rgba[s + 3] === 0) mask[row * maskRow + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }
-  return Buffer.concat([header, pixels, Buffer.alloc(maskRow * size)]);
+  return Buffer.concat([header, pixels, mask]);
 }
 
 function buildIco(frames) {
