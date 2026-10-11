@@ -33,6 +33,14 @@ import type { WarpWireGuardDraft } from '../../shared/warp';
 import type { BackupCategory } from '../../shared/backup-categories';
 import type { TailscaleStatusEvent, TailscaleStatusSnapshot } from '../../shared/tailscale-status';
 import type { SpeedTestInvokeResult } from '../../shared/speed-test';
+import type {
+  XrayInstallProgressEvent,
+  XrayInstallResult,
+  XrayInstallState,
+  XrayReleaseList,
+  XrayRestoreResult,
+  XraySource,
+} from '../../shared/xray-release';
 
 export const proxyApi = {
   async start(config: UserConfig): Promise<void> {
@@ -62,7 +70,11 @@ export const proxyApi = {
     return ipcClient.invoke(IPC_CHANNELS.KERNEL_PROBE_OUTBOUND, { outbound, isEndpoint, engine });
   },
 
-  /** Xray sidecar 内核状态（版本 / 路径 / 是否运行）。 */
+  /**
+   * Xray sidecar 内核状态（版本 / 路径 / 是否运行 + 来源）。与主进程 ProxyManager.getXrayStatus 同形：
+   * source=bundled 随包 / downloaded 应用内在线安装（附 tag / prerelease / installedAt）/ custom 用户放入 xray_core 的文件；
+   * belowMinimum = 现役版本低于 minVersion（Xray 会静默忽略 FlowZX 生成的较新安全字段）。
+   */
   async getXrayStatus(): Promise<{
     available: boolean;
     version: string | null;
@@ -71,6 +83,13 @@ export const proxyApi = {
     running: boolean;
     pid: number | null;
     nodes: number;
+    source: XraySource;
+    bundledVersion: string;
+    minVersion: string;
+    belowMinimum: boolean;
+    tag?: string;
+    prerelease?: boolean;
+    installedAt?: string;
   }> {
     return ipcClient.invoke(IPC_CHANNELS.KERNEL_XRAY_STATUS);
   },
@@ -729,6 +748,38 @@ export const coreUpdateApi = {
   },
 };
 
+/**
+ * Xray 内核版本选择（含预发布）。渲染端只传 tag / force；下载 URL 与 sha256 由主进程按 tag 现取并校验。
+ * 预期内的失败（BUSY / NO_ASSET / HASH_MISMATCH / CONFIG_TEST_FAILED / START_FAILED …）以 `{ ok:false, code }` 返回；
+ * listReleases 失败则 reject（error.code = RATE_LIMITED / NETWORK）。
+ */
+export const xrayCoreApi = {
+  /** XTLS/Xray-core release 列表（已剔除草稿与低于最低版本者，新→旧；是否显示预发布由调用方按开关过滤）。主进程缓存 10 分钟，force 绕过。 */
+  async listReleases(force?: boolean): Promise<XrayReleaseList> {
+    return ipcClient.invoke(IPC_CHANNELS.XRAY_CORE_LIST_RELEASES, { force: force === true });
+  },
+
+  /** 安装并切换到 tag（代理在跑则整体重启，失败自动回滚）。force=true 跳过「新核校验当前配置」（CONFIG_TEST_FAILED 后由用户确认）。 */
+  async install(tag: string, force?: boolean): Promise<XrayInstallResult> {
+    return ipcClient.invoke(IPC_CHANNELS.XRAY_CORE_INSTALL, { tag, force: force === true });
+  },
+
+  /** 恢复随包 Xray（应用内安装的版本删除；自定义文件改名为 xray.custom-bak 保留）。 */
+  async restoreBundled(): Promise<XrayRestoreResult> {
+    return ipcClient.invoke(IPC_CHANNELS.XRAY_CORE_RESTORE_BUNDLED);
+  },
+
+  /** 进行中的安装/恢复（null=空闲）；设置卡挂载时调用以找回卸载期间的进度。 */
+  async getInstallState(): Promise<XrayInstallState> {
+    return ipcClient.invoke(IPC_CHANNELS.XRAY_CORE_GET_INSTALL_STATE);
+  },
+
+  /** 订阅安装/恢复进度；载荷 null = 本次操作已结束（应刷新状态）。返回退订函数。 */
+  onInstallProgress(listener: (progress: XrayInstallProgressEvent) => void): () => void {
+    return ipcClient.on(IPC_CHANNELS.EVENT_XRAY_CORE_INSTALL_PROGRESS, listener);
+  },
+};
+
 export const subscriptionApi = {
   async add(
     subscription: Omit<SubscriptionConfig, 'id' | 'createdAt'>
@@ -936,6 +987,7 @@ export const api = {
   version: versionApi,
   update: updateApi,
   coreUpdate: coreUpdateApi,
+  xrayCore: xrayCoreApi,
   subscription: subscriptionApi,
   localImport: localImportApi,
   backup: backupApi,

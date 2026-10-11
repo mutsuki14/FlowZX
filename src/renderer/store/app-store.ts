@@ -13,6 +13,7 @@ import type {
   PendingNodeChanges,
 } from '../../shared/types';
 import type { UpdateInfo } from '../../shared/types/update';
+import type { XrayRelease } from '../../shared/xray-release';
 import type { TailscaleStatusPeer } from '../../shared/tailscale-status';
 import { api } from '../ipc';
 import { toast } from 'sonner';
@@ -216,6 +217,10 @@ interface AppState {
   // 可用的内核更新（常驻入口数据源；与 availableAppUpdate 同理放 store）
   availableCoreUpdate: AvailableCoreUpdate | null;
 
+  // Xray 在线安装的新核 `run -test` 不认当前配置（CONFIG_TEST_FAILED）、待用户决定是否「仍然切换」。放 store：安装要
+  // 下载 + 解压 + 自检，期间切走设置子节会卸载 XrayCoreCard，本地 state 会丢掉结果；重挂后据此重新弹框。
+  pendingXrayConfigTestFail: { release: XrayRelease; detail: string } | null;
+
   // Actions
   setCurrentView: (view: string) => void;
   setServerPageAction: (action: 'add-server' | 'add-sub' | 'ts-settings' | null) => void;
@@ -237,6 +242,7 @@ interface AppState {
   setPrivacyMode: (value: boolean) => void;
   setAvailableAppUpdate: (info: UpdateInfo | null) => void;
   setAvailableCoreUpdate: (info: AvailableCoreUpdate | null) => void;
+  setPendingXrayConfigTestFail: (pending: { release: XrayRelease; detail: string } | null) => void;
 
   // Proxy Control Actions
   startProxy: () => Promise<void>;
@@ -322,6 +328,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   helperStatus: null,
   availableAppUpdate: null,
   availableCoreUpdate: null,
+  pendingXrayConfigTestFail: null,
 
   // UI Actions
   // 离开设置页时把子节重置回 general（保留原 App 行为）；导航到设置页则保留当前/外部指定的子节
@@ -356,6 +363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   setAvailableAppUpdate: (info) => set({ availableAppUpdate: info }),
   setAvailableCoreUpdate: (info) => set({ availableCoreUpdate: info }),
+  setPendingXrayConfigTestFail: (pending) => set({ pendingXrayConfigTestFail: pending }),
   setPrivacyMode: async (value) => {
     if (get().isPrivacyMode === value) return;
     set({ isPrivacyMode: value });

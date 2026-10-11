@@ -46,6 +46,8 @@ import {
   setTrayStateCallback,
   registerCoreUpdateHandlers,
   setCoreUpdateService,
+  registerXrayCoreHandlers,
+  setXrayCoreUpdateService,
   registerBackupHandlers,
   registerDiagnosticHandlers,
   registerHelperHandlers,
@@ -59,6 +61,7 @@ import { setIpcLogger, registerIpcHandler } from './ipc/ipc-handler';
 import { createAutoStartManager } from './services/AutoStartManager';
 import { UpdateService } from './services/UpdateService';
 import { CoreUpdateService } from './services/CoreUpdateService';
+import { XrayCoreUpdateService } from './services/XrayCoreUpdateService';
 import { CoreUpdateScheduler } from './services/CoreUpdateScheduler';
 import { SpeedTestService } from './services/SpeedTestService';
 import { AutoSwitchService } from './services/AutoSwitchService';
@@ -348,6 +351,7 @@ let systemProxyManager: ReturnType<typeof createSystemProxyManager>;
 let systemDnsManager: ReturnType<typeof createSystemDnsManager>;
 let updateService: UpdateService;
 let coreUpdateService: CoreUpdateService;
+let xrayCoreUpdateService: XrayCoreUpdateService;
 let subscriptionService: SubscriptionService;
 let speedTestService: SpeedTestService;
 let autoSwitchService: AutoSwitchService;
@@ -1374,6 +1378,8 @@ if (gotTheLock) {
     systemDnsManager = createSystemDnsManager();
     updateService = new UpdateService(logManager);
     coreUpdateService = new CoreUpdateService(logManager);
+    // Xray 版本选择（含预发布）：只响应用户显式操作，无后台自动更新；与 sing-box 核更新共用 CoreDownloader 类型与更新会话层。
+    xrayCoreUpdateService = new XrayCoreUpdateService(logManager);
     subscriptionService = new SubscriptionService(protocolParser, logManager);
     // 注入全协议出站构造器（懒引用 proxyManager，测速时才调用、此时其已就绪）：测速统一走经代理 urltest 真实测速。
     // §15：另注入主核测速探测池句柄取值器（call-time 懒引用，对齐 exitProbeLatencyRunner 装配风格）——主核运行 +
@@ -1524,6 +1530,11 @@ if (gotTheLock) {
     proxyManager.setPrivacyProvider(getPrivacyMode);
     coreUpdateService.setProxyManager(proxyManager);
     coreUpdateService.setConfigProvider(() => configManager.loadConfig());
+    xrayCoreUpdateService.setProxyManager(proxyManager);
+    xrayCoreUpdateService.setConfigProvider(() => configManager.loadConfig());
+    // 两条换核流程互斥（共用 ProxyManager 的换核门控与代理重启）：任一方在进行时另一方拒绝开始 / 推迟落位。
+    xrayCoreUpdateService.setSingboxCoreBusyCheck(() => coreUpdateService.isBusy());
+    coreUpdateService.setXrayBusyCheck(() => xrayCoreUpdateService.isBusy());
     // #60：App 自更新下载兜底镜像也用用户配置的 ghProxyPrefix（与内核/资源下载同一加速前缀，口径对齐）。
     updateService.setConfigProvider(() => configManager.loadConfig());
     // Phase 1（更新网络统一层）：更新链路（检查/资源/应用）统一会话层——独立 partition 会话按 mainSessionViaProxy
@@ -1541,6 +1552,7 @@ if (gotTheLock) {
     subscriptionService.setUpdateInPortProvider(() => proxyManager?.getUpdateInPort() ?? null);
     // §8 四链路收口：核更新链路（CoreDownloader）也接入 update-in；viaProxy 时经 update-in，否则 direct 兜底（自举）。
     coreUpdateService.setUpdateNetwork(updateNetwork);
+    xrayCoreUpdateService.setUpdateNetwork(updateNetwork);
     // Phase 1b §8：图标代理协议 flowz-icon:// 也经 update-in（renderer 外部图标 <img> 不再走 default session）。
     registerIconProtocol({
       updateNetwork,
@@ -1557,6 +1569,10 @@ if (gotTheLock) {
     setTimeout(() => void proxyManager?.getCoreVersion().catch(() => {}), 5000);
     // 内核自动更新状态/成功提示经事件推渲染端（staged 待生效 / 跨带提示 / 落位成功复用 banner）
     coreUpdateService.setEventSender((channel, payload) =>
+      ipcEventEmitter.sendToAll(channel, payload)
+    );
+    // Xray 安装/恢复进度推渲染端（设置卡卸载重挂后经 getInstallState + 本事件找回进度）
+    xrayCoreUpdateService.setEventSender((channel, payload) =>
       ipcEventEmitter.sendToAll(channel, payload)
     );
 
@@ -2085,6 +2101,9 @@ if (gotTheLock) {
 
     setCoreUpdateService(coreUpdateService, logManager);
     registerCoreUpdateHandlers();
+
+    setXrayCoreUpdateService(xrayCoreUpdateService);
+    registerXrayCoreHandlers();
 
     registerAutoStartHandlers();
 

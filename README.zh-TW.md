@@ -32,6 +32,7 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - **Xray 獨有組合**：XHTTP（auto / packet-up / stream-up / stream-one，支援 `extra`）、VLESS Encryption（`mlkem768x25519plus.*`）、REALITY ML-DSA-65（`pqv`）、`xtls-rprx-vision-udp443`、憑證 SHA-256 釘選（`pcs`），以及任意自訂 Xray outbound JSON。
 - **自動選擇核心**：依節點參數判斷是否需要 Xray，需要時自動交由 Xray 執行，並在節點上顯示 **Xray** 標記。Xray 節點同樣支援熱切換、規則指定節點、測速與代理鏈。
+- **切換 Xray 版本**：在「設定 → 進階 → Xray 核心」中選擇 XTLS 官方發行的版本線上安裝（26.1.23 以上，可包含預先發行版），依官方 SHA2-256 驗證後切換，隨時可還原隨附版本。
 - **一次授權**：macOS 的 launchd helper、Windows 的系統服務、Linux 的 systemd helper，安裝一次後，啟停 TUN 就不再反覆要求管理員權限。
 - **減少重啟**：切換節點、修改規則的目標節點時經 gRPC 熱切換；僅含網域 / IP / 連接埠 / 處理程序條件的規則，修改符合值後經本地規則集熱重載。
 - **組網節點**：WireGuard、Cloudflare WARP（一鍵匿名註冊）、Tailscale（瀏覽器登入，支援 Headscale）可以像一般節點一樣選取與分流。
@@ -41,16 +42,16 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 下載安裝
 
-從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.4.3 的直接下載連結：
+從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.5.0 的直接下載連結：
 
 | 平台 | 檔案 | 說明 |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.3-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
-| Windows x64 | [FlowZ-4.4.3-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
-| macOS | [FlowZ-4.4.3-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-arm64.dmg) | Apple 晶片（M 系列） |
-| macOS | [FlowZ-4.4.3-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-x64.dmg) | Intel 晶片 |
-| Linux x86_64 | [FlowZ-4.4.3-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
-| Linux x86_64 | [FlowZ-4.4.3-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
+| Windows x64 | [FlowZ-4.5.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
+| Windows x64 | [FlowZ-4.5.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
+| macOS | [FlowZ-4.5.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-arm64.dmg) | Apple 晶片（M 系列） |
+| macOS | [FlowZ-4.5.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-x64.dmg) | Intel 晶片 |
+| Linux x86_64 | [FlowZ-4.5.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.5.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
 
 | 平台 | 系統需求 |
 |---|---|
@@ -203,7 +204,7 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 截圖
 
-截圖取自 FlowZX 目前的介面，使用示範資料（非真實訂閱 / 節點）。「節點」頁中帶有 **Xray** 標記的節點由 Xray 核心執行（XHTTP、VLESS Encryption、自訂 Xray 出站 JSON），其餘由 sing-box 執行；「設定」截圖展示「進階 → 核心管理」中的 Xray 核心（sidecar）狀態。
+截圖取自 FlowZX 目前的介面，使用示範資料（非真實訂閱 / 節點）。「節點」頁中帶有 **Xray** 標記的節點由 Xray 核心執行（XHTTP、VLESS Encryption、自訂 Xray 出站 JSON），其餘由 sing-box 執行；「設定」截圖展示「進階」中獨立的「Xray 核心（sidecar）」卡片（執行狀態、來源與版本選擇）。
 
 | 淺色 | 深色 |
 |:---:|:---:|
@@ -255,7 +256,7 @@ flowchart LR
 
 ### 如何得知節點由哪個核心執行？
 
-帶有 **Xray** 標記的節點由 Xray 執行，將滑鼠移到標記上可查看原因（如「XHTTP 傳輸」「憑證 SHA-256 指紋」）。Xray 的版本與執行狀態可在「設定 → 進階 → 核心管理 → Xray 核心（sidecar）」中查看。
+帶有 **Xray** 標記的節點由 Xray 執行，將滑鼠移到標記上可查看原因（如「XHTTP 傳輸」「憑證 SHA-256 指紋」）。Xray 的版本、來源與執行狀態可在「設定 → 進階 → Xray 核心（sidecar）」中查看。
 
 ### 為什麼一般的 VLESS / Trojan 節點也顯示 Xray 標記？
 
@@ -263,7 +264,7 @@ flowchart LR
 
 ### 如何更換 Xray 版本？
 
-Xray 沒有線上更新。將 `xray`（Windows 為 `xray.exe`）放到 `<userData>/xray_core/` 目錄，存在時會優先於隨附版本；實際路徑會顯示在核心管理的 Xray 那一列。macOS / Linux 需先對該檔案執行 `chmod +x`，否則會被忽略並繼續使用隨附版本。
+在「設定 → 進階 → Xray 核心（sidecar）」中選擇版本後點「安裝」：FlowZX 會從 XTLS/Xray-core 官方發行頁下載，依官方 SHA2-256 驗證並自我檢測後切換（代理執行中會重新啟動一次代理）。開啟「包含預先發行版本」可選預先發行版；不提供低於 26.1.23 的版本；「還原隨附版本」可隨時回退。也可以將自己的 `xray`（Windows 為 `xray.exe`）放到 `<userData>/xray_core/` 目錄，存在時會優先於隨附版本（macOS / Linux 需先執行 `chmod +x`）；之後線上安裝會取代它，原檔案備份為 `xray.custom-bak`。詳見 [docs/XRAY.md](docs/XRAY.md#切换-xray-版本)。
 
 ### 變更設定後連線短暫中斷？
 
@@ -368,7 +369,7 @@ npm run dev            # Vite + Electron 開發模式
 | 文件 | 內容 |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 核心：支援的組合、架構、匯入參數、注意事項、驗證方法 |
-| [docs/releases/v4.4.3.md](docs/releases/v4.4.3.md) | v4.4.3 發行說明 |
+| [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | v4.5.0 發行說明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 發行說明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 發行說明 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 發布流程 |

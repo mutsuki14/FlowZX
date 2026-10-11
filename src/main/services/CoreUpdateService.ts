@@ -69,6 +69,22 @@ export type { StagedCoreInfo, CoreAutoUpdateState };
  */
 export type StagedApplyResult = 'applied' | 'discarded' | 'deferred' | 'failed' | 'noop';
 
+/** Xray 版本切换（XrayCoreUpdateService）进行中：sing-box 换核类操作一律拒绝/推迟（两条换核流程互斥）。 */
+const XRAY_BUSY_MSG = 'Xray 内核正在切换，请稍后再试';
+
+/** replaceManualCore 的结果（needConfirm 系列由前端弹确认后带 force 重入）。 */
+type ManualCoreReplaceResult = {
+  ok: boolean;
+  needConfirm?: boolean;
+  sameVersion?: string;
+  baselineOverride?: boolean;
+  uploadVersion?: string;
+  bundledVersion?: string;
+  build?: CoreBuildKind;
+  filePath?: string;
+  error?: string;
+};
+
 /** 推渲染端的内核自动更新状态快照（UI：待生效行 / 跨带提示行）。 */
 export interface CoreAutoStatus {
   autoUpdateEnabled: boolean;
@@ -93,6 +109,13 @@ export class CoreUpdateService {
   private helperManager: Pick<HelperManager, 'getStatus' | 'installCore'> | null = null;
   private privilegeService: PlatformPrivilegeService | null = null; // T16：copyFileElevatedWindows delegate
   private isUpdating: boolean = false;
+  /**
+   * 换核类操作在飞计数（updateCore / tryApplyStaged / applyStagedNow / replaceManualCore / rollbackCore）：与 Xray
+   * 版本切换互斥。isBusy() 据此回答 XrayCoreUpdateService；自动轮次的后台检查 / 下载段不计（只有落位才计）。
+   */
+  private coreOps = 0;
+  /** Xray 版本切换是否在进行（index.ts 注入 XrayCoreUpdateService.isBusy；未注入 → 恒 false）。 */
+  private xrayBusy: () => boolean = () => false;
   /**
    * 最近一次 checkUpdate 解析出的「下载 URL → sha256」映射。updateCore 只认这里（或现取），
    * **不接受调用方传入摘要**——否则渲染层/IPC 侧一个疏忽就能把校验降级成不校验，而这正是要防的。
@@ -128,6 +151,30 @@ export class CoreUpdateService {
 
   setProxyManager(proxyManager: ProxyManager): void {
     this.proxyManager = proxyManager;
+  }
+
+  /** 与 Xray 版本切换互斥：注入「Xray 换核在进行」判定（XrayCoreUpdateService.isBusy）。 */
+  setXrayBusyCheck(fn: () => boolean): void {
+    this.xrayBusy = fn;
+  }
+
+  /** sing-box 换核类操作是否在进行（XrayCoreUpdateService 据此拒绝在此期间切换 Xray）。 */
+  isBusy(): boolean {
+    return this.coreOps > 0;
+  }
+
+  /**
+   * 换核类操作包装：Xray 版本切换在进行 → onBusy()（不开始）；否则持 coreOps 跑 fn。判定与持闸在同一同步段
+   * （async 函数首个 await 之前），与 XrayCoreUpdateService 入口的对称判定构成互斥。
+   */
+  private async withCoreOp<T>(fn: () => Promise<T>, onBusy: () => T): Promise<T> {
+    if (this.xrayBusy()) return onBusy();
+    this.coreOps++;
+    try {
+      return await fn();
+    } finally {
+      this.coreOps--;
+    }
   }
 
   /** §8：把更新链路统一会话层转发给 CoreDownloader（核更新链路接入 update-in）；proxyRunning/update-in 端口惰性读 this.proxyManager。 */
@@ -319,7 +366,10 @@ export class CoreUpdateService {
       );
     }
 
+    // 与 Xray 版本切换互斥（判定与持闸同一同步段）：Xray 换核期间不换 sing-box 核，反之 Xray 也拒绝开始。
+    if (this.xrayBusy()) throw new Error(XRAY_BUSY_MSG);
     this.isUpdating = true;
+    this.coreOps++;
     let backupMade = false;
 
     try {
@@ -420,6 +470,7 @@ export class CoreUpdateService {
       throw error;
     } finally {
       this.isUpdating = false;
+      this.coreOps--;
     }
   }
 
@@ -907,6 +958,7 @@ export class CoreUpdateService {
     // lockHeld=true（runAutoUpdateCycle 内调）→ 复用外层已持的 isUpdating 闸，不二次检查/置/复位（H1）。
     if (!lockHeld && this.isUpdating) return 'noop';
     if (!lockHeld) this.isUpdating = true;
+    let heldOp = false;
     try {
       // 第三方（非官方）内核：作废任何暂存的官方核（不落位覆盖用户刻意安装的 fork）。
       // 覆盖「曾官方→自动 staged→用户手动换 fork」时序，杜绝 staged 静默回覆 fork。force 刷新版本行（守卫前无强制刷新）。
@@ -924,6 +976,19 @@ export class CoreUpdateService {
 
       const staged = this.loadAutoState().staged;
       if (!staged) return 'noop';
+
+      // 与 Xray 版本切换互斥（判定与持闸同一同步段）：Xray 正在换核 / 重启代理 → 保持 staged，待下个触发点再落位。
+      if (this.xrayBusy()) {
+        this.logManager.addLog(
+          'info',
+          `Xray 内核正在切换，内核 ${staged.version} 暂不落位（${trigger}）`,
+          'CoreUpdateService'
+        );
+        this.emitAutoStatus();
+        return 'deferred';
+      }
+      this.coreOps++;
+      heldOp = true;
 
       // M4：自动触发（非用户「立即应用」）须开关开启才落位；关则保持 staged、不动现役核心。
       if (trigger !== 'manual-apply') {
@@ -1038,6 +1103,7 @@ export class CoreUpdateService {
       this.emitAutoStatus();
       return 'failed';
     } finally {
+      if (heldOp) this.coreOps--;
       if (!lockHeld) this.isUpdating = false;
     }
   }
@@ -1052,7 +1118,16 @@ export class CoreUpdateService {
   async applyStagedNow(): Promise<StagedApplyResult> {
     const staged = this.loadAutoState().staged;
     if (!staged) return 'noop';
+    return this.withCoreOp(
+      () => this.applyStagedNowLocked(),
+      () => {
+        throw new Error(XRAY_BUSY_MSG);
+      }
+    );
+  }
 
+  /** applyStagedNow 本体（已持 coreOps；停代理 → 落位 → 重启）。 */
+  private async applyStagedNowLocked(): Promise<StagedApplyResult> {
     const wasRunning = this.proxyManager?.getStatus().running === true;
     if (wasRunning && this.proxyManager) {
       this.logManager.addLog(
@@ -1238,6 +1313,16 @@ export class CoreUpdateService {
    * 用户触发的回滚：将 .bak 恢复为当前核心，并重新签名
    */
   async rollbackCore(): Promise<void> {
+    return this.withCoreOp(
+      () => this.rollbackCoreLocked(),
+      () => {
+        throw new Error(XRAY_BUSY_MSG);
+      }
+    );
+  }
+
+  /** rollbackCore 本体（已持 coreOps）。 */
+  private async rollbackCoreLocked(): Promise<void> {
     if (!this.hasBackup()) {
       throw new Error('没有可用的备份版本');
     }
@@ -1336,17 +1421,19 @@ export class CoreUpdateService {
     filePath?: string;
     force?: boolean;
     skipBackup?: boolean; // reset 到出厂时跳过备份/验证闩（现役核是用户要丢弃的，出厂核已知稳定）
-  }): Promise<{
-    ok: boolean;
-    needConfirm?: boolean;
-    sameVersion?: string;
-    baselineOverride?: boolean;
-    uploadVersion?: string;
-    bundledVersion?: string;
-    build?: CoreBuildKind;
+  }): Promise<ManualCoreReplaceResult> {
+    return this.withCoreOp(
+      () => this.replaceManualCoreLocked(opts),
+      () => ({ ok: false, error: XRAY_BUSY_MSG })
+    );
+  }
+
+  /** replaceManualCore 本体（已持 coreOps；含选文件对话框——其间 Xray 切换被拒，免得两边同时换核）。 */
+  private async replaceManualCoreLocked(opts?: {
     filePath?: string;
-    error?: string;
-  }> {
+    force?: boolean;
+    skipBackup?: boolean;
+  }): Promise<ManualCoreReplaceResult> {
     // 源文件：确认流程二次调用显式传入 filePath，否则弹系统文件选择器
     let sourcePath = opts?.filePath;
     if (!sourcePath) {

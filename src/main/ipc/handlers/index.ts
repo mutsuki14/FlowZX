@@ -9,6 +9,7 @@ export * from './rules-handlers';
 export * from './autostart-handlers';
 export * from './speed-test-handlers';
 export * from './core-update-handlers';
+export * from './xray-core-handlers';
 export * from './subscription-handlers';
 export * from './backup-handlers';
 export * from './diagnostic-handlers';

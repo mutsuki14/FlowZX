@@ -7,13 +7,15 @@
  * 代理模式 / 分流策略），绝不含节点地址、节点名、凭据、本机路径（Xray 状态的 path / overrideDir 带 OS 用户名）
  * 等可识别信息。结构性保证：
  *  - 节点（含其前置代理链）只以 describeSelectedNodeCore 产出的闭合枚举进入正文（标签全部来自本文件的常量表）；
- *  - Xray 状态只读 available / version / running / nodes 四个字段（可直接传整份 IPC 结果）；
+ *  - Xray 状态只读 available / version / running / nodes / source / prerelease / belowMinimum / minVersion
+ *    （可直接传整份 IPC 结果；path / overrideDir / pid / tag / installedAt 不读）；来源按本文件标签表映射；
  *  - 代理模式 / 分流策略按本文件标签表映射，表外值与其余自由文本（版本号 / 系统串）一律过 sanitizeField：
  *    去控制字符与换行、剥 Markdown 结构字符、限长。
  */
 import type { ProxyMode, ProxyModeType, ServerConfig } from '../../shared/types';
 import { xrayRequirement, type XrayRequirement } from '../../shared/xray';
 import { isDirectSelection } from '../../shared/direct-selection';
+import type { XraySource } from '../../shared/xray-release';
 
 /**
  * 预填 URL 总长上限。GitHub 新建 issue 页对超长 query 回 414；Electron shell.openExternal 在各平台都能递交该长度
@@ -24,12 +26,22 @@ export const MAX_ISSUE_URL_LENGTH = 7500;
 /** 单个环境字段（版本号 / 系统串）的最大字符数：超出截断并以 … 收尾。 */
 export const FIELD_MAX_LENGTH = 64;
 
-/** Xray sidecar 状态（KERNEL_XRAY_STATUS 的子集）。可直接传整份 IPC 结果：path / overrideDir / pid 不会进正文。 */
+/**
+ * Xray sidecar 状态（KERNEL_XRAY_STATUS 的子集）。可直接传整份 IPC 结果：path / overrideDir / pid / tag /
+ * installedAt 不会进正文。来源字段可缺省（缺省 = 不写来源，兼容旧形状）。
+ */
 export interface BugReportXrayStatus {
   available: boolean;
   version: string | null;
   running: boolean;
   nodes: number;
+  /** 现役二进制来源：随包 / 应用内在线安装 / 用户放入 xray_core 的自定义文件。 */
+  source?: XraySource;
+  /** 在线安装的是否为 GitHub 预发布版（仅 source=downloaded 时读取）。 */
+  prerelease?: boolean;
+  /** 现役版本低于 minVersion（Xray 会静默忽略 FlowZX 生成的较新安全字段）。 */
+  belowMinimum?: boolean;
+  minVersion?: string;
 }
 
 /** 当前选中出口走哪个内核（闭合枚举，不携带任何节点字段）。 */
@@ -79,6 +91,13 @@ const ROUTING_MODE_LABEL: Record<ProxyMode, string> = {
   smart: '智能分流',
   global: '全局',
   direct: '直连',
+};
+
+/** Xray 来源 → 中文标签（与 zh-CN settings.xrayCore.source* 同义）。Record 保证新增来源时编译期必须补标签。 */
+const XRAY_SOURCE_LABEL: Record<XraySource, string> = {
+  bundled: '随包',
+  downloaded: '在线安装',
+  custom: '自定义文件',
 };
 
 /** Xray 承载原因 → 中文标签（与 zh-CN servers.xrayReason* 同义）。Record 保证新增原因时编译期必须补标签。 */
@@ -141,17 +160,34 @@ export function formatRoutingMode(env: BugReportEnv): string {
 }
 
 /**
- * Xray sidecar 摘要，与诊断报告同形：「26.3.27（运行中，2 个节点）」/「26.3.27（未运行）」/「缺失」。
- * 只读 available / version / running / nodes；未取到状态 → 空串（留空待填）。
+ * Xray sidecar 摘要（与诊断报告同源字段）：「26.10.10（预发布 · 在线安装，运行中，3 个节点）」/
+ * 「26.3.27（随包，未运行）」/「25.12.8（自定义文件，低于最低支持版本 26.1.23，未运行）」/「缺失」。
+ * 来源缺省或不在标签表内 → 不写来源（如「26.3.27（运行中，2 个节点）」）。未取到状态 → 空串（留空待填）。
  */
 export function formatXrayStatus(env: BugReportEnv): string {
   const x = env.xray;
   if (!x) return '';
   if (!x.available) return '缺失';
   const version = sanitizeField(x.version) || 'unknown';
-  if (!x.running) return `${version}（未运行）`;
-  const nodes = Number.isFinite(x.nodes) && x.nodes > 0 ? Math.floor(x.nodes) : 0;
-  return `${version}（运行中，${nodes} 个节点）`;
+  const parts: string[] = [];
+  const source = x.source;
+  const sourceLabel = typeof source === 'string' ? ownLabel(XRAY_SOURCE_LABEL, source) : undefined;
+  if (sourceLabel) {
+    parts.push(
+      source === 'downloaded' && x.prerelease === true ? `预发布 · ${sourceLabel}` : sourceLabel
+    );
+  }
+  if (x.belowMinimum === true) {
+    const min = sanitizeField(x.minVersion);
+    parts.push(min ? `低于最低支持版本 ${min}` : '低于最低支持版本');
+  }
+  if (x.running) {
+    const nodes = Number.isFinite(x.nodes) && x.nodes > 0 ? Math.floor(x.nodes) : 0;
+    parts.push(`运行中，${nodes} 个节点`);
+  } else {
+    parts.push('未运行');
+  }
+  return `${version}（${parts.join('，')}）`;
 }
 
 /**

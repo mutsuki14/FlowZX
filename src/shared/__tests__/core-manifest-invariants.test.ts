@@ -7,6 +7,7 @@
  * 消费方，全仓仅这两个脚本 + 本测试读它），故断言放在 shared 侧、不寄生于某个 runtime 单测。
  */
 import * as manifest from '../core-manifest.json';
+import { compareSemver } from '../version';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -100,12 +101,26 @@ describe('core-manifest：供应链 pin 齐全（缺 pin 时 fetch 脚本拒拉�
 describe('core-manifest：Xray sidecar pin（fetch-core 同时拉 Xray，缺 pin 即拒拉）', () => {
   const m = manifest as {
     bundledXrayVersion?: string;
+    minXrayVersion?: string;
     xrayArchiveSha256?: Record<string, string>;
     xrayBinarySha256?: Record<string, string>;
   };
 
   it('bundledXrayVersion 为 x.y.z 形态（release tag = v<版本>）', () => {
     expect(m.bundledXrayVersion).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  /**
+   * minXrayVersion = 设置页「切换 Xray 版本」的硬下限（列表不提供、install 拒装、状态标 belowMinimum）。
+   * Xray 对未知配置键**静默忽略**（`run -test` 照样 OK），低于结构化构建器所需版本会悄悄丢掉 pinnedPeerCertSha256 /
+   * mldsa65Verify / echSockopt / sockopt.penetrate 等安全字段，故这条门不是装饰。
+   * 下限 ≤ 随包版本：否则随包核自己就会被判「低于最低支持版本」——说明有人抬了下限却没换随包核（或反之）。
+   */
+  it('minXrayVersion 为 x.y.z 形态且不高于 bundledXrayVersion', () => {
+    expect(m.minXrayVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(
+      compareSemver(m.minXrayVersion as string, m.bundledXrayVersion as string)
+    ).toBeLessThanOrEqual(0);
   });
 
   it('xrayArchiveSha256 / xrayBinarySha256 覆盖四平台、64 位 hex，且两类 pin 不相等', () => {

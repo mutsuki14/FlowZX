@@ -22,6 +22,7 @@
     "win": "257f966119ffca91d7a2ce110a4b668b865d88bf2ed5339fd06a5644b0d02823"
   },
   "bundledXrayVersion": "26.3.27",
+  "minXrayVersion": "26.1.23",
   "xrayArchiveSha256": {
     "linux": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
     "win": "d004c39288ce9ada487c6f398c7c545f7d749e44bdfdd59dbc9f865afba4e1ad",

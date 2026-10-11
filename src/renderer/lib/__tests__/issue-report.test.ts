@@ -13,6 +13,7 @@ import {
   MAX_ISSUE_URL_LENGTH,
   FIELD_MAX_LENGTH,
   type BugReportEnv,
+  type BugReportXrayStatus,
   type SelectedNodeCore,
 } from '../issue-report';
 import type { ServerConfig } from '../../../shared/types';
@@ -103,6 +104,21 @@ const fullXrayStatus = {
   running: true,
   pid: 424242,
   nodes: 3,
+  source: 'bundled' as const,
+  bundledVersion: '26.3.27',
+  minVersion: '26.1.23',
+  belowMinimum: false,
+};
+
+/** 在线安装的预发布版（含 marker 的 tag / installedAt：不进正文）。 */
+const downloadedXrayStatus = {
+  ...fullXrayStatus,
+  version: '26.10.10',
+  path: '/home/alice-sentinel/.config/FlowZ/xray_core/xray',
+  source: 'downloaded' as const,
+  tag: 'v26.10.10',
+  prerelease: true,
+  installedAt: '2026-10-11T03:14:21.000Z',
 };
 
 const fullEnv = (overrides: Partial<BugReportEnv> = {}): BugReportEnv => ({
@@ -189,24 +205,64 @@ describe('issue-report', () => {
   });
 
   describe('formatXrayStatus', () => {
-    it('summarises running / idle / missing like the diagnostic report', () => {
-      expect(formatXrayStatus({ xray: fullXrayStatus })).toBe('26.3.27（运行中，3 个节点）');
+    it('summarises source + running / idle / missing', () => {
+      expect(formatXrayStatus({ xray: fullXrayStatus })).toBe('26.3.27（随包，运行中，3 个节点）');
       expect(formatXrayStatus({ xray: { ...fullXrayStatus, running: false, nodes: 0 } })).toBe(
-        '26.3.27（未运行）'
+        '26.3.27（随包，未运行）'
       );
       expect(
         formatXrayStatus({ xray: { available: false, version: null, running: false, nodes: 0 } })
       ).toBe('缺失');
+      expect(formatXrayStatus({ xray: { ...fullXrayStatus, available: false } })).toBe('缺失');
+    });
+    it('marks online installs, pre-releases and custom files', () => {
+      expect(formatXrayStatus({ xray: downloadedXrayStatus })).toBe(
+        '26.10.10（预发布 · 在线安装，运行中，3 个节点）'
+      );
+      expect(formatXrayStatus({ xray: { ...downloadedXrayStatus, prerelease: false } })).toBe(
+        '26.10.10（在线安装，运行中，3 个节点）'
+      );
+      // prerelease 只对在线安装有意义：随包 / 自定义文件上的残留标志不写
+      expect(formatXrayStatus({ xray: { ...fullXrayStatus, prerelease: true } })).toBe(
+        '26.3.27（随包，运行中，3 个节点）'
+      );
+      expect(
+        formatXrayStatus({ xray: { ...fullXrayStatus, source: 'custom', running: false } })
+      ).toBe('26.3.27（自定义文件，未运行）');
+    });
+    it('flags a version below the supported minimum', () => {
+      expect(
+        formatXrayStatus({
+          xray: {
+            ...fullXrayStatus,
+            source: 'custom',
+            version: '25.12.8',
+            belowMinimum: true,
+            running: false,
+          },
+        })
+      ).toBe('25.12.8（自定义文件，低于最低支持版本 26.1.23，未运行）');
+      expect(
+        formatXrayStatus({ xray: { ...fullXrayStatus, belowMinimum: true, minVersion: undefined } })
+      ).toBe('26.3.27（随包，低于最低支持版本，运行中，3 个节点）');
+    });
+    it('omits the source when it is absent or not a known label (legacy / bogus shapes)', () => {
+      const legacy = { available: true, version: '26.3.27', running: true, nodes: 3 };
+      expect(formatXrayStatus({ xray: legacy })).toBe('26.3.27（运行中，3 个节点）');
+      const bogus = { ...legacy, source: 'toString' } as unknown as BugReportXrayStatus;
+      expect(formatXrayStatus({ xray: bogus })).toBe('26.3.27（运行中，3 个节点）');
+      const injected = { ...legacy, source: '随包\n## 伪造段落' } as unknown as BugReportXrayStatus;
+      expect(formatXrayStatus({ xray: injected })).toBe('26.3.27（运行中，3 个节点）');
     });
     it('falls back to unknown version and sane node counts', () => {
       expect(formatXrayStatus({ xray: { ...fullXrayStatus, version: null } })).toBe(
-        'unknown（运行中，3 个节点）'
+        'unknown（随包，运行中，3 个节点）'
       );
       expect(formatXrayStatus({ xray: { ...fullXrayStatus, nodes: Number.NaN } })).toBe(
-        '26.3.27（运行中，0 个节点）'
+        '26.3.27（随包，运行中，0 个节点）'
       );
       expect(formatXrayStatus({ xray: { ...fullXrayStatus, nodes: -2 } })).toBe(
-        '26.3.27（运行中，0 个节点）'
+        '26.3.27（随包，运行中，0 个节点）'
       );
     });
     it('is empty when the status could not be fetched', () => {
@@ -346,7 +402,7 @@ describe('issue-report', () => {
 
     it('fills the Xray status and selected-node core lines', () => {
       const body = buildBugReportBody(fullEnv());
-      expect(body).toContain('- Xray 内核版本 + 状态：26.3.27（运行中，3 个节点）');
+      expect(body).toContain('- Xray 内核版本 + 状态：26.3.27（随包，运行中，3 个节点）');
       expect(body).toContain('- 当前节点内核：Xray（xhttp：XHTTP 传输）');
       expect(body).toContain('- 代理模式：TUN');
       expect(body).toContain('- 分流策略：智能分流');
@@ -385,6 +441,10 @@ describe('issue-report', () => {
       const routingLine = tpl.split('\n').find((l) => l.startsWith('- 分流策略')) ?? '';
       for (const m of ['smart', 'global', 'direct'])
         expect(routingLine).toContain(formatRoutingMode({ routingMode: m }));
+      // Xray 行提示覆盖每个来源标签（与预填正文同词）
+      const xrayLine = tpl.split('\n').find((l) => l.startsWith('- Xray 内核版本')) ?? '';
+      for (const label of ['随包', '在线安装', '预发布', '自定义文件'])
+        expect(xrayLine).toContain(label);
       // Xray 原因在角标悬停提示里（自定义 Xray JSON 等节点没有「使用 Xray 内核」开关）
       expect(tpl).toContain('悬停角标');
       for (const heading of [
@@ -441,18 +501,25 @@ describe('issue-report', () => {
       expect(decoded).toContain('- 当前节点内核：sing-box（前置代理走 Xray，xhttp：XHTTP 传输）');
     });
 
-    it('only the four whitelisted Xray status fields are read', () => {
+    it('only the whitelisted Xray status fields are read', () => {
       const spy = jest.fn();
-      const status = new Proxy(fullXrayStatus, {
+      const status = new Proxy(downloadedXrayStatus, {
         get(target, prop, receiver) {
           spy(prop);
           return Reflect.get(target, prop, receiver);
         },
       });
-      buildBugReportUrl('https://github.com/mutsuki14/FlowZX', fullEnv({ xray: status }));
+      const url = buildBugReportUrl(
+        'https://github.com/mutsuki14/FlowZX',
+        fullEnv({ xray: status })
+      );
       const read = new Set(spy.mock.calls.map((c) => c[0]));
-      for (const forbidden of ['path', 'overrideDir', 'pid'])
+      for (const forbidden of ['path', 'overrideDir', 'pid', 'tag', 'installedAt'])
         expect(read.has(forbidden)).toBe(false);
+      expect(bodyOf(url)).toContain(
+        '- Xray 内核版本 + 状态：26.10.10（预发布 · 在线安装，运行中，3 个节点）'
+      );
+      expect(bodyOf(url)).not.toContain('2026-10-11T03:14:21');
     });
   });
 
@@ -513,7 +580,7 @@ describe('issue-report', () => {
       const envOnlyBody = bodyOf(envOnly);
       expect(envOnly.length).toBeLessThan(noHints.length);
       expect(envOnlyBody).toContain('正文过长，已自动精简');
-      expect(envOnlyBody).toContain('- Xray 内核版本 + 状态：26.3.27（运行中，3 个节点）');
+      expect(envOnlyBody).toContain('- Xray 内核版本 + 状态：26.3.27（随包，运行中，3 个节点）');
       expect(envOnlyBody).toContain('- 分流策略：智能分流');
       expect(envOnlyBody).not.toContain('（在此粘贴日志）');
 

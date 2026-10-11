@@ -37,7 +37,7 @@ export function AboutSettings() {
   // F28：App 更新可用信息放 store（本组件随设置子节切换会卸载，本地 state 无法持久承载入口）
   const availableAppUpdate = useAppStore((s) => s.availableAppUpdate);
   const setAvailableAppUpdate = useAppStore((s) => s.setAvailableAppUpdate);
-  // Xray sidecar 状态（版本 / 运行态 / 节点数）同样带进报告；代理启停改变运行态 → 随 proxyPhase 刷新（同 xray-core-row）。
+  // Xray sidecar 状态（版本 / 来源 / 运行态 / 节点数）同样带进报告；代理启停改变运行态 → 随 proxyPhase 刷新（同 Xray 内核卡）。
   const proxyPhase = useAppStore((s) => s.proxyPhase);
   const [xrayStatus, setXrayStatus] = useState<BugReportXrayStatus | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);

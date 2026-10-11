@@ -131,6 +131,8 @@ import {
   getXrayPidPath,
 } from '../utils/paths';
 import { XrayCoreManager } from './XrayCoreManager';
+import { detectXraySource } from './xray-install-marker';
+import type { XraySource, XraySourceInfo } from '../../shared/xray-release';
 import {
   buildXrayConfig,
   buildXrayOutbound,
@@ -268,6 +270,9 @@ export function escalateProcessKill(deps: {
     deps.sendSignal('SIGKILL');
   }, deps.graceMs);
 }
+
+/** 换核窗口的持有者：sing-box 内核更新（CoreUpdateService）/ Xray 版本切换（XrayCoreUpdateService）。 */
+export type CoreSwapOwner = 'singbox' | 'xray';
 
 export interface IProxyManager {
   start(config: UserConfig, options?: { interactive?: boolean }): Promise<void>;
@@ -534,7 +539,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   // issue #176 配置变更重启轴单飞：lifecycleDepth>0 = 有 start/stop/restart 在飞。去抖重启 trailing 命中时不并发
   // 起第二条（杜绝「就绪等待中又来重启」叠加 stop/超时/restart 互踩 → wintun 适配器抢放 → 「管理 API 未绑定」假
   // 超时风暴），只置 restartPending；在飞操作 settle 回 depth 0 时由 endLifecycleOp 排空一次尾随重启（吃最新
-  // currentConfig）。与崩溃轴（isRestarting/lifecycleGeneration）、换核轴（coreSwapInProgress）正交、互不干扰。
+  // currentConfig）。与崩溃轴（isRestarting/lifecycleGeneration）、换核轴（coreSwapOwners）正交、互不干扰。
   private lifecycleDepth = 0;
   private restartPending = false;
   // H-1（§16.3.4b force-restart）：待决强制重启的目标配置。去抖重启读它优先于 currentConfig——因 restart 的 in-flight
@@ -740,7 +745,17 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   // 防用户在内核半替换期间拉起进程撞 FATAL。与 autoRestartSuppressed 同区但生命周期更短——仅覆盖 installCoreFromDir
   // 执行期（install 返回即清，让 updateCore/applyStagedNow 后续 start 放行）；autoRestartSuppressed 覆盖更长的
   // 「首启验证窗口」（armPendingValidation 管）。两者独立，勿混。
-  private coreSwapInProgress: boolean = false;
+  // 按持有者记账（sing-box 核更新 / Xray 版本切换各占一席，任一持有即门控生效）：曾经的单一布尔会被先结束的一方
+  // 清成 false，另一方仍在替换二进制时手动连接即可放行、撞半替换核。各持有者自己的 true/false 成对（try/finally）。
+  private coreSwapOwners = new Set<CoreSwapOwner>();
+  // 外部生命周期请求计数：public start()/stop() 入口各 +1（startInternal 起核前「先停旧核」的内部 stop 不计），
+  // last = 最近一次请求的种类。供 XrayCoreUpdateService 判定换核后它自己那次重启期间是否有用户 停止/连接/退出
+  // 介入——介入则尊重用户意图，不回滚、不再起代理（见 getLifecycleRequestCounts）。
+  private lifecycleRequests: { starts: number; stops: number; last: 'start' | 'stop' | null } = {
+    starts: 0,
+    stops: 0,
+    last: null,
+  };
   private restartCount: number = 0;
   private lastRestartTime: number = 0;
   private static readonly MAX_RESTART_COUNT = 3; // 最大重启次数
@@ -828,6 +843,8 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
    * fresh start 无 marker → no-op。
    */
   async start(config: UserConfig, options: { interactive?: boolean } = {}): Promise<void> {
+    this.lifecycleRequests.starts++;
+    this.lifecycleRequests.last = 'start';
     this.beginLifecycleOp();
     // B0：阶段耗时收集器在此建（而非 startInternal 内）——public 包装是 start 的唯一入口，且它的 finally 是
     //   成功/失败/让位三条出口的共同收口，收集器的生死与这次 start 严格同域。
@@ -908,7 +925,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     options: { interactive?: boolean } = {}
   ): Promise<void> {
     // core-swap 手动轴门控：内核替换窗口中拒绝启动（防撞半替换核 FATAL）。须在 lifecycleGeneration++ 之前——
-    // 被拒时不污染世代。updateCore/applyStagedNow 自身的 start 在 installCoreFromDir 返回后调用（coreSwapInProgress
+    // 被拒时不污染世代。updateCore/applyStagedNow 自身的 start 在 installCoreFromDir 返回后调用（换核窗口
     // 已清），不受此闸影响。
     this.rejectIfCoreSwapInProgress('启动代理');
     // B1：清掉上一次 start 可能遗留的释放门预热（那次 start 若在首腿之前就抛错，promise 会没人消费）。
@@ -938,9 +955,9 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       clearTimeout(this.restartDebounceTimer);
       this.restartDebounceTimer = null;
     }
-    // 如果已经在运行，先停止
+    // 如果已经在运行，先停止（内部停核：不计外部 stop 请求，见 lifecycleRequests）
     if (this.singboxProcess || this.singboxPid) {
-      await this.stop();
+      await this.stopLifecycle();
     }
     this.markStart('stopOld'); // 未在跑时 ≈0，正在跑时 = 拆旧核耗时（重启路径的前半段）
 
@@ -1686,6 +1703,13 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
    * 真实停止逻辑在 stopInner。stop 是终态 → endLifecycleOp('stop') 在回到 idle 时丢弃待决重启（停止优先）。
    */
   async stop(opts?: { quitting?: boolean }): Promise<void> {
+    this.lifecycleRequests.stops++;
+    this.lifecycleRequests.last = 'stop';
+    return this.stopLifecycle(opts);
+  }
+
+  /** stop 的单飞外壳本体，不计外部 stop 请求数——startInternal 起核前「先停旧核」走这里（属本次 start 自身）。 */
+  private async stopLifecycle(opts?: { quitting?: boolean }): Promise<void> {
     this.beginLifecycleOp();
     try {
       await this.stopInner(opts);
@@ -1938,6 +1962,15 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   }
 
   /**
+   * 外部生命周期请求计数快照（public start()/stop() 入口各 +1；restart = 一次 stop + 一次 start；last = 最近一次的
+   * 种类）。XrayCoreUpdateService 在换核前、自己的 start 前后各取一次：超出它自己那一次 stop / start 的请求 = 期间有
+   * 用户停止 / 连接 / 退出（teardownForQuit 经 stop）介入，换核流程据此让位，不回滚、不再起代理。
+   */
+  getLifecycleRequestCounts(): { starts: number; stops: number; last: 'start' | 'stop' | null } {
+    return { ...this.lifecycleRequests };
+  }
+
+  /**
    * 去抖重启：连改多条配置合并为一次重启。trailing 触发时取最新 this.currentConfig（调用方须已更新它），
    * 故窗口内的后续切节点(hotSwitch)/no-op/再次结构变更都会被最终那次重启自然纳入。stop()/quit 取消未决重启。
    *
@@ -2104,7 +2137,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
    */
   applyConfigForcingRestart(newConfig: UserConfig): 'applied' | 'deferred' | 'skipped' {
     this.currentConfig = newConfig;
-    if (this.coreSwapInProgress) return 'deferred'; // 换核窗口：缓存已更新、随下次重启生效，不撞半替换核
+    if (this.isCoreSwapInProgress()) return 'deferred'; // 换核窗口：缓存已更新、随下次重启生效，不撞半替换核
     // H-1：restart 的 stop→start 空窗内句柄（singboxProcess/singboxPid）暂空——若以句柄判空早退，本次强制重启会被
     // 静默丢弃，且用户按 UI 指引重试订阅刷新时遇 304/contentChanged=false → 不再触发 force-restart → 死循环。故有
     // lifecycle 操作在飞（depth>0）时置 restartPending，由 endLifecycleOp 在 depth 归 0 时排空一次。**且写 pending 专用
@@ -2548,6 +2581,8 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       // 断用户流量换零收益（同 language / restartOnNodeChange 处置）。
       hardwareAcceleration: null,
       windowEffects: null,
+      // Xray 版本列表「含预发布」纯 UI 偏好（只过滤设置页列表，不触发下载、不影响生成）→ 排除出 norm，运行中拨开关不重启断流。
+      xrayIncludePrerelease: null,
       // fakeIpToggleMigrated / fakeIpTunAutoEnable / nodeResolverMigrated 都是一次性迁移元数据标记，不影响生成
       //   （enableFakeIp / nodeResolver* 本身仍在 norm 内 → 影响生成保留）。若不排除：未来某路径重建 dnsConfig 丢/带
       //   该标记 → norm 翻转无谓重启断流 + 迁移重跑可能从 deprecated 字段回灌覆盖用户自选值。
@@ -3246,7 +3281,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     const bundledVersion = coreManifest.bundledCoreVersion;
     try {
       // 代理运行中不动核（用户抢先手动连接 → startInternal §5 已覆盖同一逻辑）；与 staged 落位/手动换核窗口互斥。
-      if (this.getStatus().running || this.coreSwapInProgress) {
+      if (this.getStatus().running || this.isCoreSwapInProgress()) {
         return { needsMacElevatedReseed: false, bundledVersion };
       }
       // 探活核（串行探测链，避免与其它 version 探测并发占用二进制）；探测失败由外层 catch 吞掉、放弃本轮。
@@ -4268,7 +4303,13 @@ done
     );
   }
 
-  /** Xray 内核状态（设置页内核卡 / 诊断报告）。 */
+  /**
+   * Xray 内核状态（设置页 Xray 卡 / 诊断报告 / 问题反馈）。
+   * source：现役二进制来源（bundled 随包 / downloaded 应用内在线安装 / custom 用户放入 xray_core 的文件），
+   *   downloaded 时附 tag / prerelease / installedAt（取自安装标记，哈希按 path+size+mtime 缓存）。
+   * belowMinimum：已解析出版本且低于 core-manifest.minXrayVersion（多见于 custom 文件；Xray 会静默忽略 FlowZX
+   *   生成的较新安全字段，UI 据此警示）。
+   */
   async getXrayStatus(): Promise<{
     available: boolean;
     version: string | null;
@@ -4277,16 +4318,33 @@ done
     running: boolean;
     pid: number | null;
     nodes: number;
+    source: XraySource;
+    bundledVersion: string;
+    minVersion: string;
+    belowMinimum: boolean;
+    tag?: string;
+    prerelease?: boolean;
+    installedAt?: string;
   }> {
     const mgr = this.xrayManager;
+    const overrideDir = resourceManager.getXrayOverrideDir();
+    const [version, sourceInfo] = await Promise.all([
+      mgr.getVersion().catch(() => null),
+      detectXraySource(overrideDir).catch((): XraySourceInfo => ({ source: 'bundled' })),
+    ]);
+    const minVersion = coreManifest.minXrayVersion;
     return {
       available: mgr.isAvailable(),
-      version: await mgr.getVersion().catch(() => null),
+      version,
       path: mgr.getBinaryPath(),
-      overrideDir: resourceManager.getXrayOverrideDir(),
+      overrideDir,
       running: mgr.isRunning(),
       pid: mgr.getPid(),
       nodes: mgr.isRunning() ? this.xrayRunningNodes : 0,
+      ...sourceInfo,
+      bundledVersion: coreManifest.bundledXrayVersion,
+      minVersion,
+      belowMinimum: !!version && compareSemver(version, minVersion) < 0,
     };
   }
 
@@ -7383,9 +7441,19 @@ rm -f "$STOPFLAG"
     this.autoRestartSuppressed = suppressed;
   }
 
-  /** 核心更新二进制替换窗口内置位（CoreUpdateService.installCoreFromDir 调）：拒绝手动启动/重启/切模式，防撞半替换核。 */
-  setCoreSwapInProgress(inProgress: boolean): void {
-    this.coreSwapInProgress = inProgress;
+  /**
+   * 内核二进制替换窗口置位/清位：拒绝手动启动/重启/切模式，防撞半替换核。sing-box 核更新（CoreUpdateService，缺省
+   * owner）与 Xray 版本切换（XrayCoreUpdateService，owner='xray'）各自成对调用；按 owner 记账，一方清位不会提前
+   * 打开另一方仍在进行的窗口。
+   */
+  setCoreSwapInProgress(inProgress: boolean, owner: CoreSwapOwner = 'singbox'): void {
+    if (inProgress) this.coreSwapOwners.add(owner);
+    else this.coreSwapOwners.delete(owner);
+  }
+
+  /** 是否有任一换核窗口在进行（任一 owner 持有）。XrayCoreUpdateService 开始换核前据此与 sing-box 核更新互斥。 */
+  isCoreSwapInProgress(): boolean {
+    return this.coreSwapOwners.size > 0;
   }
 
   /**
@@ -7394,7 +7462,7 @@ rm -f "$STOPFLAG"
    * 致 UI 卡「未连接」）。仅拦手动轴——崩溃轴（install-vs-autoRestart）已由 shouldAutoRestart 检 autoRestartSuppressed 覆盖。
    */
   private rejectIfCoreSwapInProgress(action: string): void {
-    if (this.coreSwapInProgress) {
+    if (this.isCoreSwapInProgress()) {
       this.logToManager('warn', `内核更新进行中，已拒绝手动${action}（防撞半替换核）`);
       const err = new Error('内核更新进行中，请稍候再试') as Error & { code?: ProxyErrorCode };
       err.code = ProxyErrorCode.CORE_UPDATE_IN_PROGRESS;

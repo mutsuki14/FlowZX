@@ -81,8 +81,54 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
    节点留在 sing-box（Xray 的 REALITY 不支持这些传输，见下方注意事项）。
 3. **任意 Xray 组合**：添加节点 →「自定义出站 JSON」→ 内核选 **Xray** → 粘贴 Xray outbound JSON，表单会实时用
    `xray run -test` 校验。`tag`、`proxySettings`、`sockopt.dialerProxy` 由 FlowZX 接管（链式代理请用节点的前置代理）。
-4. **内核状态**：设置 → 高级 → 内核管理 →「Xray 内核（sidecar）」显示版本与运行状态。要使用其它版本的 Xray，
-   把 `xray`（Windows 为 `xray.exe`）放进该行提示的目录（`<userData>/xray_core/`），存在即优先使用。
+4. **内核状态与版本**：设置 → 高级 →「Xray 内核（sidecar）」卡显示版本、来源与运行状态，并可从 XTLS 官方发布页
+   在线切换版本（含预发布），见下方[切换 Xray 版本](#切换-xray-版本)。
+
+## 切换 Xray 版本
+
+设置 → 高级 →「Xray 内核（sidecar）」卡（在 sing-box 的「内核管理」卡下方）：
+
+- **来源**：「随包」= 安装包自带的版本（`core-manifest.json` 的 `bundledXrayVersion`）；「在线安装」= 在本卡安装的
+  版本（GitHub 预发布版显示为「预发布」）；「自定义文件」= 你自己放进 `xray_core/` 的 `xray` 可执行文件。
+- **选择版本**：下拉列表按版本号从新到旧列出带本平台构建的 release，选项标出预发布 / 当前 / 随包；旁边的按钮随所选
+  版本显示「安装」/「切换」（选中随包版本时直接恢复随包，不下载）/「已是当前版本」，下方可打开该版本的发行说明。
+  列表由主进程缓存 10 分钟，「刷新列表」强制重新获取（未登录的 GitHub API 每 IP 每小时 60 次，限流时提示稍后再试）。
+- **预发布**：默认只列稳定版。打开「包含预发布版本」后同时列出 GitHub 标记为 pre-release 的版本（例如 v26.3.27
+  之后的 v26.4.13 … v26.10.10 都是预发布）。预发布版未经 FlowZX 测试，安装前会二次确认。该开关只影响列表：
+  Xray **没有后台自动更新**，只在你点击时安装。
+- **最低版本 26.1.23**：Xray 遇到不认识的配置字段会**静默忽略**（`xray run -test` 照样通过），而 FlowZX 生成的配置
+  靠这些字段保证安全：`pinnedPeerCertSha256`（证书钉扎，26.1.23）、`mldsa65Verify`（REALITY 后量子验证，25.7.26）、
+  `echSockopt`（25.8.3）、VLESS Encryption（25.9.5）、`sockopt.penetrate`（XHTTP 上下行分离的下行也走 sing-box
+  拨号，25.3.6）。旧版本会让证书钉扎失效、ECH 查询或下行连接绕过 sing-box 直连。因此低于 26.1.23 的版本不会列出，
+  主进程也会拒装（tag 与解出二进制的 `xray version` 双重检查）；手动放入的旧版本会在卡内警示。最低版本记在
+  `src/shared/core-manifest.json` 的 `minXrayVersion`。
+- **完整性校验**：渲染端只把 tag 交给主进程，下载地址与摘要由主进程按 tag 现查 GitHub release 取得：本平台压缩包
+  （如 `Xray-linux-64.zip`）的官方 SHA2-256 取自 GitHub API 的 `digest` 与 github.com 直连下载的
+  `<asset>.zip.dgst`（绝不经镜像），两者都有时必须一致，都取不到则拒装。下载遇网络错误时会回落 GitHub 镜像
+  （设置的 ghProxy 前缀，未设置则用内置 gh-proxy），但字节仍须通过这份官方摘要。之后只解出 `xray`（`xray.exe`），
+  要求 `xray version` 与所选版本一致，再用新内核 `xray run -test` 当前 Xray 配置：不通过时不切换，弹框显示 Xray
+  的报错，可选择「仍然切换」（新内核不认的 Xray 节点会在连接时被剔除并标为不可用，切换不会因此回滚；代理本身起不来
+  才回滚）。macOS 上还会清除隔离属性并 ad-hoc 重签。
+- **生效方式**：代理未运行时下次连接生效。代理运行中会**整体重启代理**（连接短暂中断，安装前会提示）：sing-box 的
+  进程规则内嵌 Xray 路径，逐节点的 `xray run -test` 也要用新内核重跑。重启失败会自动换回原来的 Xray 与安装标记并
+  再次启动，提示「已恢复原来的 Xray」。重启期间你手动停止 / 连接代理或退出 FlowZX 时，以你的操作为准：保留新版本，
+  不回滚、也不再自动启动代理。安装或恢复进行中、或代理正在启动 / 停止时，卡内操作不可用；离开设置页再回来，进度仍会
+  显示（新内核不认当前配置的弹框也会重新出现）。Xray 切换与 sing-box 内核更新互斥：一方进行中时另一方会提示稍后再试
+  （sing-box 的自动落位则推迟到下次时机）。
+- **恢复随包版本**：来源不是「随包」时可一键恢复：在线安装的版本直接删除，自定义文件改名为 `xray.custom-bak` 保留。
+- **自定义文件**：仍可把 `xray`（Windows 为 `xray.exe`）放进 `<userData>/xray_core/` 使用其它构建，存在且可执行
+  （macOS / Linux 需先 `chmod +x`）即优先于随包版本，卡内来源显示「自定义文件」。在线安装会替换它，替换前另存为
+  `xray.custom-bak`；已有内容不同的旧备份会先改名为 `xray.custom-bak-<时间>`，你的文件不会被覆盖丢失。
+- **`<userData>/xray_core/` 下的文件**：
+
+  | 文件 | 说明 |
+  | --- | --- |
+  | `xray`（`xray.exe`） | 现役槽位，存在即优先于随包版本 |
+  | `flowzx-xray.json` | 在线安装标记（tag、版本、是否预发布、二进制与压缩包 sha256、资产名、安装时间）；槽位文件的哈希与之一致才算「在线安装」，否则视为自定义文件 |
+  | `xray.bak`（`xray.bak.exe`） | 最近一次在线安装前的槽位文件（不会自动清理） |
+  | `xray.custom-bak`（`xray.custom-bak.exe`） | 被替换或移走的自定义文件 |
+
+  切换过程中的临时文件（`.staging-*` / `.restore-*`）会在下次安装或恢复时清理。
 
 ## 与 Xray 26 相关的注意事项
 
@@ -107,6 +153,8 @@ FlowZX 在 sing-box 主核之外**随包内置 Xray-core**，专门承载 sing-b
   `xrayArchiveSha256`（= release 附带 `.dgst` 中的 SHA2-256）、`xrayBinarySha256`），落到 `resources/<平台>/xray[.exe]`，
   与 sing-box 一起由 electron-builder 的 `extraResources` 打包。二进制不入库。
 - 升级 Xray：改 `bundledXrayVersion` 与两组 sha，重跑 `npm run fetch:core`。
+- `minXrayVersion`：FlowZX 生成的配置所需的最低 Xray 版本（见[切换 Xray 版本](#切换-xray-版本)）。配置构造器开始
+  输出更新的字段时同步上调；`core-manifest-invariants` 测试保证它不高于随包版本。
 
 ## 验证
 

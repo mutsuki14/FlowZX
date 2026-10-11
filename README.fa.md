@@ -34,6 +34,7 @@
 
 - **ترکیب‌های مختص Xray**: XHTTP (حالت‌های auto / packet-up / stream-up / stream-one، با پشتیبانی از `extra`)، VLESS Encryption (<code dir="ltr">mlkem768x25519plus.\*</code>)، REALITY ML-DSA-65 (`pqv`)، `xtls-rprx-vision-udp443`، پین کردن گواهی با SHA-256 (`pcs`) و هر JSON خروجی (outbound) سفارشی Xray.
 - **انتخاب خودکار هسته**: برنامه از روی پارامترهای هر گره تشخیص می‌دهد که آیا به Xray نیاز دارد یا نه؛ در صورت نیاز، اجرای گره را خودکار به Xray می‌سپارد و نشان **Xray** را روی آن نمایش می‌دهد. گره‌های Xray هم از تعویض داغ، تعیین به‌عنوان گرهٔ مقصد در قوانین، تست تأخیر و زنجیرهٔ پروکسی پشتیبانی می‌کنند.
+- **انتخاب نسخهٔ Xray**: در «تنظیمات ← پیشرفته ← هسته Xray» می‌توانید یک انتشار رسمی XTLS (26.1.23 یا جدیدتر) را آنلاین نصب کنید (نسخه‌های پیش‌انتشار اختیاری است). فایل دانلودشده پیش از تعویض با SHA2-256 رسمی بررسی می‌شود و هر زمان می‌توانید به نسخهٔ همراه برنامه برگردید.
 - **مجوز یک‌باره**: Helper مبتنی بر launchd در macOS، سرویس سیستمی در Windows و Helper مبتنی بر systemd در Linux؛ پس از یک بار نصب، روشن و خاموش کردن TUN دیگر هر بار دسترسی مدیر (admin) نمی‌خواهد.
 - **راه‌اندازی مجدد کمتر**: تعویض گره و تغییر گرهٔ مقصد یک قانون از طریق gRPC به‌صورت داغ انجام می‌شود؛ در قوانینی که فقط شرط دامنه / IP / پورت / فرایند دارند، ویرایش مقادیر تطبیق با بارگذاری مجدد داغ مجموعه‌قانون محلی اعمال می‌شود.
 - **گره‌های Mesh**: WireGuard، Cloudflare WARP (ثبت‌نام ناشناس با یک کلیک) و Tailscale (ورود از طریق مرورگر، با پشتیبانی از Headscale) را می‌توان مثل گره‌های معمولی انتخاب کرد و در مسیریابی به کار برد.
@@ -43,16 +44,16 @@
 
 ## دانلود و نصب
 
-آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.4.3 است:
+آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.5.0 است:
 
 | سکو | فایل | توضیح |
 |---|---|---|
-| Windows x64 | [FlowZ-4.4.3-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
-| Windows x64 | [FlowZ-4.4.3-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
-| macOS | [FlowZ-4.4.3-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
-| macOS | [FlowZ-4.4.3-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-mac-x64.dmg) | تراشهٔ Intel |
-| Linux x86_64 | [FlowZ-4.4.3-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
-| Linux x86_64 | [FlowZ-4.4.3-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.4.3/FlowZ-4.4.3-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
+| Windows x64 | [FlowZ-4.5.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
+| Windows x64 | [FlowZ-4.5.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
+| macOS | [FlowZ-4.5.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
+| macOS | [FlowZ-4.5.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-x64.dmg) | تراشهٔ Intel |
+| Linux x86_64 | [FlowZ-4.5.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
+| Linux x86_64 | [FlowZ-4.5.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
 
 | سکو | پیش‌نیازهای سیستم |
 |---|---|
@@ -209,7 +210,7 @@
 
 ## تصاویر
 
-تصاویر از رابط کاربری فعلی FlowZX و با داده‌های نمایشی (نه اشتراک یا گره واقعی) تهیه شده‌اند. در صفحهٔ «گره‌ها»، گره‌هایی که نشان **Xray** دارند با هستهٔ Xray اجرا می‌شوند (XHTTP، VLESS Encryption، JSON خروجی سفارشی Xray) و بقیه با sing-box؛ تصویر «تنظیمات» وضعیت «هسته Xray (sidecar)» را در «پیشرفته ← مدیریت هسته» نشان می‌دهد.
+تصاویر از رابط کاربری فعلی FlowZX و با داده‌های نمایشی (نه اشتراک یا گره واقعی) تهیه شده‌اند. در صفحهٔ «گره‌ها»، گره‌هایی که نشان **Xray** دارند با هستهٔ Xray اجرا می‌شوند (XHTTP، VLESS Encryption، JSON خروجی سفارشی Xray) و بقیه با sing-box؛ تصویر «تنظیمات» کارت جداگانهٔ «هسته Xray (sidecar)» را در «پیشرفته» نشان می‌دهد (وضعیت اجرا، منبع و انتخاب نسخه).
 
 | روشن | تیره |
 |:---:|:---:|
@@ -265,7 +266,7 @@ flowchart LR
 
 ### از کجا بفهمم هر گره با کدام هسته اجرا می‌شود؟
 
-گره‌هایی که نشان **Xray** دارند با Xray اجرا می‌شوند؛ با بردن نشانگر ماوس روی نشان، دلیل آن را می‌بینید (مثلاً «انتقال XHTTP» یا «اثرانگشت SHA-256 گواهی»). نسخه و وضعیت اجرای Xray را در «تنظیمات ← پیشرفته ← مدیریت هسته ← هسته Xray (sidecar)» ببینید.
+گره‌هایی که نشان **Xray** دارند با Xray اجرا می‌شوند؛ با بردن نشانگر ماوس روی نشان، دلیل آن را می‌بینید (مثلاً «انتقال XHTTP» یا «اثرانگشت SHA-256 گواهی»). نسخه، منبع و وضعیت اجرای Xray را در «تنظیمات ← پیشرفته ← هسته Xray (sidecar)» ببینید.
 
 ### چرا گره‌های معمولی VLESS / Trojan هم نشان Xray دارند؟
 
@@ -273,7 +274,7 @@ flowchart LR
 
 ### چطور نسخهٔ Xray را عوض کنم؟
 
-هستهٔ Xray به‌روزرسانی آنلاین ندارد. فایل `xray` (یا `xray.exe` در Windows) را در پوشهٔ <code dir="ltr">&lt;userData&gt;/xray_core/</code> قرار دهید؛ اگر این فایل وجود داشته باشد، بر نسخهٔ همراه برنامه اولویت دارد. مسیر دقیق در ردیف Xray در «مدیریت هسته» نمایش داده می‌شود. در macOS / Linux ابتدا باید با `chmod +x` آن فایل را اجراپذیر کنید، وگرنه نادیده گرفته می‌شود و همان نسخهٔ همراه برنامه استفاده می‌شود.
+در «تنظیمات ← پیشرفته ← هسته Xray (sidecar)» نسخه را انتخاب کنید و «نصب» را بزنید: FlowZX آن را از صفحهٔ انتشارهای رسمی XTLS/Xray-core دانلود می‌کند، با SHA2-256 رسمی بررسی و خودآزمایی می‌کند و سپس تعویض می‌کند (اگر پروکسی در حال اجرا باشد، یک بار دوباره راه‌اندازی می‌شود). برای دیدن نسخه‌های پیش‌انتشار، «شامل نسخه‌های پیش‌انتشار» را روشن کنید؛ نسخه‌های قدیمی‌تر از 26.1.23 ارائه نمی‌شوند و با «بازگرداندن نسخهٔ همراه» هر زمان می‌توانید برگردید. همچنان می‌توانید فایل `xray` خودتان (یا `xray.exe` در Windows) را در پوشهٔ <code dir="ltr">&lt;userData&gt;/xray_core/</code> قرار دهید؛ اگر این فایل وجود داشته باشد، بر نسخهٔ همراه برنامه اولویت دارد (در macOS / Linux ابتدا `chmod +x` را اجرا کنید). نصب آنلاین بعدی آن را جایگزین می‌کند و فایل اصلی را با نام `xray.custom-bak` نگه می‌دارد. جزئیات بیشتر در [docs/XRAY.md](docs/XRAY.md#切换-xray-版本).
 
 ### چرا پس از تغییر تنظیمات، اتصال لحظه‌ای قطع می‌شود؟
 
@@ -386,7 +387,7 @@ npm run dev
 | سند | محتوا |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | هستهٔ Xray: ترکیب‌های پشتیبانی‌شده، معماری، پارامترهای ورود، نکات و روش راستی‌آزمایی |
-| [docs/releases/v4.4.3.md](docs/releases/v4.4.3.md) | یادداشت‌های انتشار v4.4.3 |
+| [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | یادداشت‌های انتشار v4.5.0 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | یادداشت‌های انتشار v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | یادداشت‌های انتشار v4.4.0 |
 | [docs/RELEASE.md](docs/RELEASE.md) | فرایند انتشار |
