@@ -10,7 +10,8 @@
  *   glyph-gray.svg  仅标记（未连接，灰色）→ resources/app-gray.png、tray-mac-idle(.png/@2x)、tray-win-idle.ico
  *   banner.svg      README 横幅（GitHub 浅色主题）→ docs/banner.png
  *   banner-dark.svg README 横幅（GitHub 深色主题）→ docs/banner-dark.png
- *                   横幅文字只写 font-family，渲染时注入渲染端同一套品牌字体（src/renderer/assets/fonts）。
+ *                   横幅文字已转为路径（Space Grotesk / IBM Plex，即 src/renderer/assets/fonts），栅格化不依赖本机字体
+ *                   与 hinting 设置；原 <text> 写法保留在各段路径前的注释里，改字时按它重排后再转路径。
  *
  * 每个尺寸都由 Chromium 按目标像素直接栅格化矢量（不从 1024 缩小，小尺寸不糊）。ICO 中 <256 的帧写 32 位 BMP、
  * 256 帧写 PNG（Windows 图标惯例，兼容 NSIS / rcedit）；ICNS 帧全为 PNG（icp4…ic14，与旧 icon.icns 同一组 chunk）。
@@ -50,32 +51,28 @@ const ICNS_CHUNKS = [
 app.commandLine.appendSwitch('no-sandbox');
 app.disableHardwareAcceleration(); // 软件光栅化：输出与 GPU 无关、可复现
 
-/**
- * 在页面内执行：把 SVG 画到 width×height 的 canvas，返回 PNG（及可选的 RGBA 原始像素）的 base64。
- * settleMs：onload 后再等片刻才绘制。banner 内嵌 data: 字体，实测 onload 时已就绪，留余量防止个别环境回退到系统字体。
- */
-function renderInPage(src, width, height, wantPixels, settleMs) {
+/** 在页面内执行：把 SVG 画到 width×height 的 canvas，返回 PNG（及可选的 RGBA 原始像素）的 base64。 */
+function renderInPage(src, width, height, wantPixels) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () =>
-      setTimeout(() => {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        const png = canvas.toDataURL('image/png').split(',')[1];
-        let rgba = null;
-        if (wantPixels) {
-          const data = ctx.getImageData(0, 0, width, height).data;
-          let bin = '';
-          for (let i = 0; i < data.length; i += 0x8000) {
-            bin += String.fromCharCode.apply(null, data.subarray(i, i + 0x8000));
-          }
-          rgba = btoa(bin);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      const png = canvas.toDataURL('image/png').split(',')[1];
+      let rgba = null;
+      if (wantPixels) {
+        const data = ctx.getImageData(0, 0, width, height).data;
+        let bin = '';
+        for (let i = 0; i < data.length; i += 0x8000) {
+          bin += String.fromCharCode.apply(null, data.subarray(i, i + 0x8000));
         }
-        resolve({ png, rgba });
-      }, settleMs);
+        rgba = btoa(bin);
+      }
+      resolve({ png, rgba });
+    };
     img.onerror = () => reject(new Error('SVG decode failed'));
     img.src = src;
   });
@@ -135,7 +132,7 @@ function createRasterizer(win) {
     );
     const src = `data:image/svg+xml;base64,${Buffer.from(sized).toString('base64')}`;
     const res = await win.webContents.executeJavaScript(
-      `(${renderInPage.toString()})(${JSON.stringify(src)}, ${size}, ${size}, ${wantPixels}, 0)`
+      `(${renderInPage.toString()})(${JSON.stringify(src)}, ${size}, ${size}, ${wantPixels})`
     );
     const out = {
       size,
@@ -232,35 +229,20 @@ function aboutPageSvg() {
   return svg;
 }
 
-// 横幅可用的品牌字体：渲染时以 data: @font-face 注入 SVG（SVG 图像不能加载外部字体文件）。
-const FONT_DIR = path.join(ROOT, 'src', 'renderer', 'assets', 'fonts');
-const BANNER_FONTS = [
-  ['Space Grotesk', 600, 'space-grotesk-latin-600-normal.woff2'],
-  ['Space Grotesk', 700, 'space-grotesk-latin-700-normal.woff2'],
-  ['IBM Plex Sans', 400, 'ibm-plex-sans-latin-400-normal.woff2'],
-  ['IBM Plex Sans', 500, 'ibm-plex-sans-latin-500-normal.woff2'],
-  ['IBM Plex Sans', 600, 'ibm-plex-sans-latin-600-normal.woff2'],
-  ['IBM Plex Mono', 400, 'ibm-plex-mono-latin-400-normal.woff2'],
-  ['IBM Plex Mono', 500, 'ibm-plex-mono-latin-500-normal.woff2'],
-];
-
-function withBrandFonts(svg) {
-  const faces = BANNER_FONTS.map(([family, weight, file]) => {
-    const data = fs.readFileSync(path.join(FONT_DIR, file)).toString('base64');
-    return `@font-face{font-family:'${family}';font-weight:${weight};font-style:normal;src:url(data:font/woff2;base64,${data}) format('woff2');}`;
-  }).join('');
-  return svg.replace(/<svg\b[^>]*>/, (tag) => `${tag}<style>${faces}</style>`);
-}
-
-/** README 横幅：按母版自身的 width×height 栅格化（onload 后留 600ms 余量再绘制）。 */
+/** README 横幅：按母版自身的 width×height 栅格化。母版不得含 <text>（会随本机字体 / hinting 设置变化）。 */
 async function renderBanner(win, svgFile) {
-  const svg = withBrandFonts(fs.readFileSync(path.join(LOGO, svgFile), 'utf8'));
+  const svg = fs.readFileSync(path.join(LOGO, svgFile), 'utf8');
+  if (/<text\b/.test(svg.replace(/<!--[\s\S]*?-->/g, ''))) {
+    throw new Error(
+      `${svgFile}: convert <text> to outlines first (output must not depend on host fonts)`
+    );
+  }
   const root = /<svg\b[^>]*>/.exec(svg)[0];
   const width = Number(/\swidth="(\d+)"/.exec(root)[1]);
   const height = Number(/\sheight="(\d+)"/.exec(root)[1]);
   const src = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
   const res = await win.webContents.executeJavaScript(
-    `(${renderInPage.toString()})(${JSON.stringify(src)}, ${width}, ${height}, false, 600)`
+    `(${renderInPage.toString()})(${JSON.stringify(src)}, ${width}, ${height}, false)`
   );
   return optimizePng(Buffer.from(res.png, 'base64'));
 }
