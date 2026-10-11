@@ -520,7 +520,8 @@ describe('install：正常路径', () => {
       restarted: false,
     });
     expect(env.readSlot()).toBe(fakeBin('26.10.10').toString());
-    expect(fs.statSync(env.slot).mode & 0o777).toBe(0o755);
+    // Windows 无执行位（stat 恒为 0o666）；POSIX 才校验 0o755
+    if (process.platform !== 'win32') expect(fs.statSync(env.slot).mode & 0o777).toBe(0o755);
     const marker = JSON.parse(fs.readFileSync(env.marker, 'utf8'));
     expect(marker).toEqual({
       tag: 'v26.10.10',
