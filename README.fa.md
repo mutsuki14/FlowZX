@@ -44,16 +44,16 @@
 
 ## دانلود و نصب
 
-آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.5.0 است:
+آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.6.0 است:
 
 | سکو | فایل | توضیح |
 |---|---|---|
-| Windows x64 | [FlowZ-4.5.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
-| Windows x64 | [FlowZ-4.5.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
-| macOS | [FlowZ-4.5.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
-| macOS | [FlowZ-4.5.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-x64.dmg) | تراشهٔ Intel |
-| Linux x86_64 | [FlowZ-4.5.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
-| Linux x86_64 | [FlowZ-4.5.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
+| Windows x64 | [FlowZ-4.6.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
+| Windows x64 | [FlowZ-4.6.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
+| macOS | [FlowZ-4.6.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
+| macOS | [FlowZ-4.6.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-x64.dmg) | تراشهٔ Intel |
+| Linux x86_64 | [FlowZ-4.6.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
+| Linux x86_64 | [FlowZ-4.6.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
 
 | سکو | پیش‌نیازهای سیستم |
 |---|---|
@@ -392,7 +392,7 @@ npm run dev
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | هستهٔ Xray: ترکیب‌های پشتیبانی‌شده، معماری، پارامترهای ورود، نکات و روش راستی‌آزمایی |
 | [docs/CORE.md](docs/CORE.md) | هستهٔ sing-box: انتخاب نسخه (از جمله پیش‌انتشار)، بررسی یکپارچگی، ثابت کردن نسخه و به‌روزرسانی خودکار، بازگشت |
-| [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | یادداشت‌های انتشار v4.5.0 |
+| [docs/releases/v4.6.0.md](docs/releases/v4.6.0.md) | یادداشت‌های انتشار v4.6.0 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | یادداشت‌های انتشار v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | یادداشت‌های انتشار v4.4.0 |
 | [docs/RELEASE.md](docs/RELEASE.md) | فرایند انتشار |

@@ -42,16 +42,16 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 下載安裝
 
-從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.5.0 的直接下載連結：
+從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.6.0 的直接下載連結：
 
 | 平台 | 檔案 | 說明 |
 |---|---|---|
-| Windows x64 | [FlowZ-4.5.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
-| Windows x64 | [FlowZ-4.5.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
-| macOS | [FlowZ-4.5.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-arm64.dmg) | Apple 晶片（M 系列） |
-| macOS | [FlowZ-4.5.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-mac-x64.dmg) | Intel 晶片 |
-| Linux x86_64 | [FlowZ-4.5.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
-| Linux x86_64 | [FlowZ-4.5.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.5.0/FlowZ-4.5.0-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
+| Windows x64 | [FlowZ-4.6.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
+| Windows x64 | [FlowZ-4.6.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
+| macOS | [FlowZ-4.6.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-arm64.dmg) | Apple 晶片（M 系列） |
+| macOS | [FlowZ-4.6.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-x64.dmg) | Intel 晶片 |
+| Linux x86_64 | [FlowZ-4.6.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.6.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
 
 | 平台 | 系統需求 |
 |---|---|
@@ -374,7 +374,7 @@ npm run dev            # Vite + Electron 開發模式
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 核心：支援的組合、架構、匯入參數、注意事項、驗證方法 |
 | [docs/CORE.md](docs/CORE.md) | sing-box 核心：版本選擇（含預先發行版）、完整性驗證、固定版本與自動更新、回復 |
-| [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | v4.5.0 發行說明 |
+| [docs/releases/v4.6.0.md](docs/releases/v4.6.0.md) | v4.6.0 發行說明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 發行說明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 發行說明 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 發布流程 |
