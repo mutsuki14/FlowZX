@@ -56,11 +56,13 @@ jest.mock('../ResourceManager', () => ({
   },
 }));
 
+import { dialog } from 'electron';
 import { CoreUpdateService, SINGBOX_LIST_TTL_MS } from '../CoreUpdateService';
 import { CoreStartTunPersistentError } from '../core-readiness';
 import { resourceManager } from '../ResourceManager';
 import { IPC_CHANNELS } from '../../../shared/ipc-channels';
 import { singboxAssetName } from '../../../shared/singbox-release';
+import { encodeMajorMinor } from '../../../shared/version';
 import type { SingboxInstallProgress } from '../../../shared/singbox-release';
 import coreManifest from '../../../shared/core-manifest.json';
 
@@ -1583,6 +1585,141 @@ describe('首启失败回滚遇上另一内核操作持锁：推迟到放锁后�
     expect(env.state().pinned).toEqual(PRIOR);
     expect(env.s.rollbackDeferred).toBe(false);
     expect(handler).not.toHaveBeenCalled();
+    expectLockReleased(env);
+  });
+
+  it("installTag 重启：新核 'started'（兼容带上限被棘轮抬到新版本带）后随即崩溃 → 就地回滚时上限复原", async () => {
+    const ceilingBefore = encodeMajorMinor(BUNDLED);
+    const records: Array<Promise<void>> = [];
+    const hookResults: Array<Promise<boolean>> = [];
+    const ceilingAtRestore: unknown[] = [];
+    let envRef!: Env;
+    const env = makeEnv({
+      proxy: {
+        running: true,
+        duringStart: () => {
+          if (envRef.core.active !== STABLE) return;
+          records.push(envRef.svc.recordSuccessfulVersion()); // index.ts 'started' → 棘轮
+          hookResults.push(envRef.svc.autoRollbackIfPendingUpdate()); // 随即 'error'（本流程持锁 → 推迟）
+        },
+      },
+      armOnInstall: true,
+      onRestore: (e) => ceilingAtRestore.push(e.state().verifiedCeiling),
+    });
+    envRef = env;
+    env.s.saveAutoState({ verifiedCeiling: ceilingBefore });
+
+    const res = await env.svc.installTag({ tag: STABLE_TAG });
+    await Promise.all(records);
+    await expect(Promise.all(hookResults)).resolves.toEqual([false]);
+    expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
+    // 用例确实覆盖到了「新核短暂 started 抬高上限」
+    expect(ceilingAtRestore).toEqual([encodeMajorMinor(STABLE)]);
+    expect(env.core.active).toBe('old');
+    expect(env.knownBad(STABLE)).toBe(true);
+    expect(env.state().verifiedCeiling).toBe(ceilingBefore);
+    expectLockReleased(env);
+  });
+
+  it('installTag 重启：新核报错被推迟后用户停止（接管）→ 推迟作废：不回滚、不替用户起代理', async () => {
+    const hookResults: Array<Promise<boolean>> = [];
+    let envRef!: Env;
+    const env = makeEnv({
+      proxy: {
+        running: true,
+        duringStart: (pm) => {
+          if (envRef.core.active !== PRE) return;
+          hookResults.push(envRef.svc.autoRollbackIfPendingUpdate()); // 'error'（本流程持锁 → 推迟）
+          pm.userStop(); // 随后用户点断开 / 退出
+        },
+      },
+      armOnInstall: true,
+    });
+    envRef = env;
+    const handler = jest.fn(async () => undefined);
+    env.svc.setDeferredRollbackHandler(handler);
+
+    const res = await env.svc.installTag({ tag: PRE_TAG });
+    await expect(Promise.all(hookResults)).resolves.toEqual([false]);
+    expect(res).toMatchObject({ ok: true, restarted: false });
+    expect(env.s.rollbackDeferred).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    expect(env.s.pendingUpdateVersion).toBe(PRE); // 首启验证闩仍在：下次启动的崩溃照常兜底
+    expectLockReleased(env);
+  });
+
+  it('installTag 重启：新核先报错（推迟）、本次启动最终以环境类错误收尾 → 新核确实崩过，按 START_FAILED 回滚', async () => {
+    const hookResults: Array<Promise<boolean>> = [];
+    let envRef!: Env;
+    const env = makeEnv({
+      proxy: {
+        running: true,
+        duringStart: () => {
+          if (envRef.core.active === PRE)
+            hookResults.push(envRef.svc.autoRollbackIfPendingUpdate());
+        },
+        startThrows: (a) =>
+          a === 'old' ? null : new CoreStartTunPersistentError(undefined, 'tun-address-conflict'),
+      },
+      armOnInstall: true,
+    });
+    envRef = env;
+    const handler = jest.fn(async () => undefined);
+    env.svc.setDeferredRollbackHandler(handler);
+
+    const res = await env.svc.installTag({ tag: PRE_TAG });
+    await expect(Promise.all(hookResults)).resolves.toEqual([false]);
+    expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
+    expect(env.core.active).toBe('old');
+    expect(env.s.rollbackDeferred).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    expectLockReleased(env);
+  });
+
+  it('手动替换（代理未运行）：选文件期间旧待验证核报错被推迟 → 换成用户所选即作废推迟：不回滚、不盖掉所选、不起代理、不标记', async () => {
+    const env = makeEnv(); // 代理未运行
+    env.core.active = PRE; // 现役 = 仍在待验证的上一次安装
+    env.s.armPendingValidation(PRE);
+    jest.spyOn(env.s, 'hasBackup').mockReturnValue(true);
+    const rollback = jest.spyOn(env.svc, 'rollbackCore').mockResolvedValue(undefined);
+    const ran: boolean[] = [];
+    const handler = jest.fn(async () => {
+      ran.push(await env.svc.autoRollbackIfPendingUpdate());
+    });
+    env.svc.setDeferredRollbackHandler(handler);
+    const backup = jest.spyOn(env.s, 'backupCurrentCore').mockResolvedValue(undefined);
+    jest.spyOn(env.s, 'writeManualCoreToBundle').mockImplementation(async () => {
+      env.core.active = STABLE;
+    });
+    env.preflight.mockResolvedValueOnce({
+      ok: true,
+      version: STABLE,
+      versionLine: `sing-box version ${STABLE}`,
+      buildTags: GVISOR_TAGS,
+    });
+    let pick!: (r: { canceled: boolean; filePaths: string[] }) => void;
+    (dialog.showOpenDialog as jest.Mock).mockImplementationOnce(
+      () => new Promise((r) => (pick = r))
+    );
+
+    const replacing = env.svc.replaceManualCore();
+    await new Promise((r) => setImmediate(r));
+    expect(env.svc.isBusy()).toBe(true); // 选文件对话框开着，持锁
+    await expect(env.svc.autoRollbackIfPendingUpdate()).resolves.toBe(false);
+    expect(env.s.rollbackDeferred).toBe(true);
+
+    pick({ canceled: false, filePaths: ['/tmp/chosen-sing-box'] });
+    await expect(replacing).resolves.toMatchObject({ ok: true, build: 'official' });
+    await new Promise((r) => setImmediate(r));
+    expect(backup).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
+    expect(ran).toEqual([]);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(env.core.active).toBe(STABLE);
+    expect(env.knownBad(PRE)).toBe(false);
+    expect(env.pm!.start).not.toHaveBeenCalled();
+    expect(env.s.rollbackDeferred).toBe(false);
+    expect(env.s.pendingUpdateVersion).toBeNull();
     expectLockReleased(env);
   });
 });

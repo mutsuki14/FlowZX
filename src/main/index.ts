@@ -1939,6 +1939,7 @@ if (gotTheLock) {
     const rollbackPendingCoreAndRestart = async (): Promise<boolean> => {
       const rolledBack = await coreUpdateService.autoRollbackIfPendingUpdate();
       if (rolledBack) {
+        if (isQuitting) return rolledBack; // 退出拆除中：只回滚，不再起代理
         logManager.addLog('warn', '新核心启动失败，已自动回滚，正在以旧核心重启代理...', 'Main');
         const cfg = await configManager.loadConfig();
         await proxyManager?.start(cfg);

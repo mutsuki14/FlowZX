@@ -1269,6 +1269,9 @@ export class CoreUpdateService {
     }
 
     this.setInstallProgress({ kind: 'install', tag: o.tag, phase: 'restarting' });
+    // 新核的 'started' → index.ts recordSuccessfulVersion 会把 verifiedCeiling 棘轮到新版本带；下方回滚时撤销（同
+    // settleStateAfterRollback 的「回滚 = 该带验证失败」）。
+    const ceilingBeforeStart = this.loadAutoState().verifiedCeiling;
     const beforeStart = pm.getLifecycleRequestCounts();
     let startErr = await this.startProxyForInstall(pm, cfg);
     if (this.takenOverSince(pm, beforeStart)) {
@@ -1280,6 +1283,8 @@ export class CoreUpdateService {
           (startErr ? `（本次启动: ${startErr.msg}）` : ''),
         'CoreUpdateService'
       );
+      // 最近一次是用户停止 / 退出：推迟中的回滚不再替用户把代理拉起来（首启验证闩仍在，下次启动的崩溃照常兜底）。
+      if (pm.getLifecycleRequestCounts().last === 'stop') this.rollbackDeferred = false;
       return { ok: true, restarted: false };
     }
     if (!startErr && this.rollbackDeferred) {
@@ -1293,7 +1298,8 @@ export class CoreUpdateService {
     }
     if (!startErr) return { ok: true, restarted: true };
 
-    if (startErr.environmental) {
+    // 本次启动中新核已报过错（回滚被推迟）→ 新核确实崩过，不按环境问题放过，走下方回滚。
+    if (startErr.environmental && !this.rollbackDeferred) {
       // 起不来的原因与新内核无关（TUN 地址冲突 / 取消授权 / 提权引导取消 / 端口被占，见 isEnvironmentalStartError）：
       // 回滚无益（原核照样起不来），还会把健康的新版本误记为问题版本。新核留用、固定照写、不标记；首启验证闩保持
       // armed——之后真正的首启崩溃仍由 autoRollbackIfPendingUpdate 兜底（它对 TUN_INIT_PERSISTENT 同样不回滚）。
@@ -1329,8 +1335,12 @@ export class CoreUpdateService {
     } finally {
       pm.setCoreSwapInProgress(false);
     }
-    // 原核回来了 → 它原先的固定一并回来（pin:false 的这次尝试在换核后清掉了它）；恢复失败 → 现役核不明，清固定。
-    this.saveAutoState({ pinned: restored && priorPin ? priorPin : undefined });
+    // 原核回来了 → 它原先的固定一并回来（pin:false 的这次尝试在换核后清掉了它）、兼容带上限回到起新核前（新核短暂
+    // 'started' 时抬上去的作废）；恢复失败 → 现役核不明，清固定。
+    this.saveAutoState({
+      pinned: restored && priorPin ? priorPin : undefined,
+      ...(restored ? { verifiedCeiling: ceilingBeforeStart } : {}),
+    });
     this.emitAutoStatus();
     // 回滚窗口内用户停止 / 退出 → 保持停止（不在退出拆除后再拉起 sing-box）
     const stoppedDuringRollback = this.userStoppedSince(pm, beforeRollback, 1);
@@ -2540,6 +2550,9 @@ export class CoreUpdateService {
       } finally {
         this.proxyManager?.setCoreSwapInProgress(false);
       }
+      // 现役核已是用户所选：作废上一个待验证版本及其被推迟的首启失败回滚——否则放锁时那次推迟的回滚会把刚备份进 .bak
+      // 的旧待验证核拷回、盖掉用户所选（代理未运行时还会把它拉起来）。之前在运行 → 下方 arm 立即为新核重新上闩。
+      this.disarmPendingValidation();
 
       // 待验证闩 + 重启：之前运行 → arm（新版本），重启后由首启 'started' 记录版本+稳定观察、'error'（运行时首启崩溃）
       // → autoRollbackIfPendingUpdate 自动回滚（对齐 updateCore，手动换坏核运行时崩溃也有回滚网，修 M-1）；之前未运行
