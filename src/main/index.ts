@@ -1933,6 +1933,25 @@ if (gotTheLock) {
     // 说明：同节点「原地重启」由 ProxyManager 内部接管（handleProcessExit / 健康检查 → attemptAutoRestart，
     // 单一计数器 + 上限 + 冷却）。'error' 仅在「自动重启被抑制（核心更新校验窗口）或已达上限」时触发，
     // 故此处只需处理：核心回滚 → 放弃恢复并清理系统代理。崩溃不触发换节点（换节点交给心跳连通性检测）。
+    //
+    // 新核心首次启动失败（自动重启被抑制时）→ 自动回滚旧核心并以旧核重启。'error' 监听与「推迟的回滚」共用：报错时若
+    // 另一内核操作正持锁（安装 / 更新 / 自动轮次 / 手动替换对话框…），CoreUpdateService 把回滚推迟到放锁时再经此执行。
+    const rollbackPendingCoreAndRestart = async (): Promise<boolean> => {
+      const rolledBack = await coreUpdateService.autoRollbackIfPendingUpdate();
+      if (rolledBack) {
+        logManager.addLog('warn', '新核心启动失败，已自动回滚，正在以旧核心重启代理...', 'Main');
+        const cfg = await configManager.loadConfig();
+        await proxyManager?.start(cfg);
+      }
+      return rolledBack;
+    };
+    coreUpdateService.setDeferredRollbackHandler(async () => {
+      try {
+        await rollbackPendingCoreAndRestart();
+      } catch (rollbackErr) {
+        logManager.addLog('error', `自动回滚重启失败: ${rollbackErr}`, 'Main');
+      }
+    });
     proxyManager.on(
       'error',
       async (error: { message: string; code?: number; errorCode?: string }) => {
@@ -1951,17 +1970,8 @@ if (gotTheLock) {
           const rolledBack =
             error.errorCode === ProxyErrorCode.TUN_INIT_PERSISTENT
               ? false
-              : await coreUpdateService.autoRollbackIfPendingUpdate();
-          if (rolledBack) {
-            logManager.addLog(
-              'warn',
-              '新核心启动失败，已自动回滚，正在以旧核心重启代理...',
-              'Main'
-            );
-            const cfg = await configManager.loadConfig();
-            await proxyManager?.start(cfg);
-            return;
-          }
+              : await rollbackPendingCoreAndRestart();
+          if (rolledBack) return;
         } catch (rollbackErr) {
           logManager.addLog('error', `自动回滚重启失败: ${rollbackErr}`, 'Main');
         }

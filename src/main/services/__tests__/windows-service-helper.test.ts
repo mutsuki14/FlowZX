@@ -13,6 +13,15 @@ jest.mock('child_process', () => ({
   ...jest.requireActual('child_process'),
   execFile: (...a: unknown[]) => mockExecFile(...a),
 }));
+// install() 走到提权脚本时要 confdir（真实实现经 electron app 取 userData，单测无 electron 运行时）。
+jest.mock('../../utils/paths', () => ({
+  ...jest.requireActual('../../utils/paths'),
+  getUserDataPath: () => require('os').tmpdir(),
+}));
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 import {
   WindowsServiceHelper,
@@ -324,6 +333,60 @@ describe('WindowsServiceHelper：服务锁定的 sing-box 路径漂移', () => {
       expect(r.success).toBe(false);
       await expect(helper.getStatus(true)).resolves.toMatchObject({ pathMismatch: false });
       expect(mockExecFile).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['修复开始前已在飞（sc qc 在提权脚本重建服务之前完成）', 'before'],
+      ['横跨提权脚本（sc qc 在脚本期间发起、脚本结束后才返回）', 'straddle'],
+    ])('状态刷新与「修复」并发：%s → 修复成功后不再沿用旧锁定路径报漂移', async (_name, mode) => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const exe = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'whelper-')), 'helper.exe');
+      fs.writeFileSync(exe, 'x');
+      jest.spyOn(resourceManager, 'getWinHelperPath').mockReturnValue(exe);
+      jest.spyOn(resourceManager, 'getSingBoxPath').mockReturnValue(SLOT);
+      let serviceLocked = BUNDLED; // 服务当前锁定随包核；现役核已是 core_update → 需修复
+      let scriptRunning = false;
+      mockExecFile.mockImplementation(
+        (_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) => {
+          const out = qc(serviceLocked); // 发起时刻的服务配置
+          // straddle：脚本期间发起的 sc qc 慢于脚本（UAC 框 / 负载），脚本结束后才回来
+          setTimeout(() => cb(null, out), mode === 'straddle' && scriptRunning ? 60 : 0);
+        }
+      );
+      const { helper, h } = makeHelper();
+      let firstQuery = mode === 'before';
+      (h.queryService as jest.Mock).mockImplementation(async () => {
+        if (firstQuery) {
+          firstQuery = false;
+          await sleep(20); // 窗口获焦 / 3-6-9s 定时刷新的那次 `sc query` 还没回来
+        }
+        return { exists: true, running: true };
+      });
+      jest
+        .spyOn(
+          helper as unknown as { runElevatedPowerShell: () => Promise<unknown> },
+          'runElevatedPowerShell'
+        )
+        .mockImplementation(async () => {
+          scriptRunning = true;
+          if (mode === 'straddle') void helper.getStatus(true); // 脚本期间的状态刷新
+          await sleep(30); // UAC + 脚本
+          serviceLocked = SLOT; // 脚本按现役核重建了服务
+          scriptRunning = false;
+          return { success: true };
+        });
+
+      const inflight = mode === 'before' ? helper.getStatus(true) : Promise.resolve(null);
+      await sleep(1);
+      const res = await helper.install();
+      await inflight;
+      await sleep(80); // 让横跨的 sc qc 回来
+      expect(res.success).toBe(true);
+      await expect(helper.getStatus(true)).resolves.toMatchObject({
+        installedSingboxPath: SLOT,
+        pathMismatch: false,
+        needsRepair: false,
+      });
     });
   });
 });

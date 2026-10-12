@@ -175,21 +175,25 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 const clipTail = (s: string): string =>
   s.length > INSTALL_DETAIL_MAX ? `…${s.slice(-INSTALL_DETAIL_MAX)}` : s;
 
-/** 换核后起代理失败（null = 起来了）。environmental 见 isEnvironmentalStartError。 */
-type InstallStartFailure = { msg: string; environmental: boolean };
+/**
+ * 换核后起代理失败（null = 起来了）。environmental 见 isEnvironmentalStartError；tunPersistent = 终态 TUN 持续性失败
+ * （CoreStartTunPersistentError，不论成因）——回滚后原核也以它失败 → 成因是环境，不把新版本记为问题版本。
+ */
+type InstallStartFailure = { msg: string; environmental: boolean; tunPersistent: boolean };
 
 /**
  * 起代理失败是否属于「环境 / 用户」原因、与新内核版本无关——回滚无益（原核照样起不来），还会把健康的新版本误记为
  * 问题版本（之后自动更新 / 版本列表都避开它）。只认这些在起核前 / 起核外就确定的信号：
- *  - TUN 持续性初始化失败 / 地址冲突（CoreStartTunPersistentError；index.ts 的首启自动回滚对 TUN_INIT_PERSISTENT
- *    同样不回滚，issue #324）；
+ *  - TUN 持续性失败且核自己的 FATAL 落在 TUN 层（fatalKind 'tun-*'：地址冲突 / wintun 适配器创建 / TUN DNS / 其它
+ *    TUN 接口配置；issue #324）。泛化的「重试预算耗尽、适配器从未出现」终态（fatalKind 'other' / 无 FATAL）**不算**：
+ *    新核在建 TUN 之前就崩（运行期才暴露的坏核，`check` 查不出）在 Windows helper 路径上正是这个终态，须照常回滚；
  *  - 用户在提权引导里点了取消（HELPER_GATE_ABORTED）；
  *  - 用户取消管理员授权：UAC / osascript 密码框（「用户取消了管理员权限请求」）、Linux pkexec（「授权被取消」）；
  *  - 起核前的端口 / 残留进程清理受阻（CLASH_API_PORT_BUSY*、ROOT_ORPHAN_BLOCKED：此时新核还没 spawn）。
  * 泛化的「权限 / EACCES」不算：新二进制没有执行权限这类落位问题正该回滚。
  */
 function isEnvironmentalStartError(e: unknown): boolean {
-  if (e instanceof CoreStartTunPersistentError) return true;
+  if (e instanceof CoreStartTunPersistentError) return e.fatalKind?.startsWith('tun-') ?? false;
   const code = (e as { code?: unknown } | null)?.code;
   if (code === 'HELPER_GATE_ABORTED' || code === 'ROOT_ORPHAN_BLOCKED') return true;
   if (typeof code === 'string' && code.startsWith('CLASH_API_PORT_BUSY')) return true;
@@ -252,6 +256,18 @@ export class CoreUpdateService {
   // 兜底计时器：更新后若迟迟无 'started'/'error' 事件来解决待验证态（如更新时代理未运行、用户不重启），
   // 到期解除自动重启抑制，避免抑制闩永久挂起。
   private pendingFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * 新核首启验证期内报错（autoRollbackIfPendingUpdate 被调），但当时另一内核操作持锁 → 回滚**推迟**到锁释放
+   * （afterCoreOpReleased），而不是丢弃。arm / disarm 待验证闩时作废（新一轮验证开始 / 持锁方已自行回滚）。
+   */
+  private rollbackDeferred = false;
+  /** 推迟的回滚到期时的执行方（index.ts 注入：autoRollbackIfPendingUpdate → 回滚成功则以旧核重启代理）。 */
+  private deferredRollbackHandler: (() => Promise<void>) | null = null;
+  /**
+   * 本轮待验证的新核替换掉的是第三方内核（installTag 经 fork 确认覆盖）→ 稳定观察判稳后**保留** .bak（用户确认时被告知
+   * 可用「回滚」找回它；第三方核无从重新下载）。每次 arm / disarm 复位，其余安装 / 更新 / 替换照常判稳即删备份。
+   */
+  private retainBackupOnStable = false;
   private configProvider: (() => Promise<UserConfig>) | null = null;
   // 推渲染端的自动更新状态事件发送器（注入，仿 configProvider；不直接 import electron ipc 便于隔离）
   private eventSender: ((channel: string, payload: unknown) => void) | null = null;
@@ -322,7 +338,29 @@ export class CoreUpdateService {
       return await fn();
     } finally {
       this.coreOps--;
+      this.afterCoreOpReleased();
     }
+  }
+
+  /** 注入「推迟的首启失败回滚」执行方（见 rollbackDeferred）。 */
+  setDeferredRollbackHandler(fn: () => Promise<void>): void {
+    this.deferredRollbackHandler = fn;
+  }
+
+  /**
+   * 每个持锁入口（isUpdating / coreOps）在 finally 放锁后调用：锁已全部释放且有被推迟的首启失败回滚 → 现在执行。
+   * 执行方内部再走 autoRollbackIfPendingUpdate：此刻若又被别的操作抢先持锁，它会再次推迟（不丢）；PENDING_MAX_AGE
+   * 过期保护照常生效。
+   */
+  private afterCoreOpReleased(): void {
+    if (!this.rollbackDeferred || this.isUpdating || this.coreOps > 0) return;
+    this.rollbackDeferred = false;
+    const run = this.deferredRollbackHandler;
+    if (!run) return;
+    this.logManager.addLog('info', '内核操作已结束，执行推迟的首启失败回滚', 'CoreUpdateService');
+    void run().catch((e) =>
+      this.logManager.addLog('error', `推迟的自动回滚失败: ${errMsg(e)}`, 'CoreUpdateService')
+    );
   }
 
   /** §8：把更新链路统一会话层转发给 CoreDownloader（核更新链路接入 update-in）；proxyRunning/update-in 端口惰性读 this.proxyManager。 */
@@ -515,11 +553,10 @@ export class CoreUpdateService {
     // 同步临界区：check+set 全在第一个 await 之前完成。旧实现在检查 isUpdating 与置位之间 await 了 fork 守卫，两次调用
     // （或与自动轮次 / 在线安装）可同时通过 → 并发双换核，且先结束的一方在 finally 里替仍在跑的一方放了锁。
     // coreOps>0 = 回滚 / 手动替换 / 立即应用 / 恢复随包在飞（它们不一定持 isUpdating）——同样不并发换核。
-    if (this.isUpdating || this.coreOps > 0) {
-      throw new Error('更新正在进行中');
-    }
+    // 带 code（BUSY / XRAY_BUSY）：经 IPC 透传到渲染端按 code 出本地化文案。
+    if (this.isUpdating || this.coreOps > 0) throw coreOpBusyError('BUSY');
     // 与 Xray 版本切换互斥（判定与持闸同一同步段）：Xray 换核期间不换 sing-box 核，反之 Xray 也拒绝开始。
-    if (this.xrayBusy()) throw new Error(XRAY_BUSY_MSG);
+    if (this.xrayBusy()) throw coreOpBusyError('XRAY_BUSY');
     this.isUpdating = true;
     this.coreOps++;
     let backupMade = false;
@@ -632,6 +669,7 @@ export class CoreUpdateService {
     } finally {
       this.isUpdating = false;
       this.coreOps--;
+      this.afterCoreOpReleased();
     }
   }
 
@@ -891,7 +929,8 @@ export class CoreUpdateService {
           'macOS 在线安装内核需要先安装（或升级）提权助手（否则只能改写 App 内的随包内核）'
         );
       }
-      if ((await this.getCoreBuild(true)) === 'fork' && args.force !== true) {
+      const replacingFork = (await this.getCoreBuild(true)) === 'fork';
+      if (replacingFork && args.force !== true) {
         throw new SingboxInstallError(
           'FORK_CONFIRM_REQUIRED',
           '当前为第三方（非官方）内核：确认后才会覆盖（原内核保留为备份，可回滚找回）'
@@ -995,6 +1034,7 @@ export class CoreUpdateService {
         prerelease: rel.prerelease,
         sourceDir: path.dirname(corePath),
         pinned,
+        retainBackup: replacingFork,
       });
       if (!res.ok) return res;
       this.logManager.addLog(
@@ -1021,6 +1061,7 @@ export class CoreUpdateService {
       this.isUpdating = false;
       this.coreOps--;
       this.setInstallProgress(null);
+      this.afterCoreOpReleased();
     }
   }
 
@@ -1128,6 +1169,8 @@ export class CoreUpdateService {
     prerelease: boolean;
     sourceDir: string;
     pinned: boolean;
+    /** 被替换的是第三方内核：新核判稳后保留其 .bak（见 retainBackupOnStable）。 */
+    retainBackup?: boolean;
   }): Promise<
     | { ok: true; restarted: boolean }
     | { ok: false; code: SingboxInstallErrorCode; detail?: string; rolledBack?: boolean }
@@ -1169,6 +1212,8 @@ export class CoreUpdateService {
       await this.installCoreFromDir(o.sourceDir, o.version, () => {
         backupMade = true;
       });
+      // installCoreFromDir 末尾 arm 时已复位；在其后置位，只作用于本轮验证。
+      this.retainBackupOnStable = o.retainBackup === true;
     } catch (e) {
       swapError = e;
       // 落位中途失败（已备份）→ 门控内恢复原核（installCoreFromDir 在最后一步才 arm 验证闩，失败路径无需撤闩）
@@ -1225,7 +1270,7 @@ export class CoreUpdateService {
 
     this.setInstallProgress({ kind: 'install', tag: o.tag, phase: 'restarting' });
     const beforeStart = pm.getLifecycleRequestCounts();
-    const startErr = await this.startProxyForInstall(pm, cfg);
+    let startErr = await this.startProxyForInstall(pm, cfg);
     if (this.takenOverSince(pm, beforeStart)) {
       // 重启期间用户停止 / 连接 / 退出：代理此刻归用户操作所有。回滚要先 stop——会杀掉用户刚发起的连接，
       // 或在退出拆除后再起 sing-box；判不了成败也不该替用户做主 → 新核留用（首启验证闩仍在，坏核由其兜底）。
@@ -1236,6 +1281,15 @@ export class CoreUpdateService {
         'CoreUpdateService'
       );
       return { ok: true, restarted: false };
+    }
+    if (!startErr && this.rollbackDeferred) {
+      // start() 已返回，但新核在其收尾阶段（'started' 之后的系统代理 / DNS 设置）就崩了：'error' → 首启验证钩子因本流程
+      // 持锁而推迟了回滚。不报成功，就地按起不来处理（下方回滚撤验证闩时一并作废那次推迟）。
+      startErr = {
+        msg: `sing-box ${o.tag} 启动后随即退出`,
+        environmental: false,
+        tunPersistent: false,
+      };
     }
     if (!startErr) return { ok: true, restarted: true };
 
@@ -1275,7 +1329,6 @@ export class CoreUpdateService {
     } finally {
       pm.setCoreSwapInProgress(false);
     }
-    this.markKnownBad(o.version);
     // 原核回来了 → 它原先的固定一并回来（pin:false 的这次尝试在换核后清掉了它）；恢复失败 → 现役核不明，清固定。
     this.saveAutoState({ pinned: restored && priorPin ? priorPin : undefined });
     this.emitAutoStatus();
@@ -1283,6 +1336,11 @@ export class CoreUpdateService {
     const stoppedDuringRollback = this.userStoppedSince(pm, beforeRollback, 1);
     const againErr = stoppedDuringRollback ? null : await this.startProxyForInstall(pm, cfg);
     if (stoppedDuringRollback) await pm.refreshCoreVersionAfterExternalReseed().catch(() => {});
+    // 标记问题版本放在原核再起之后：泛化的 TUN 持续性终态（无 TUN 层 FATAL）既可能是新核起核前就崩，也可能是真实的
+    // wintun 故障。已恢复的原核也以同样终态失败 → 成因是环境，不把健康的新版本记为问题版本。
+    if (!(restored && startErr.tunPersistent && againErr?.tunPersistent)) {
+      this.markKnownBad(o.version);
+    }
     if (!restored) this.logManager.addLog('error', '回滚原内核失败', 'CoreUpdateService');
     if (againErr) {
       this.logManager.addLog('error', `回滚后代理仍未能启动: ${againErr.msg}`, 'CoreUpdateService');
@@ -1307,7 +1365,11 @@ export class CoreUpdateService {
       await pm.start(cfg);
       return null;
     } catch (e) {
-      return { msg: errMsg(e), environmental: isEnvironmentalStartError(e) };
+      return {
+        msg: errMsg(e),
+        environmental: isEnvironmentalStartError(e),
+        tunPersistent: e instanceof CoreStartTunPersistentError,
+      };
     }
   }
 
@@ -1478,6 +1540,8 @@ export class CoreUpdateService {
     // 同时抑制 ProxyManager 自动重启——让新核心首次异常退出立即上报，而非在坏核心上空转重试。
     this.pendingUpdateVersion = version;
     this.pendingUpdateAt = Date.now();
+    this.rollbackDeferred = false; // 新一轮验证：此前推迟的回滚（针对上一个待验证版本）作废
+    this.retainBackupOnStable = false; // 需要保留备份的调用方（installTag 覆盖第三方核）在 arm 之后再置位
     this.proxyManager?.setAutoRestartSuppressed(true);
     // 兜底：到期仍未被 'started'/'error' 解决，则清待验证态并解除抑制（避免抑制闩永久挂起）。
     if (this.pendingFallbackTimer) clearTimeout(this.pendingFallbackTimer);
@@ -1498,6 +1562,8 @@ export class CoreUpdateService {
   /** 撤销待首启验证闩（arm 后 start 同步失败 / 改以原核重启前调，避免原核首启被当作新版本观察/记录）。 */
   private disarmPendingValidation(): void {
     this.pendingUpdateVersion = null;
+    this.rollbackDeferred = false; // 调用方已自行回滚 / 改以原核重启：推迟的自动回滚作废
+    this.retainBackupOnStable = false;
     this.proxyManager?.setAutoRestartSuppressed(false);
     if (this.pendingFallbackTimer) {
       clearTimeout(this.pendingFallbackTimer);
@@ -1818,6 +1884,7 @@ export class CoreUpdateService {
       }
     } finally {
       this.isUpdating = false;
+      this.afterCoreOpReleased();
     }
   }
 
@@ -2007,6 +2074,7 @@ export class CoreUpdateService {
     } finally {
       if (heldOp) this.coreOps--;
       if (!lockHeld) this.isUpdating = false;
+      this.afterCoreOpReleased(); // lockHeld 时外层仍持 isUpdating → 空操作，由外层放锁时再触发
     }
   }
 
@@ -2159,7 +2227,8 @@ export class CoreUpdateService {
 
       // 若处于"更新后待验证"窗口：'started' 仅代表存活 1s、可能假成功，不立即删备份；改启动稳定
       // 观察期，期内无 error 才判稳定→删备份（详见 startStabilityWatch，修复假成功删备份问题）
-      if (this.pendingUpdateVersion) {
+      // 已报过错、回滚被推迟（rollbackDeferred）的新核绝不进入稳定观察：判稳会删 .bak、清待验证态，回滚网随之消失。
+      if (this.pendingUpdateVersion && !this.rollbackDeferred) {
         this.startStabilityWatch();
       }
     } catch (error) {
@@ -2643,6 +2712,7 @@ export class CoreUpdateService {
       this.isUpdating = false;
       this.coreOps--;
       this.setInstallProgress(null);
+      this.afterCoreOpReleased();
     }
   }
 
@@ -2803,12 +2873,21 @@ export class CoreUpdateService {
     this.stabilityTimer = setTimeout(() => {
       this.stabilityTimer = null;
       if (this.pendingUpdateVersion !== watching) return; // 已被回滚/其它路径清除
-      this.logManager.addLog(
-        'info',
-        `新核心 ${watching} 已稳定运行 ${CoreUpdateService.STABILITY_DWELL_MS / 1000}s，删除旧核心备份`,
-        'CoreUpdateService'
-      );
-      this.pruneBackup();
+      if (this.retainBackupOnStable) {
+        this.logManager.addLog(
+          'info',
+          `新核心 ${watching} 已稳定运行 ${CoreUpdateService.STABILITY_DWELL_MS / 1000}s；原内核为第三方内核，保留其备份以便回滚`,
+          'CoreUpdateService'
+        );
+      } else {
+        this.logManager.addLog(
+          'info',
+          `新核心 ${watching} 已稳定运行 ${CoreUpdateService.STABILITY_DWELL_MS / 1000}s，删除旧核心备份`,
+          'CoreUpdateService'
+        );
+        this.pruneBackup();
+      }
+      this.retainBackupOnStable = false;
       if (this.pendingFallbackTimer) clearTimeout(this.pendingFallbackTimer);
       this.pendingFallbackTimer = null;
       this.pendingUpdateVersion = null;
@@ -2821,19 +2900,27 @@ export class CoreUpdateService {
    * 问题版本。返回 true 表示已回滚（调用方应以旧核心重启代理）。先清除待验证标记防重入/回滚循环。
    */
   async autoRollbackIfPendingUpdate(): Promise<boolean> {
-    // 另一内核操作持锁（在线安装 / 更新 / 恢复随包 / 回滚 / 手动替换 / 立即应用在飞）：此刻回滚会与之并发写同一核槽位
-    // 与 .bak（并先于它放开换核门控）。不回滚、也不动待验证态（闩 / 计时器原样保留）——持锁方自己的起核失败由其自行回滚
-    // （installTag / updateCore / replaceManualCore 的失败分支）。判定与下方 rollbackCore 的持闸之间无 await。
+    // 另一内核操作持锁（在线安装 / 更新 / 恢复随包 / 回滚 / 手动替换 / 立即应用 / 自动轮次在飞，或手动替换的选文件
+    // 对话框开着）：此刻回滚会与之并发写同一核槽位与 .bak（并先于它放开换核门控）。故**推迟**而非丢弃：持锁方放锁时
+    // afterCoreOpReleased 再跑本方法（持锁方若自行回滚 / 重新 arm，则经 disarm / arm 作废这次推迟）。报过错的新核不得被
+    // 稳定观察判稳（会删 .bak）→ 撤稳定观察计时器；待验证闩与兜底计时器原样保留（PENDING_MAX_AGE 过期保护照常）。
+    // 判定与下方 rollbackCore 的持闸之间无 await。
     if (this.isUpdating || this.coreOps > 0) {
       if (this.pendingUpdateVersion) {
+        if (this.stabilityTimer) {
+          clearTimeout(this.stabilityTimer);
+          this.stabilityTimer = null;
+        }
+        this.rollbackDeferred = true;
         this.logManager.addLog(
           'warn',
-          `新核心 ${this.pendingUpdateVersion} 报错，但另一内核操作正在进行，本次不自动回滚`,
+          `新核心 ${this.pendingUpdateVersion} 报错，另一内核操作正在进行，待其结束后再自动回滚`,
           'CoreUpdateService'
         );
       }
       return false;
     }
+    this.rollbackDeferred = false;
     if (this.stabilityTimer) {
       clearTimeout(this.stabilityTimer);
       this.stabilityTimer = null;

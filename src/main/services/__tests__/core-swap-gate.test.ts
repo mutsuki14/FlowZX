@@ -510,7 +510,10 @@ describe('T2：CoreUpdateService 4 写核路径 setCoreSwapInProgress try/finall
       svc.setXrayBusyCheck(() => true);
       jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('official');
       const dl = jest.spyOn((svc as any).coreDownloader, 'downloadFile');
-      await expect(svc.updateCore('https://x/sing-box.tar.gz')).rejects.toThrow(XRAY_BUSY);
+      await expect(svc.updateCore('https://x/sing-box.tar.gz')).rejects.toMatchObject({
+        code: 'XRAY_BUSY',
+        message: expect.stringMatching(XRAY_BUSY),
+      });
       expect(dl).not.toHaveBeenCalled();
       expect(proxy.stop).not.toHaveBeenCalled();
       expect(calls).toEqual([]);

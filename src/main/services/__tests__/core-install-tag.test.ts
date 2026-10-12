@@ -611,7 +611,11 @@ describe('installTag：入口互斥（同步 check+set）', () => {
       ok: false,
       code: 'BUSY',
     });
-    await expect(env.svc.updateCore('https://x/sing-box.tar.gz')).rejects.toThrow(/更新正在进行中/);
+    // 带 code：渲染端「检查更新 → 更新」按 code 出本地化文案（不直接显示中文原文）
+    await expect(env.svc.updateCore('https://x/sing-box.tar.gz')).rejects.toMatchObject({
+      code: 'BUSY',
+      message: expect.stringMatching(/更新正在进行中/),
+    });
     await expect(env.svc.tryApplyStaged('proxy-stopped')).resolves.toBe('noop');
     await env.svc.runAutoUpdateCycle(); // isUpdating 持有 → 直接返回
     expect(env.fetchGithubJson).toHaveBeenCalledTimes(1);
@@ -774,7 +778,7 @@ describe('一次只允许一个内核操作：安装进行中的回滚 / 手动�
     expectLockReleased(env);
   });
 
-  it('安装进行中：首启验证钩子 autoRollbackIfPendingUpdate 不回滚、待验证态原样保留；自动轮次 / 自动落位让开', async () => {
+  it('安装进行中：首启验证钩子 autoRollbackIfPendingUpdate 不当场回滚（推迟到放锁）、待验证态原样保留；自动轮次 / 自动落位让开', async () => {
     const env = makeEnv();
     env.svc.setConfigProvider(
       async () => ({ servers: [], autoUpdateCore: true, tunConfig: { stack: 'system' } }) as never
@@ -788,6 +792,7 @@ describe('一次只允许一个内核操作：安装进行中的回滚 / 手动�
 
     await expect(env.svc.autoRollbackIfPendingUpdate()).resolves.toBe(false);
     expect(rollback).not.toHaveBeenCalled();
+    expect(env.s.rollbackDeferred).toBe(true);
     expect(env.s.pendingUpdateVersion).toBe('1.2.3');
     expect(env.s.pendingFallbackTimer).toBe(timer);
     await env.svc.runAutoUpdateCycle();
@@ -919,6 +924,36 @@ describe('installTag：守卫（不打网络）', () => {
       ok: true,
     });
     expect(env.install).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('installTag：被替换内核的备份在新核判稳后的去留', () => {
+  afterEach(() => jest.useRealTimers());
+
+  async function installThenStable(versionLine?: string) {
+    const env = makeEnv({ proxy: { running: true, versionLine }, armOnInstall: true });
+    await expect(
+      env.svc.installTag({ tag: STABLE_TAG, force: versionLine ? true : undefined })
+    ).resolves.toMatchObject({ ok: true, restarted: true });
+    const bak: string = env.s.getBackupPath();
+    fs.mkdirSync(path.dirname(bak), { recursive: true });
+    fs.writeFileSync(bak, 'replaced-core');
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    await env.svc.recordSuccessfulVersion(); // 'started' → 稳定观察
+    jest.advanceTimersByTime(30_000 + 1);
+    return env;
+  }
+
+  it('替换的是第三方内核 → 判稳后保留 .bak（确认框承诺可用「回滚」找回）', async () => {
+    const env = await installThenStable(`sing-box version ${BUNDLED}-reF1nd`);
+    expect(env.svc.hasBackup()).toBe(true);
+    expect(env.s.pendingUpdateVersion).toBeNull(); // 待验证态照常解除
+  });
+
+  it('替换的是官方内核 → 判稳后照常删除 .bak', async () => {
+    const env = await installThenStable();
+    expect(env.svc.hasBackup()).toBe(false);
+    expect(env.s.pendingUpdateVersion).toBeNull();
   });
 });
 
@@ -1305,8 +1340,16 @@ describe('installTag：重启失败时固定回到换核前', () => {
 describe('installTag：起不来但原因与内核无关（环境 / 用户）→ 不回滚、不标记、新核留用（START_BLOCKED）', () => {
   it.each([
     [
-      'TUN 地址冲突 / 持续性初始化失败（CoreStartTunPersistentError）',
-      () => new CoreStartTunPersistentError('TUN 地址 172.19.0.1/30 已被其它网卡占用。'),
+      'TUN 地址冲突（CoreStartTunPersistentError，FATAL tun-address-conflict）',
+      () =>
+        new CoreStartTunPersistentError(
+          'TUN 地址 172.19.0.1/30 已被其它网卡占用。',
+          'tun-address-conflict'
+        ),
+    ],
+    [
+      'wintun 适配器创建失败（CoreStartTunPersistentError，FATAL tun-adapter-create）',
+      () => new CoreStartTunPersistentError(undefined, 'tun-adapter-create'),
     ],
     ['取消 UAC / 管理员密码框', () => new Error('用户取消了管理员权限请求')],
     [
@@ -1364,6 +1407,183 @@ describe('installTag：起不来但原因与内核无关（环境 / 用户）→
     const res = await env.svc.installTag({ tag: STABLE_TAG });
     expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
     expect(env.knownBad(STABLE)).toBe(true);
+  });
+});
+
+describe('installTag：泛化的 TUN 持续性终态（核未写出 TUN 层 FATAL）→ 照常回滚', () => {
+  // Windows TUN + helper：新核在建 wintun 之前就崩（`check` 查不出的运行期 FATAL / panic），重试预算耗尽后 ProxyManager
+  // 也会把它收口成 CoreStartTunPersistentError——但 fatalKind 是 'other' / null，成因可能就是新核本身。
+  const PRIOR = {
+    version: BUNDLED,
+    tag: `v${BUNDLED}`,
+    prerelease: false,
+    pinnedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it.each([['other' as const], [null]])(
+    'fatalKind %p → START_FAILED：恢复备份、标记问题版本、固定回到换核前、以原核再起',
+    async (kind) => {
+      const env = makeEnv({
+        proxy: {
+          running: true,
+          startThrows: (a) =>
+            a === 'old' ? null : new CoreStartTunPersistentError(undefined, kind),
+        },
+        armOnInstall: true,
+      });
+      env.s.saveAutoState({ pinned: PRIOR });
+      const res = await env.svc.installTag({ tag: PRE_TAG, pin: true });
+      expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
+      expect(env.restore).toHaveBeenCalledTimes(1);
+      expect(env.knownBad(PRE)).toBe(true);
+      expect(env.state().pinned).toEqual(PRIOR);
+      expect(env.core.active).toBe('old');
+      expect(env.pm!.events[env.pm!.events.length - 1]).toBe('start:old');
+      expect(env.s.pendingUpdateVersion).toBeNull();
+    }
+  );
+
+  it('恢复的原核也以同样的 TUN 持续性终态失败 → 成因是环境：回滚但不把新版本记为问题版本', async () => {
+    const env = makeEnv({
+      proxy: { running: true, startThrows: () => new CoreStartTunPersistentError() },
+      armOnInstall: true,
+    });
+    const res = await env.svc.installTag({ tag: PRE_TAG });
+    expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
+    expect(env.core.active).toBe('old');
+    expect(env.knownBad(PRE)).toBe(false);
+  });
+
+  it('原核再起失败但不是 TUN 持续性终态 → 照常标记问题版本', async () => {
+    const env = makeEnv({
+      proxy: {
+        running: true,
+        startThrows: (a) =>
+          a === 'old' ? new Error('port in use') : new CoreStartTunPersistentError(),
+      },
+    });
+    const res = await env.svc.installTag({ tag: PRE_TAG });
+    expect(res).toMatchObject({ ok: false, code: 'START_FAILED', rolledBack: true });
+    expect(env.knownBad(PRE)).toBe(true);
+  });
+});
+
+describe('首启失败回滚遇上另一内核操作持锁：推迟到放锁后执行，不丢弃、不判稳', () => {
+  const autoCfg = async () =>
+    ({ servers: [], autoUpdateCore: true, tunConfig: { stack: 'system' } }) as never;
+
+  /** 卡住自动轮次的 GitHub 检查（持 isUpdating），返回放行函数。 */
+  function holdAutoCycleCheck(env: Env): () => void {
+    let release!: () => void;
+    jest.spyOn(env.s, 'checkUpdate').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ hasUpdate: false, currentVersion: BUNDLED });
+        })
+    );
+    return () => release();
+  }
+
+  it('自动轮次检查中报错 → 推迟；轮次结束放锁 → 执行回滚（经注入的执行方）并标记问题版本', async () => {
+    const env = makeEnv();
+    env.svc.setConfigProvider(autoCfg);
+    env.s.armPendingValidation('1.2.3');
+    jest.spyOn(env.s, 'hasBackup').mockReturnValue(true);
+    const rollback = jest.spyOn(env.svc, 'rollbackCore').mockResolvedValue(undefined);
+    const ran: boolean[] = [];
+    env.svc.setDeferredRollbackHandler(async () => {
+      ran.push(await env.svc.autoRollbackIfPendingUpdate());
+    });
+    const release = holdAutoCycleCheck(env);
+    const cycle = env.svc.runAutoUpdateCycle();
+    await new Promise((r) => setImmediate(r));
+    expect(env.s.isUpdating).toBe(true);
+
+    await expect(env.svc.autoRollbackIfPendingUpdate()).resolves.toBe(false);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(env.s.rollbackDeferred).toBe(true);
+    expect(env.s.pendingUpdateVersion).toBe('1.2.3');
+
+    release();
+    await cycle;
+    await new Promise((r) => setImmediate(r));
+    expect(ran).toEqual([true]);
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(env.knownBad('1.2.3')).toBe(true);
+    expect(env.s.rollbackDeferred).toBe(false);
+    expect(env.s.pendingUpdateVersion).toBeNull();
+    expectLockReleased(env);
+  });
+
+  it("'started' 之后报错、被推迟：撤掉稳定观察（不删 .bak、不清待验证态），之后再 'started' 也不重新判稳", async () => {
+    const env = makeEnv();
+    env.s.armPendingValidation('1.2.3');
+    await env.svc.recordSuccessfulVersion();
+    expect(env.s.stabilityTimer).not.toBeNull();
+
+    env.s.isUpdating = true; // 无关的持锁方（自动轮次 / 选文件对话框…）
+    await expect(env.svc.autoRollbackIfPendingUpdate()).resolves.toBe(false);
+    expect(env.s.stabilityTimer).toBeNull();
+    await env.svc.recordSuccessfulVersion();
+    expect(env.s.stabilityTimer).toBeNull();
+    expect(env.s.pendingUpdateVersion).toBe('1.2.3');
+
+    const handler = jest.fn(async () => undefined);
+    env.svc.setDeferredRollbackHandler(handler);
+    env.s.isUpdating = false;
+    env.s.afterCoreOpReleased();
+    expect(handler).toHaveBeenCalledTimes(1);
+    env.s.afterCoreOpReleased(); // 只执行一次
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('持锁时没有待验证版本 → 不推迟', async () => {
+    const env = makeEnv();
+    env.s.isUpdating = true;
+    await expect(env.svc.autoRollbackIfPendingUpdate()).resolves.toBe(false);
+    expect(env.s.rollbackDeferred).toBe(false);
+    env.s.isUpdating = false;
+  });
+
+  it('installTag 重启：新核在 start() 收尾阶段崩溃（报错被推迟）→ 不报成功，就地回滚（START_FAILED）、作废推迟', async () => {
+    const PRIOR = {
+      version: BUNDLED,
+      tag: `v${BUNDLED}`,
+      prerelease: false,
+      pinnedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hookResults: Array<Promise<boolean>> = [];
+    let envRef!: Env;
+    const env = makeEnv({
+      proxy: {
+        running: true,
+        // index.ts 的 'error' 监听：新核起来后随即崩溃 → 首启验证钩子（此刻 installTag 持锁）
+        duringStart: () => {
+          if (envRef.core.active === PRE)
+            hookResults.push(envRef.svc.autoRollbackIfPendingUpdate());
+        },
+      },
+      armOnInstall: true,
+    });
+    envRef = env;
+    const handler = jest.fn(async () => undefined);
+    env.svc.setDeferredRollbackHandler(handler);
+    env.s.saveAutoState({ pinned: PRIOR });
+
+    const res = await env.svc.installTag({ tag: PRE_TAG, pin: true });
+    await expect(Promise.all(hookResults)).resolves.toEqual([false]);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'START_FAILED',
+      rolledBack: true,
+      detail: expect.stringMatching(/启动后随即退出/),
+    });
+    expect(env.core.active).toBe('old');
+    expect(env.knownBad(PRE)).toBe(true);
+    expect(env.state().pinned).toEqual(PRIOR);
+    expect(env.s.rollbackDeferred).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    expectLockReleased(env);
   });
 });
 

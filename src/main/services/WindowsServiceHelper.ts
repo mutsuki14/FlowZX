@@ -82,6 +82,11 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
   private mutationInFlight = false;
   /** 服务锁定的 --singbox 路径缓存（只在本类 install/uninstall 时变；取成功才缓存，失败下次重取）。 */
   private lockedSingboxPathCache: string | null = null;
+  /**
+   * 锁定路径缓存的世代：install / uninstall 作废缓存时 +1。`sc qc` 发起时记下世代，回来时世代已变（发起于改动之前 /
+   * 之中，读到的可能是改动前的旧锁定路径）→ 只返回不写缓存，免得修复成功后仍长期报「路径漂移」。
+   */
+  private lockedPathEpoch = 0;
   private pathMismatchWarned = false;
 
   constructor(private logManager?: ILogManager | null) {}
@@ -172,9 +177,16 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
     });
   }
 
+  /** 作废锁定路径缓存并推进世代（在途的 `sc qc` 回来后不再写缓存）。 */
+  private invalidateLockedPathCache(): void {
+    this.lockedSingboxPathCache = null;
+    this.lockedPathEpoch++;
+  }
+
   /** 服务锁定的 --singbox 路径（`sc qc`；带 8192 字节缓冲——默认缓冲装不下长 BINARY_PATH_NAME 会报 122）。失败 → null。 */
   private queryLockedSingboxPath(): Promise<string | null> {
     if (this.lockedSingboxPathCache) return Promise.resolve(this.lockedSingboxPathCache);
+    const epoch = this.lockedPathEpoch;
     return new Promise((resolve) => {
       execFile(
         system32('sc.exe'),
@@ -182,7 +194,7 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
         { timeout: 4000, windowsHide: true },
         (err, stdout) => {
           const locked = err ? null : parseLockedSingboxPath(String(stdout || ''));
-          if (locked) this.lockedSingboxPathCache = locked;
+          if (locked && epoch === this.lockedPathEpoch) this.lockedSingboxPathCache = locked;
           resolve(locked);
         }
       );
@@ -372,7 +384,7 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
     }
     this.mutationInFlight = true;
     // 重装会按当前 getSingBoxPath 重新锁定 --singbox：作废锁定路径缓存（之后的状态重新 sc qc）。
-    this.lockedSingboxPathCache = null;
+    this.invalidateLockedPathCache();
     this.pathMismatchWarned = false;
     try {
       const exe = resourceManager.getWinHelperPath();
@@ -404,6 +416,8 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
 
       const script = this.buildInstallScript(exe, singboxPath, confDir, token);
       const result = await this.runElevatedPowerShell(script);
+      // 提权脚本期间（服务尚未重建）发起的状态查询可能已把旧锁定路径写进缓存：脚本结束（服务已按新路径重建或未变）再作废一次。
+      this.invalidateLockedPathCache();
       if (!result.success) {
         return { success: false, error: result.error, status: await this.computeStatus() };
       }
@@ -438,7 +452,7 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
       };
     }
     this.mutationInFlight = true;
-    this.lockedSingboxPathCache = null;
+    this.invalidateLockedPathCache();
     this.pathMismatchWarned = false;
     try {
       // 1) 管道自卸载（零 UAC）。仅 helper 就绪（有 token + 管道可达）时可行。

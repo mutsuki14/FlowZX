@@ -123,11 +123,18 @@ describe('core-management-card i18n', () => {
     const provided = ['version', 'bundled', 'current', 'staged', 'latest'];
     for (const r of REASONS) {
       for (const action of ['install', 'restore'] as const) {
-        const key = confirmReasonKey(r, action);
-        expect(typeof en(key)).toBe('string');
-        for (const p of placeholders(key)) expect(provided).toContain(p);
+        for (const fromFork of [false, true]) {
+          const key = confirmReasonKey(r, action, fromFork);
+          expect(typeof en(key)).toBe('string');
+          for (const p of placeholders(key)) expect(provided).toContain(p);
+        }
       }
     }
+    // 卡片按「理由里有 fork」选从第三方内核恢复时的文案
+    expect(CARD_SRC).toMatch(
+      /confirmReasonKey\(r, confirmAction, confirm\.reasons\.includes\('fork'\)\)/
+    );
+    expect(placeholders('settings.coreManagement.confirmAutoUpdateResetFork')).toEqual(['latest']);
     expect(placeholders('settings.coreManagement.confirmAutoUpdate')).toEqual(['latest']);
     expect(placeholders('settings.coreManagement.confirmStaged')).toEqual(['staged']);
     expect(placeholders('settings.coreManagement.confirmForkReset')).toEqual(['current']);

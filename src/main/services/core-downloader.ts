@@ -367,9 +367,12 @@ export class CoreDownloader {
           if (settled) return;
           settled = true;
           idle.clear();
-          file.close();
-          fs.unlink(tempPath, () => {});
-          reject(new Error(`Download failed: ${response.statusCode}`));
+          const status = response.statusCode;
+          // 同 handleError：close → unlink → 才落定（并发的 unlink 会让调用方在落定时仍看得见临时文件，Windows 上
+          // 还可能因句柄未释放删不掉）。WriteStream.close(cb) 在文件尚未打开时会等打开后再关，unlink 恒在其后。
+          file.close(() =>
+            fs.unlink(tempPath, () => reject(new Error(`Download failed: ${status}`)))
+          );
           return;
         }
 

@@ -314,6 +314,16 @@ export function CoreManagementCard() {
     }
   };
 
+  /**
+   * 「检查更新 → 更新」/ 回滚 / 手动替换 / 立即应用未开始即被拒（另一内核操作或 Xray 切换在进行，主进程给 code BUSY / XRAY_BUSY）→ 本地化文案；
+   * 其它 → 主进程原文（replaceManual 的 error / 抛错的 message），非这两种 code 时对 throw 形返回 undefined。
+   */
+  const busyAwareError = (e: unknown): string | undefined => {
+    const r = e as { code?: unknown; error?: unknown } | null;
+    if (r?.code === 'BUSY' || r?.code === 'XRAY_BUSY') return t(errorMessageKey(r.code));
+    return typeof r?.error === 'string' ? r.error : undefined;
+  };
+
   const handleUpdateCore = async (downloadUrl: string, version: string) => {
     setUpdatingCore(true);
     // 进度 toast 捕获 id：成功/失败原地替换「正在更新核心」（声明在 try 外供 catch 引用）。
@@ -335,27 +345,18 @@ export function CoreManagementCard() {
       } else {
         toast.error(t('settings.about.coreUpdateFail'), {
           id: updateCoreToastId,
-          description: response?.error || t('settings.about.unknownError'),
+          description: busyAwareError(response) || t('settings.about.unknownError'),
         });
       }
     } catch (error) {
       toast.error(t('settings.about.coreUpdateFail'), {
         id: updateCoreToastId,
-        description: error instanceof Error ? error.message : String(error),
+        description:
+          busyAwareError(error) ?? (error instanceof Error ? error.message : String(error)),
       });
     } finally {
       setUpdatingCore(false);
     }
-  };
-
-  /**
-   * 回滚 / 手动替换 / 立即应用未开始即被拒（另一内核操作或 Xray 切换在进行，主进程给 code BUSY / XRAY_BUSY）→ 本地化文案；
-   * 其它 → 主进程原文（replaceManual 的 error / 抛错的 message），非这两种 code 时对 throw 形返回 undefined。
-   */
-  const busyAwareError = (e: unknown): string | undefined => {
-    const r = e as { code?: unknown; error?: unknown } | null;
-    if (r?.code === 'BUSY' || r?.code === 'XRAY_BUSY') return t(errorMessageKey(r.code));
-    return typeof r?.error === 'string' ? r.error : undefined;
   };
 
   const handleRollback = async () => {
@@ -1229,7 +1230,12 @@ export function CoreManagementCard() {
                 {confirm && confirm.reasons.length > 0 && (
                   <ul className="list-disc space-y-1 ps-5">
                     {confirm.reasons.map((r) => (
-                      <li key={r}>{t(confirmReasonKey(r, confirmAction), reasonVars)}</li>
+                      <li key={r}>
+                        {t(
+                          confirmReasonKey(r, confirmAction, confirm.reasons.includes('fork')),
+                          reasonVars
+                        )}
+                      </li>
                     ))}
                   </ul>
                 )}

@@ -382,8 +382,28 @@ describe('issue #324 — maybeToTunPersistentError 终态分类矩阵（A2）', 
     const emit = jest.spyOn(svc, 'sendEventToRenderer').mockImplementation(() => {});
     const out = svc.maybeToTunPersistentError(retry());
     expect(out).toBeInstanceOf(CoreStartTunPersistentError);
+    // 没读到 FATAL → fatalKind null（换核流程据此不把它当作与内核无关的环境原因）
+    expect((out as CoreStartTunPersistentError).fatalKind).toBeNull();
     const call = emit.mock.calls.find((c: any[]) => c[1]?.errorCode === 'TUN_INIT_PERSISTENT');
     expect(call).toBeTruthy(); // 结构化 code 上渲染端驱动诊断卡
+  });
+
+  it('预算耗尽的泛化终态携带核自己写的 FATAL 分类（核在建 TUN 前就崩 → other）', () => {
+    const svc = makeSvc();
+    svc.tunReadyObservation = { adapterEverSeen: false, probeEverConclusive: true };
+    svc.sendEventToRenderer = () => {};
+    svc.lastStartupFatal = {
+      kind: 'other',
+      raw: 'FATAL[0000] decode config at config.json: unknown field "foo"',
+      message: 'sing-box 启动失败',
+    };
+    const out = svc.maybeToTunPersistentError(retry());
+    expect(out).toBeInstanceOf(CoreStartTunPersistentError);
+    expect((out as CoreStartTunPersistentError).fatalKind).toBe('other');
+    svc.lastStartupFatal = { kind: 'tun-adapter-create', raw: 'x', message: 'y' };
+    expect((svc.maybeToTunPersistentError(retry()) as CoreStartTunPersistentError).fatalKind).toBe(
+      'tun-adapter-create'
+    );
   });
 
   it('曾见适配器 → 保持原 CoreStartRetryError（瞬态族，不转终态）', () => {
@@ -580,6 +600,7 @@ describe('issue #324 P0-1 — 地址冲突转终态（maybeToTunPersistentError�
     svc.logToManager = () => {};
     const out = svc.maybeToTunPersistentError(retryErr());
     expect(out).toBeInstanceOf(CoreStartTunPersistentError);
+    expect((out as CoreStartTunPersistentError).fatalKind).toBe('tun-address-conflict');
     expect((out as Error).message).toContain('172.19.0.1');
     // 文案只能引导当前真做得到的动作（TUN 地址尚未开放配置）。
     expect((out as Error).message).not.toContain('设置');
@@ -1360,7 +1381,9 @@ describe('B6：核日志清空前移到 spawn 之前', () => {
     });
 
     await withPlatformAsync('win32', async () => {
-      await expect(svc.startSingBoxProcess(svc.lifecycleGeneration)).rejects.toThrow('停在这里即可');
+      await expect(svc.startSingBoxProcess(svc.lifecycleGeneration)).rejects.toThrow(
+        '停在这里即可'
+      );
     });
 
     // 变异守卫：把 truncateCoreLogFile() 挪回就绪之后（或删掉）→ order 不再是 ['truncate','launch']

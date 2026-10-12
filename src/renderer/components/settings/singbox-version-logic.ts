@@ -238,14 +238,18 @@ const CONFIRM_KEYS: Readonly<Record<SingboxConfirmReason, string>> = {
 
 /**
  * 理由 → i18n 键。恢复随包时两条用专属文案：fork（resetFactory 不留备份，第三方内核无从找回）、autoUpdate（无从固定，
- * 提示先关自动更新才能停在随包版本）。
+ * 提示先关自动更新才能停在随包版本）。从第三方内核恢复（fromFork）时自动更新开关被禁用、显示为关（第三方内核期间暂停），
+ * 「先关闭」做不到 → 改为提示恢复后再关。
  */
 export function confirmReasonKey(
   reason: SingboxConfirmReason,
-  action: SingboxReleaseAction = 'install'
+  action: SingboxReleaseAction = 'install',
+  fromFork = false
 ): string {
   if (action === 'restore' && reason === 'fork') return `${I18N}.confirmForkReset`;
-  if (action === 'restore' && reason === 'autoUpdate') return `${I18N}.confirmAutoUpdateReset`;
+  if (action === 'restore' && reason === 'autoUpdate') {
+    return fromFork ? `${I18N}.confirmAutoUpdateResetFork` : `${I18N}.confirmAutoUpdateReset`;
+  }
   return CONFIRM_KEYS[reason];
 }
 

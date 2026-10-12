@@ -170,7 +170,8 @@ export async function updateCore(downloadUrl: string): Promise<ApiResponse<boole
     const success = await api.coreUpdate.update(downloadUrl);
     return { success, data: success };
   } catch (error: any) {
-    return { success: false, error: error?.message };
+    // code：BUSY / XRAY_BUSY（另一内核操作 / Xray 切换在进行）→ 渲染端按 code 出本地化文案。
+    return { success: false, error: error?.message, code: error?.code };
   }
 }
 

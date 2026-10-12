@@ -549,6 +549,16 @@ describe('singbox-version-logic', () => {
       expect(confirmReasonKey('autoUpdate', 'restore')).toBe(
         'settings.coreManagement.confirmAutoUpdateReset'
       );
+      // 从第三方内核恢复：自动更新开关被禁用、显示为关 →「先关闭自动更新」做不到，改用恢复后再关的文案
+      expect(confirmReasonKey('autoUpdate', 'restore', true)).toBe(
+        'settings.coreManagement.confirmAutoUpdateResetFork'
+      );
+      expect(confirmReasonKey('autoUpdate', 'install', true)).toBe(
+        'settings.coreManagement.confirmAutoUpdate'
+      );
+      expect(confirmReasonKey('fork', 'restore', true)).toBe(
+        'settings.coreManagement.confirmForkReset'
+      );
       expect(confirmReasonKey('restart', 'restore')).toBe('settings.coreManagement.confirmRestart');
     });
     it('uses the "install anyway" wording only for risk reasons', () => {

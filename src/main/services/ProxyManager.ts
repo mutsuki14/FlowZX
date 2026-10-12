@@ -5776,7 +5776,8 @@ rm -f "$STOPFLAG"
     // 文案只承诺当前真能做到的动作：TUN 地址尚未开放配置（P1-1 未落地），故引导「移除/禁用占用方网卡」，
     // 不写「到设置里改地址」——UI 上没有那个入口，那是把用户支到死路。
     const terminal = new CoreStartTunPersistentError(
-      `${fatal.message}请断开或禁用占用该地址的网卡（其它 VPN/TUN 客户端的残留适配器），然后重试。`
+      `${fatal.message}请断开或禁用占用该地址的网卡（其它 VPN/TUN 客户端的残留适配器），然后重试。`,
+      fatal.kind
     );
     this.logToManager('error', `TUN 地址冲突，停止重试：${fatal.raw}`);
     this.sendEventToRenderer(IPC_CHANNELS.EVENT_PROXY_ERROR, {
@@ -5996,8 +5997,9 @@ rm -f "$STOPFLAG"
     if (!obs) return err; // 非 win32+TUN → 原样（obs 仅 win32+TUN 时非 null）
     // 曾出现 → 瞬态；探测全程 unknown（杀软拦 PS）→ fail-open 瞬态；两者非持续性 → 原样保持可重试终态。
     if (!isPersistentTunFailure(obs)) return err;
-    // 探测可用且预算内从未见适配器 → 持续性 TUN init 失败终态。
-    const terminal = new CoreStartTunPersistentError();
+    // 探测可用且预算内从未见适配器 → 持续性 TUN init 失败终态。携带核的 FATAL 分类（无 → null）：换核流程据此区分
+    // 「TUN 层失败（环境）」与「核在建 TUN 前就崩（可能是新核本身）」。
+    const terminal = new CoreStartTunPersistentError(undefined, fatal?.kind ?? null);
     this.logToManager(
       'error',
       `Windows TUN 适配器（${resolveWinTunInterfaceName(this.currentConfig as UserConfig)}）持续未建立，起核重试预算耗尽 → 终态诊断，停止无谓重试（常见 wintun 被拦/驱动异常/冲突 VPN，亦可能配置/端口/内核致起核失败——开诊断采集看日志拍板）`
