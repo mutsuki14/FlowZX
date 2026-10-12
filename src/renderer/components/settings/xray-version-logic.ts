@@ -10,14 +10,33 @@
  *    install（其余：按 tag 在线下载安装）。
  *  - 确认理由：prerelease（预发布）/ downgrade（旧于随包版本）/ custom（会替换用户自放文件）/ restart（代理在跑，
  *    切换会整体重启代理）。为空则直接执行。
+ *
+ * 内核无关的部分（选中保持 / 日期 / 选项拼接 / 进度条 / detail 截断 / 列表错误码 / 错误码与阶段键工厂）在
+ * core-version-logic.ts，与 sing-box 内核管理卡共用；此处原名转出，导出与行为不变。
  */
 import { compareSemver } from '../../../shared/version';
 import type {
   XrayInstallErrorCode,
+  XrayInstallPhase,
   XrayInstallProgress,
   XrayRelease,
   XraySource,
 } from '../../../shared/xray-release';
+import {
+  createErrorMessageKey,
+  createPhaseKey,
+  filterReleasesWith,
+  releaseDate,
+} from './core-version-logic';
+
+export {
+  clipDetail,
+  composeOptionLabel,
+  listErrorCode,
+  pickSelection,
+  progressBarPercent,
+  releaseDate,
+} from './core-version-logic';
 
 /** getXrayStatus 结果的子集（整份 IPC 结果可直接传入；本模块只读这些字段）。 */
 export interface XrayStatusLike {
@@ -65,26 +84,7 @@ export function filterReleases(
   includePrerelease: boolean,
   status: XrayStatusLike | null
 ): XrayRelease[] {
-  return releases.filter(
-    (r) =>
-      r.hasAsset &&
-      !r.draft &&
-      !r.belowMinimum &&
-      (includePrerelease || !r.prerelease || isActiveRelease(r, status))
-  );
-}
-
-/** 列表刷新 / 开关切换后的选中项：原选中仍在列表中则保留，否则选最新一项（列表为空 → 空串）。 */
-export function pickSelection(filtered: readonly XrayRelease[], prevTag: string): string {
-  if (prevTag && filtered.some((r) => r.tag === prevTag)) return prevTag;
-  return filtered[0]?.tag ?? '';
-}
-
-/** ISO 时间串 → `YYYY-MM-DD`（与语言无关，GitHub published_at 为 UTC）；无法识别 → null。 */
-export function releaseDate(publishedAt: string | null | undefined): string | null {
-  if (typeof publishedAt !== 'string') return null;
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(publishedAt);
-  return m ? m[1] : null;
+  return filterReleasesWith(releases, includePrerelease, (r) => isActiveRelease(r, status));
 }
 
 export interface XrayOptionParts {
@@ -97,7 +97,10 @@ export interface XrayOptionParts {
   bundled: boolean;
 }
 
-/** 下拉选项的组成部分（文案由组件按 i18n 拼：「v26.10.10 · 2026-10-10（预发布）（当前）」）。 */
+/**
+ * 下拉选项的组成部分（文案由组件按 i18n 拼：「v26.10.10 · 2026-10-10（预发布）（当前）」，见 composeOptionLabel）。
+ * 恰好这五个键：sing-box 专有的 staged / crossBand / knownBad 标记 Xray 不给出。
+ */
 export function optionLabelParts(
   release: XrayRelease,
   status: XrayStatusLike | null
@@ -109,20 +112,6 @@ export function optionLabelParts(
     current: isActiveRelease(release, status),
     bundled: isBundledRelease(release, status?.bundledVersion ?? null),
   };
-}
-
-/** 拼选项文案。suffix 自带各语言的括号与空格（如 zh「（预发布）」/ en「 (pre-release)」）。 */
-export function composeOptionLabel(
-  parts: XrayOptionParts,
-  suffix: { prerelease: string; current: string; bundled: string }
-): string {
-  return [
-    parts.tag,
-    parts.date ? ` · ${parts.date}` : '',
-    parts.prerelease ? suffix.prerelease : '',
-    parts.current ? suffix.current : '',
-    parts.bundled ? suffix.bundled : '',
-  ].join('');
 }
 
 /** 选中 release 的动作（见头注）。状态未取到时按 install 处理（组件在状态未取到时禁用按钮）。 */
@@ -223,38 +212,24 @@ export function statusNotes(status: XrayStatusLike | null): XrayStatusNoteKind[]
   return out;
 }
 
+/** Xray 安装阶段全集（Record 键穷举：XrayInstallPhase 增删时此处编译报错，提醒补 i18n）。 */
+const XRAY_PHASES: Readonly<Record<XrayInstallPhase, true>> = {
+  downloading: true,
+  verifying: true,
+  extracting: true,
+  testing: true,
+  switching: true,
+  restarting: true,
+};
+const RESTORE_KIND: XrayInstallProgress['kind'] = 'restore';
+const xrayPhaseKey = createPhaseKey(I18N, Object.keys(XRAY_PHASES), RESTORE_KIND);
+
 /** 进度阶段 → i18n 键（恢复随包版本的 switching 用专属文案）。 */
 export function phaseKey(progress: Pick<XrayInstallProgress, 'phase' | 'kind'>): string {
-  switch (progress.phase) {
-    case 'downloading':
-      return `${I18N}.phaseDownloading`;
-    case 'verifying':
-      return `${I18N}.phaseVerifying`;
-    case 'extracting':
-      return `${I18N}.phaseExtracting`;
-    case 'testing':
-      return `${I18N}.phaseTesting`;
-    case 'switching':
-      return progress.kind === 'restore' ? `${I18N}.phaseRestoring` : `${I18N}.phaseSwitching`;
-    case 'restarting':
-      return `${I18N}.phaseRestarting`;
-    default:
-      return `${I18N}.phaseSwitching`;
-  }
+  return xrayPhaseKey(progress);
 }
 
-/** 进度条宽度：下载阶段按百分比（未知总长 → 0）；下载之后的阶段视为下载已完成（100）。 */
-export function progressBarPercent(
-  progress: Pick<XrayInstallProgress, 'phase' | 'percent'>
-): number {
-  if (progress.phase !== 'downloading') return 100;
-  const p = progress.percent;
-  return typeof p === 'number' && Number.isFinite(p)
-    ? Math.max(0, Math.min(100, Math.floor(p)))
-    : 0;
-}
-
-const KNOWN_CODES: ReadonlySet<string> = new Set<XrayInstallErrorCode>([
+const KNOWN_CODES: readonly XrayInstallErrorCode[] = [
   'BUSY',
   'PROXY_BUSY',
   'CORE_BUSY',
@@ -274,24 +249,15 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<XrayInstallErrorCode>([
   'IN_USE',
   'START_FAILED',
   'FAILED',
-]);
+];
+const xrayErrorKey = createErrorMessageKey(I18N, KNOWN_CODES);
 
 /**
  * 失败码 → i18n 键（settings.xrayCore.errors.*）。START_FAILED 且未能回滚 → START_FAILED_NO_ROLLBACK；
  * 未知 / 缺省 code → FAILED。listReleases 的 reject（error.code 为 RATE_LIMITED / NETWORK）同样适用。
  */
 export function errorMessageKey(code: unknown, rolledBack?: boolean): string {
-  if (code === 'START_FAILED' && rolledBack === false) {
-    return `${I18N}.errors.START_FAILED_NO_ROLLBACK`;
-  }
-  return typeof code === 'string' && KNOWN_CODES.has(code)
-    ? `${I18N}.errors.${code}`
-    : `${I18N}.errors.FAILED`;
-}
-
-/** 列表加载失败的 code（只区分限流与其它网络错误）。 */
-export function listErrorCode(error: unknown): 'RATE_LIMITED' | 'NETWORK' {
-  return (error as { code?: unknown } | null)?.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'NETWORK';
+  return xrayErrorKey(code, rolledBack);
 }
 
 /** 这些失败码的主进程 detail 有额外信息（原始错误 / 实际版本），值得附在提示里；其余文案已足够。 */
@@ -304,13 +270,6 @@ export function errorShowsDetail(code: unknown): boolean {
     code === 'VERSION_MISMATCH' ||
     code === 'START_FAILED'
   );
-}
-
-/** 截断长 detail（按码点，不劈开代理对）。 */
-export function clipDetail(detail: string | undefined, max = 240): string {
-  const s = (detail ?? '').trim();
-  const chars = Array.from(s);
-  return chars.length <= max ? s : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
 }
 
 const XRAY_BANNER_RE = /^Xray \d+\.\d+\.\d+\b/;

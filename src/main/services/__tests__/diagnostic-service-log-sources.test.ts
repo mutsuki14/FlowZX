@@ -41,11 +41,24 @@ afterAll(() => {
 /** B0 汇总行样本：既做桩返回值，也做报告文本断言的靶。 */
 const TIMELINE_LINE = '起核阶段耗时 total=1234ms outcome=ok | killOrphans=181 startTail=44';
 
-function makeSvc(opts: { startedViaHelper?: boolean; lastDnsFlush?: unknown } = {}): any {
+function makeSvc(
+  opts: {
+    startedViaHelper?: boolean;
+    lastDnsFlush?: unknown;
+    /** sing-box 现役版本（getCoreVersion，已截断 fork 尾段）与原始版本行（getCoreVersionLine，缺省 = 不桩）。 */
+    coreVersion?: string;
+    coreVersionLine?: string;
+    /** 第 9 个构造参数：固定版本取数（缺省 = 不注入）。 */
+    coreAutoStatus?: () => Promise<unknown>;
+  } = {}
+): any {
   const configManager: any = { loadConfig: jest.fn().mockResolvedValue({ logLevel: 'info' }) };
   const logManager: any = { flush: jest.fn().mockResolvedValue(undefined) };
   const proxyManager: any = {
-    getCoreVersion: jest.fn().mockResolvedValue('1.14.0-beta.2'),
+    getCoreVersion: jest.fn().mockResolvedValue(opts.coreVersion ?? '1.14.0-beta.2'),
+    ...(opts.coreVersionLine !== undefined
+      ? { getCoreVersionLine: jest.fn().mockResolvedValue(opts.coreVersionLine) }
+      : {}),
     getStatus: jest.fn().mockReturnValue({ running: false }),
     isStartedViaHelper: jest.fn().mockReturnValue(!!opts.startedViaHelper),
     generateSingBoxConfig: jest.fn().mockReturnValue({ log: { level: 'info' } }),
@@ -58,7 +71,17 @@ function makeSvc(opts: { startedViaHelper?: boolean; lastDnsFlush?: unknown } = 
     getLastStartTimeline: jest.fn().mockReturnValue(TIMELINE_LINE),
   };
   const systemProxyManager: any = { getProxyStatus: jest.fn().mockResolvedValue(null) };
-  return new DiagnosticService(configManager, logManager, proxyManager, systemProxyManager) as any;
+  return new DiagnosticService(
+    configManager,
+    logManager,
+    proxyManager,
+    systemProxyManager,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    opts.coreAutoStatus as any
+  ) as any;
 }
 
 /**
@@ -214,5 +237,65 @@ describe('DiagnosticService — 起核阶段耗时汇总行接线（B0）', () =
       return (await svc.buildReport()) as string;
     });
     expect(md).not.toContain('起核阶段耗时');
+  });
+});
+
+/**
+ * sing-box 版本通道接线：内核版本行带「随包 / 预发布 / 已固定 / 第三方」简短标注（与「报告问题」同词）。
+ * 标注本身的判定在 shared/__tests__/singbox-release.test.ts；此处守「版本行缓存 + 固定取数 → 报告」这一跳。
+ */
+describe('DiagnosticService — sing-box 版本通道标注接线', () => {
+  const build = (opts: Parameters<typeof makeSvc>[0]) =>
+    withPlatformAsync('linux', async () => {
+      const svc = makeSvc(opts);
+      jest.spyOn(svc, 'readTail').mockResolvedValue('x');
+      return (await svc.buildReport()) as string;
+    });
+
+  it('用户装的预发布且已固定 → 「预发布 · 已固定」', async () => {
+    const autoStatus = jest.fn().mockResolvedValue({
+      pinned: {
+        version: '1.15.0-alpha.12',
+        tag: 'v1.15.0-alpha.12',
+        prerelease: true,
+        pinnedAt: '2026-10-11T00:00:00Z',
+      },
+    });
+    const md = await build({
+      coreVersion: '1.15.0-alpha.12',
+      coreVersionLine: 'sing-box version 1.15.0-alpha.12',
+      coreAutoStatus: autoStatus,
+    });
+    expect(autoStatus).toHaveBeenCalled();
+    expect(md).toContain('- 内核版本：1.15.0-alpha.12（预发布 · 已固定）\n');
+  });
+
+  it('随包版本（manifest 的 bundledCoreVersion）→ 「随包」（预发布形态的随包版本也不标「预发布」）', async () => {
+    const bundled = require('../../../shared/core-manifest.json').bundledCoreVersion as string;
+    const md = await build({
+      coreVersion: bundled,
+      coreVersionLine: `sing-box version ${bundled}`,
+      coreAutoStatus: async () => ({ pinned: null }),
+    });
+    expect(md).toContain(`- 内核版本：${bundled}（随包）\n`);
+  });
+
+  it('第三方构建：版本行的 fork 尾段 → 只标「第三方」', async () => {
+    const md = await build({
+      coreVersion: '1.14.0-rc.1',
+      coreVersionLine: 'sing-box version 1.14.0-rc.1-reF1nd',
+      coreAutoStatus: async () => ({ pinned: null }),
+    });
+    expect(md).toContain('- 内核版本：1.14.0-rc.1（第三方）\n');
+  });
+
+  it('取数失败只少标注、不阻断报告', async () => {
+    const md = await build({
+      coreVersion: '1.14.3',
+      coreAutoStatus: async () => {
+        throw new Error('state file unreadable');
+      },
+    });
+    expect(md).toContain('- 内核版本：1.14.3\n');
   });
 });

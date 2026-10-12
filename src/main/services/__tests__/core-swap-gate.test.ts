@@ -299,6 +299,75 @@ describe('T2：CoreUpdateService 4 写核路径 setCoreSwapInProgress try/finall
     expect(restoreSpy).not.toHaveBeenCalled(); // 未备份不误恢复陈旧 .bak
   });
 
+  // --- updateCore 入口同步 check+set（修 TOCTOU：旧实现在检查 isUpdating 与置位之间 await 了 fork 守卫）---
+  it('updateCore：锁在第一个 await 之前就持有——并发的第二次更新 / 自动轮次 / 在线安装均被拒，只换一次核', async () => {
+    const { proxy, calls } = makeProxyWithSpy();
+    const svc = makeSvc(proxy);
+    let releaseBuild!: () => void;
+    const build = jest
+      .spyOn(svc as any, 'getCoreBuild')
+      .mockImplementation(() => new Promise((r) => (releaseBuild = () => r('official'))));
+    jest.spyOn(svc as any, 'resolveAssetSha256').mockResolvedValue('a'.repeat(64));
+    const download = jest
+      .spyOn((svc as any).coreDownloader, 'downloadFile')
+      .mockResolvedValue('/tmp/fake.tar.gz');
+    jest
+      .spyOn((svc as any).coreDownloader, 'extractCore')
+      .mockResolvedValue({ corePath: '/tmp/x/sing-box', extractDir: '/tmp/x' });
+    jest
+      .spyOn(svc as any, 'preflightValidate')
+      .mockResolvedValue({ ok: true, version: '1.13.14', versionLine: 'sing-box version 1.13.14' });
+    const install = jest.spyOn(svc as any, 'installCoreFromDir').mockResolvedValue(undefined);
+    jest.spyOn(svc as any, 'saveAutoState').mockImplementation(() => {});
+    const cfg = jest.fn(async () => ({ autoUpdateCore: true }) as any);
+    svc.setConfigProvider(cfg);
+
+    const first = svc.updateCore('https://x/a.tar.gz');
+    // 尚在 fork 守卫的 await 上：锁已持有（旧实现此刻 isUpdating 仍为 false → 第二次调用能同样通过）
+    expect((svc as any).isUpdating).toBe(true);
+    expect(svc.isBusy()).toBe(true);
+
+    await expect(svc.updateCore('https://x/b.tar.gz')).rejects.toThrow('更新正在进行中');
+    await svc.runAutoUpdateCycle(); // isUpdating 持有 → 直接返回（不读配置、不检查）
+    expect(cfg).not.toHaveBeenCalled();
+    await expect(svc.installTag({ tag: 'v1.14.3' })).resolves.toMatchObject({
+      ok: false,
+      code: 'BUSY',
+    });
+    // 被拒的调用不得动别人的锁
+    expect((svc as any).isUpdating).toBe(true);
+    expect((svc as any).coreOps).toBe(1);
+    expect(build).toHaveBeenCalledTimes(1);
+
+    releaseBuild();
+    await expect(first).resolves.toBe(true);
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([true, false]);
+    expect((svc as any).isUpdating).toBe(false);
+    expect((svc as any).coreOps).toBe(0);
+  });
+
+  it('updateCore：回滚 / 手动替换 / 恢复随包在飞（coreOps>0）→ 拒绝，不探版本不下载；fork 守卫拒绝后锁释放', async () => {
+    const { proxy, calls } = makeProxyWithSpy();
+    const svc = makeSvc(proxy);
+    const build = jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('fork');
+    const download = jest.spyOn((svc as any).coreDownloader, 'downloadFile');
+    (svc as any).coreOps = 1;
+    await expect(svc.updateCore('https://x/a.tar.gz')).rejects.toThrow('更新正在进行中');
+    expect(build).not.toHaveBeenCalled();
+    expect((svc as any).coreOps).toBe(1);
+    expect((svc as any).isUpdating).toBe(false);
+    (svc as any).coreOps = 0;
+
+    // fork 守卫移进临界区后：仍拒绝在线更新，且 finally 照常放锁
+    await expect(svc.updateCore('https://x/a.tar.gz')).rejects.toThrow(/第三方/);
+    expect(download).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect((svc as any).isUpdating).toBe(false);
+    expect(svc.isBusy()).toBe(false);
+  });
+
   // --- tryApplyStaged：line 850-863 setCoreSwapInProgress(true) → try install → catch restore → finally false ---
   it('tryApplyStaged：install 成功 → [true, false]', async () => {
     const { proxy, calls } = makeProxyWithSpy();
@@ -441,7 +510,10 @@ describe('T2：CoreUpdateService 4 写核路径 setCoreSwapInProgress try/finall
       svc.setXrayBusyCheck(() => true);
       jest.spyOn(svc as any, 'getCoreBuild').mockResolvedValue('official');
       const dl = jest.spyOn((svc as any).coreDownloader, 'downloadFile');
-      await expect(svc.updateCore('https://x/sing-box.tar.gz')).rejects.toThrow(XRAY_BUSY);
+      await expect(svc.updateCore('https://x/sing-box.tar.gz')).rejects.toMatchObject({
+        code: 'XRAY_BUSY',
+        message: expect.stringMatching(XRAY_BUSY),
+      });
       expect(dl).not.toHaveBeenCalled();
       expect(proxy.stop).not.toHaveBeenCalled();
       expect(calls).toEqual([]);
@@ -482,8 +554,11 @@ describe('T2：CoreUpdateService 4 写核路径 setCoreSwapInProgress try/finall
       await expect(svc.rollbackCore()).rejects.toThrow(XRAY_BUSY);
       await expect(svc.replaceManualCore({ filePath: '/tmp/x', force: true })).resolves.toEqual({
         ok: false,
+        code: 'XRAY_BUSY',
         error: expect.stringMatching(XRAY_BUSY),
       });
+      // 抛错形同样带 code（经 IPC ApiResponse.code 透传，渲染端按 code 出本地化文案）
+      await expect(svc.rollbackCore()).rejects.toMatchObject({ code: 'XRAY_BUSY' });
       expect(preflight).not.toHaveBeenCalled();
       expect(proxy.stop).not.toHaveBeenCalled();
       expect(calls).toEqual([]);
@@ -670,13 +745,16 @@ describe('T3：replaceManualCore skipBackup 分支（reset 到出厂）', () => 
   // --- resetCoreToFactory 成功后清理旧备份 ---
   // 验证 reset 到出厂的两个语义：① 不备份现役核（skipBackup=true，上方用例已覆盖）
   // ② 写核成功后调 pruneBackup 清理残留 .bak（reset = 干净状态，旧备份无意义）。
-  // 直接 spy replaceManualCore（mock 返回 { ok: true }）+ spy pruneBackup，
+  // 直接 spy replaceManualCoreLocked（mock 返回 { ok: true }）+ spy pruneBackup，
   // 断言 pruneBackup 被调 1 次（避免触达 replaceManualCore 内部 fs/重启副作用）。
   it('resetCoreToFactory 成功后清理旧备份：pruneBackup 被调 1 次', async () => {
     const { proxy } = makeProxyWithSpy();
     const svc = makeSvc(proxy);
-    // replaceManualCore 是 reset 的核心落位腿；mock 返回 ok 走「成功后清理」分支
-    const replaceSpy = jest.spyOn(svc as any, 'replaceManualCore').mockResolvedValue({ ok: true });
+    // replaceManualCoreLocked 是 reset 的核心落位腿（reset 已持锁，不经会被自己的锁拒为 BUSY 的公开入口）；
+    // mock 返回 ok 走「成功后清理」分支
+    const replaceSpy = jest
+      .spyOn(svc as any, 'replaceManualCoreLocked')
+      .mockResolvedValue({ ok: true });
     // pruneBackup 是清理旧 .bak 的私有方法；mock 避免触达真实 fs（getBackupPath/unlink）
     const pruneSpy = jest.spyOn(svc as any, 'pruneBackup').mockImplementation(() => {});
     // 出厂核完整性门：真实出厂核路径在测试环境下当然对不上 pin（无该文件/内容不符）→ 会先行拒绝。

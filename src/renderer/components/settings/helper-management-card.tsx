@@ -11,8 +11,11 @@ import { LOGIN_ITEMS_SETTINGS_URL } from '../../../shared/constants';
 /**
  * 提权助手管理卡：状态机（检查中/未安装/后台被禁/路径不符/需修复/可升级/已安装就绪）只渲染当前活跃态一种。
  * 与首页启动提示共享同一安装逻辑（store.installHelper / uninstallHelper）。
- * backgroundDisabled / pathMismatch / upgradeable 相关 UI 仅 macOS 出现（Windows 这些 flag 恒 false）。
+ * backgroundDisabled / upgradeable 相关 UI 仅 macOS 出现（Windows 这些 flag 恒 false）。pathMismatch 两平台成因不同、
+ * 文案分流：macOS = 应用被移动（plist 烧录路径失效）；Windows = 内核更新 / 切换版本后，服务仍锁定安装时的旧内核路径。
  */
+const isWin = window.electron?.platform === 'win32';
+
 export function HelperManagementCard() {
   const { t } = useTranslation();
   const helperStatus = useAppStore((s) => s.helperStatus);
@@ -94,8 +97,10 @@ export function HelperManagementCard() {
           ? {
               ico: 'warn',
               pill: 'warn',
-              label: t('helper.statusPathMismatch', '应用已移动，需修复'),
-              desc: t('helper.pathMismatchDesc'),
+              label: isWin
+                ? t('helper.statusPathMismatchWin')
+                : t('helper.statusPathMismatch', '应用已移动，需修复'),
+              desc: isWin ? t('helper.pathMismatchDescWin') : t('helper.pathMismatchDesc'),
             }
           : helperStatus.needsRepair
             ? {

@@ -533,6 +533,10 @@ export interface UserConfig {
   // 仅在「同 major.minor 兼容版本带内」（如 1.13.x→1.13.y）自动下载+预检+落位；跨 minor 一律不自动，仅提示。
   // 落位永远只在代理进程不存在时发生（运行中暂存 staged，延到停止/启动/用户点立即应用），绝不静默断流。
   autoUpdateCore?: boolean;
+  // sing-box 版本选择（设置 → 高级 → 内核管理卡）：版本列表是否包含预发布版（alpha / beta / rc；默认 false；读取端
+  // === true 判定，不进 createDefaultConfig）。纯 UI 偏好：只影响列表过滤，不触发下载/安装，也不影响「检查更新」/自动更新
+  // （两者恒只认正式版），不影响 sing-box 配置生成（ProxyManager.configGenerationNorm 已排除，运行中切换不重启）。
+  coreIncludePrerelease?: boolean;
   // Xray 版本选择（设置 → 高级 → Xray 卡）：版本列表是否包含 GitHub 预发布版（默认 false；读取端 === true 判定，
   // 不进 createDefaultConfig）。纯 UI 偏好：只影响列表过滤，不触发任何下载/安装（Xray 无后台自动更新），也不影响
   // sing-box 配置生成（ProxyManager.configGenerationNorm 已排除，运行中切换不重启）。

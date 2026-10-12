@@ -22,7 +22,7 @@ jest.mock('electron', () => ({
   session: { fromPartition: () => ({ setProxy: async () => undefined }) },
 }));
 
-import { CoreDownloader } from '../core-downloader';
+import { CoreDownloader, DOWNLOAD_HASH_MISMATCH } from '../core-downloader';
 
 class FakeReq extends EventEmitter {
   setHeader(): void {}
@@ -90,7 +90,10 @@ describe('CoreDownloader.downloadFile — sha256 完整性校验', () => {
     const before = fs.readdirSync(TMP).length;
     await expect(
       newDownloader().downloadFile('https://example.com/core.tar.gz', false, wrong)
-    ).rejects.toThrow(/完整性校验失败/);
+    ).rejects.toMatchObject({
+      code: DOWNLOAD_HASH_MISMATCH,
+      message: expect.stringMatching(/完整性校验失败/),
+    });
     // 半成品已清，不会被后续流程捡去用。
     // **这条曾是时序相关的**：清理与 reject 原先并发发起（`file.close(); fs.unlink(tempPath, () => {}); … reject(err)`），
     // 于是「promise 落定时临时文件已不在」只是大概率成立 —— macOS CI 实测判红过（Expected: 1 / Received: 2），
@@ -130,6 +133,67 @@ describe('CoreDownloader.downloadFile — sha256 完整性校验', () => {
       newDownloader().downloadFile('https://github.com/x/core.tar.gz', false, 'c'.repeat(64))
     ).rejects.toThrow(/完整性校验失败/);
     expect(call).toBe(2); // 确实重试了；且重试那次没有绕过校验
+  });
+
+  /**
+   * 直连 GitHub 拿到了字节但摘要不符（被篡改 / 劫持），而镜像腿又失败（404 / 超时 / 被拦，很常见）：必须报**完整性
+   * 失败**（code HASH_MISMATCH），不能被镜像的网络错误盖成泛泛的「下载失败」——用户需要知道下载被篡改过。
+   */
+  it('直连摘要不符 + 镜像 404 → 仍以完整性失败 reject（code HASH_MISMATCH，镜像错误挂在 cause）', async () => {
+    let call = 0;
+    mockRequest.mockImplementation(() => {
+      call++;
+      const req = new FakeReq();
+      setImmediate(() => {
+        const res = new FakeRes();
+        if (call === 1) {
+          res.headers['content-length'] = String(BODY.length);
+          req.emit('response', res);
+          setImmediate(() => {
+            res.emit('data', BODY);
+            res.emit('end');
+          });
+        } else {
+          res.statusCode = 404;
+          req.emit('response', res);
+        }
+      });
+      return req;
+    });
+    const before = fs.readdirSync(TMP).length;
+    const err = await newDownloader()
+      .downloadFile('https://github.com/x/core.tar.gz', false, 'd'.repeat(64))
+      .then(
+        () => null,
+        (e: unknown) => e as Error & { code?: string; cause?: unknown }
+      );
+    expect(call).toBe(2);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.code).toBe(DOWNLOAD_HASH_MISMATCH);
+    expect(err!.message).toMatch(/完整性校验失败/);
+    expect((err!.cause as Error)?.message).toBe('Download failed: 404');
+    expect(fs.readdirSync(TMP).length).toBe(before);
+  });
+
+  it('直连网络错误 + 镜像 404 → 报镜像的下载错误（不是完整性失败）', async () => {
+    let call = 0;
+    mockRequest.mockImplementation(() => {
+      call++;
+      const req = new FakeReq();
+      setImmediate(() => {
+        if (call === 1) {
+          req.emit('error', new Error('ECONNRESET'));
+          return;
+        }
+        const res = new FakeRes();
+        res.statusCode = 404;
+        req.emit('response', res);
+      });
+      return req;
+    });
+    const p = newDownloader().downloadFile('https://github.com/x/core.tar.gz', false, BODY_SHA);
+    await expect(p).rejects.toThrow('Download failed: 404');
+    await expect(p).rejects.not.toMatchObject({ code: DOWNLOAD_HASH_MISMATCH });
   });
 
   /**

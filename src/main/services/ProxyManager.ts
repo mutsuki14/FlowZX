@@ -1867,6 +1867,19 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   }
 
   /**
+   * Windows：提权服务锁定的 sing-box 路径与现役核不符（WindowsServiceHelper 状态的 pathMismatch）。
+   * 状态探测失败 / helper 无 getStatus → false（按无漂移处理，行为同改动前）。
+   */
+  private async windowsHelperPathDrift(): Promise<boolean> {
+    try {
+      const st = await this.helperManager?.getStatus();
+      return st?.pathMismatch === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * macOS 提权 helper 引导门控（收敛单点，唯一弹窗实现）。所有 start/restart 入口（开启代理按钮/托盘/
    * 切接管/CONFIG_CHANGED 重启/换节点回退重启…）汇入此处；仅 interactive 启动 + darwin + TUN +
    * helper 未就绪 + 用户未 dismiss 时，经注入回调弹 native 引导（无窗口依赖）；回调返回 'abort' → 抛
@@ -2583,6 +2596,12 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       windowEffects: null,
       // Xray 版本列表「含预发布」纯 UI 偏好（只过滤设置页列表，不触发下载、不影响生成）→ 排除出 norm，运行中拨开关不重启断流。
       xrayIncludePrerelease: null,
+      // sing-box 内核管理三项同属「内核更新偏好」，均不影响 sing-box 生成 → 排除出 norm（运行中拨开关不重启断流）：
+      //   coreIncludePrerelease（版本列表含预发布，纯 UI 过滤）/ autoUpdateCore（调度器读）/
+      //   restrictCoreUpdateToCompatibleMinor（checkUpdate 读）。
+      coreIncludePrerelease: null,
+      autoUpdateCore: null,
+      restrictCoreUpdateToCompatibleMinor: null,
       // fakeIpToggleMigrated / fakeIpTunAutoEnable / nodeResolverMigrated 都是一次性迁移元数据标记，不影响生成
       //   （enableFakeIp / nodeResolver* 本身仍在 norm 内 → 影响生成保留）。若不排除：未来某路径重建 dnsConfig 丢/带
       //   该标记 → norm 翻转无谓重启断流 + 迁移重跑可能从 deprecated 字段回灌覆盖用户自选值。
@@ -5757,7 +5776,8 @@ rm -f "$STOPFLAG"
     // 文案只承诺当前真能做到的动作：TUN 地址尚未开放配置（P1-1 未落地），故引导「移除/禁用占用方网卡」，
     // 不写「到设置里改地址」——UI 上没有那个入口，那是把用户支到死路。
     const terminal = new CoreStartTunPersistentError(
-      `${fatal.message}请断开或禁用占用该地址的网卡（其它 VPN/TUN 客户端的残留适配器），然后重试。`
+      `${fatal.message}请断开或禁用占用该地址的网卡（其它 VPN/TUN 客户端的残留适配器），然后重试。`,
+      fatal.kind
     );
     this.logToManager('error', `TUN 地址冲突，停止重试：${fatal.raw}`);
     this.sendEventToRenderer(IPC_CHANNELS.EVENT_PROXY_ERROR, {
@@ -5977,8 +5997,9 @@ rm -f "$STOPFLAG"
     if (!obs) return err; // 非 win32+TUN → 原样（obs 仅 win32+TUN 时非 null）
     // 曾出现 → 瞬态；探测全程 unknown（杀软拦 PS）→ fail-open 瞬态；两者非持续性 → 原样保持可重试终态。
     if (!isPersistentTunFailure(obs)) return err;
-    // 探测可用且预算内从未见适配器 → 持续性 TUN init 失败终态。
-    const terminal = new CoreStartTunPersistentError();
+    // 探测可用且预算内从未见适配器 → 持续性 TUN init 失败终态。携带核的 FATAL 分类（无 → null）：换核流程据此区分
+    // 「TUN 层失败（环境）」与「核在建 TUN 前就崩（可能是新核本身）」。
+    const terminal = new CoreStartTunPersistentError(undefined, fatal?.kind ?? null);
     this.logToManager(
       'error',
       `Windows TUN 适配器（${resolveWinTunInterfaceName(this.currentConfig as UserConfig)}）持续未建立，起核重试预算耗尽 → 终态诊断，停止无谓重试（常见 wintun 被拦/驱动异常/冲突 VPN，亦可能配置/端口/内核致起核失败——开诊断采集看日志拍板）`
@@ -6065,17 +6086,26 @@ rm -f "$STOPFLAG"
     // 启动失败 → 回退 buildWindowsUacLaunchCommand（每次 UAC）兜底，不在 helper 路径死循环。Windows 无「允许在
     // 后台」概念（backgroundDisabled 恒 false），无需该前置判定；未装 helper → isReady=false → 落下方 UAC 路径。
     if (this.needsWindowsUAC() && this.helperManager && (await this.helperManager.isReady())) {
-      try {
-        return await this.startViaHelper(startGen);
-      } catch (e) {
-        // 起核期未就绪/退出（CoreStartRetryError）≠ helper 启动失败：透传给 runStartWithRetry 静默重起，不回退 UAC。
-        // issue #176：就绪等待期被接管（CoreStartSupersededError）同样透传让位——绝不回退 UAC 起第二条流抢适配器
-        //   （这是 #176 风暴的 Windows 主路径；与上方 macOS 分支 :3559 对齐）。
-        if (e instanceof CoreStartRetryError || e instanceof CoreStartSupersededError) throw e;
+      // 服务只跑安装时锁定的 sing-box：锁定路径与现役核不符（首次核更新 / 版本选择后未修复服务）时经服务起的是旧路径的
+      // 旧核（配置却按现役核版本生成）→ 本次走 UAC 起现役核。引导门控已提示修复；用户选「本次用 UAC 启动」也须走到这里。
+      if (await this.windowsHelperPathDrift()) {
         this.logToManager(
           'warn',
-          `helper 服务启动失败，回退 UAC 路径: ${e instanceof Error ? e.message : String(e)}`
+          '提权服务锁定的内核路径与现役内核不符，本次经 UAC 启动现役内核（修复提权服务后恢复免授权启停）'
         );
+      } else {
+        try {
+          return await this.startViaHelper(startGen);
+        } catch (e) {
+          // 起核期未就绪/退出（CoreStartRetryError）≠ helper 启动失败：透传给 runStartWithRetry 静默重起，不回退 UAC。
+          // issue #176：就绪等待期被接管（CoreStartSupersededError）同样透传让位——绝不回退 UAC 起第二条流抢适配器
+          //   （这是 #176 风暴的 Windows 主路径；与上方 macOS 分支 :3559 对齐）。
+          if (e instanceof CoreStartRetryError || e instanceof CoreStartSupersededError) throw e;
+          this.logToManager(
+            'warn',
+            `helper 服务启动失败，回退 UAC 路径: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
       }
     }
 

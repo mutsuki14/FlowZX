@@ -44,11 +44,50 @@ const MIN_USABLE_PROTO = 1;
 // MeshExitRouteManager 调用，而其 win32 路径已 no-op 不可达。故期望 proto 降回 MIN_USABLE_PROTO → 不再对 v1–v4
 // 旧 helper 弹「可升级」提示（那些高 proto 能力 Windows 已不调用）。将来若 Windows 重新启用 route 命令再上调。
 const EXPECTED_PROTO = MIN_USABLE_PROTO;
+/** 核更新 / 版本选择写入的 userData 可写核槽位（ResourceManager.getSingBoxUpdateTargetPath 的 win32 分支）路径尾段。 */
+const UPDATE_SLOT_SUFFIX = '\\core_update\\sing-box.exe';
+
+/**
+ * 从 `sc.exe qc FlowZHelper` 的输出里取出服务锁定的 `--singbox` 路径（BINARY_PATH_NAME 一行；安装脚本给它加了真双引号，
+ * 也容忍无引号形态）。取不到 → null（调用方按「无从判断」处理，不报漂移）。
+ * sc.exe 的字段名不随系统语言变化；路径里的非 ASCII 字符按 OEM 代码页输出、Node 按 UTF-8 解码会变成乱码，但 `"` 在
+ * 常见 OEM 多字节编码（GBK / Big5 / Shift_JIS）里都不会作为尾字节出现，故按引号切分仍可靠。
+ */
+export function parseLockedSingboxPath(scQcOutput: string): string | null {
+  const line = /BINARY_PATH_NAME\s*:\s*(.*)$/m.exec(scQcOutput || '')?.[1] ?? '';
+  const m = /--singbox\s+(?:"([^"]+)"|(\S+))/.exec(line);
+  const p = (m?.[1] ?? m?.[2] ?? '').trim();
+  return p || null;
+}
+
+/**
+ * 服务锁定的 sing-box 路径是否与 app 现役核（getSingBoxPath）不同：服务只跑安装时锁定的那一个（helper-win --singbox），
+ * 首次核更新 / 版本选择把现役核切到 userData\core_update 后，TUN 经服务起的仍是旧路径的旧核。
+ * 两侧都是纯 ASCII → 大小写不敏感全路径比较（Windows 路径语义）；任一侧含非 ASCII（用户名等，sc.exe 输出解码后已不
+ * 可信）→ 只比「是否为核更新槽位」，宁可漏报也不对每次 TUN 启动误报「需修复」（修复后仍误报会形成死循环）。
+ */
+export function lockedSingboxPathDiffers(locked: string, expected: string): boolean {
+  const norm = (p: string) => p.trim().replace(/\//g, '\\').toLowerCase();
+  const a = norm(locked);
+  const b = norm(expected);
+  // eslint-disable-next-line no-control-regex
+  const ascii = (p: string) => /^[\x00-\x7f]*$/.test(p);
+  if (ascii(a) && ascii(b)) return a !== b;
+  return a.endsWith(UPDATE_SLOT_SUFFIX) !== b.endsWith(UPDATE_SLOT_SUFFIX);
+}
 
 export class WindowsServiceHelper implements IPrivilegedHelper {
   /** 装/卸互斥期返回最近稳定快照，避免 TOCTOU 半态（对齐 HelperManager.lastStableStatus）。 */
   private lastStableStatus: HelperStatus | null = null;
   private mutationInFlight = false;
+  /** 服务锁定的 --singbox 路径缓存（只在本类 install/uninstall 时变；取成功才缓存，失败下次重取）。 */
+  private lockedSingboxPathCache: string | null = null;
+  /**
+   * 锁定路径缓存的世代：install / uninstall 作废缓存时 +1。`sc qc` 发起时记下世代，回来时世代已变（发起于改动之前 /
+   * 之中，读到的可能是改动前的旧锁定路径）→ 只返回不写缓存，免得修复成功后仍长期报「路径漂移」。
+   */
+  private lockedPathEpoch = 0;
+  private pathMismatchWarned = false;
 
   constructor(private logManager?: ILogManager | null) {}
 
@@ -138,6 +177,30 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
     });
   }
 
+  /** 作废锁定路径缓存并推进世代（在途的 `sc qc` 回来后不再写缓存）。 */
+  private invalidateLockedPathCache(): void {
+    this.lockedSingboxPathCache = null;
+    this.lockedPathEpoch++;
+  }
+
+  /** 服务锁定的 --singbox 路径（`sc qc`；带 8192 字节缓冲——默认缓冲装不下长 BINARY_PATH_NAME 会报 122）。失败 → null。 */
+  private queryLockedSingboxPath(): Promise<string | null> {
+    if (this.lockedSingboxPathCache) return Promise.resolve(this.lockedSingboxPathCache);
+    const epoch = this.lockedPathEpoch;
+    return new Promise((resolve) => {
+      execFile(
+        system32('sc.exe'),
+        ['qc', SERVICE_NAME, '8192'],
+        { timeout: 4000, windowsHide: true },
+        (err, stdout) => {
+          const locked = err ? null : parseLockedSingboxPath(String(stdout || ''));
+          if (locked && epoch === this.lockedPathEpoch) this.lockedSingboxPathCache = locked;
+          resolve(locked);
+        }
+      );
+    });
+  }
+
   /** 快速判定能否零提权驱动（ProxyManager 启动路由用）。 */
   async isReady(): Promise<boolean> {
     if (!this.supported || !this.token()) return false;
@@ -179,6 +242,26 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
         /* 未就绪 */
       }
     }
+    // 锁定路径漂移：服务只跑安装时锁定的 sing-box（helper-win --singbox）。首次核更新 / 版本选择后现役核换到
+    // userData\core_update，TUN 经服务起的却仍是旧路径的旧核（换核 / 预检 / gVisor 守卫验的都不是它）。检测到 →
+    // needsRepair：TUN 启动的引导门控据此提示修复（重装服务即重新锁定当前路径），ProxyManager 期间也不经服务起核。
+    // 取不到锁定路径 → 无从判断，不报（不因 sc 偶发失败反复弹修复）。
+    let installedSingboxPath: string | null = null;
+    let pathMismatch = false;
+    if (installed) {
+      installedSingboxPath = await this.queryLockedSingboxPath();
+      if (installedSingboxPath) {
+        const expected = resourceManager.getSingBoxPath();
+        pathMismatch = lockedSingboxPathDiffers(installedSingboxPath, expected);
+        if (pathMismatch && !this.pathMismatchWarned) {
+          this.pathMismatchWarned = true; // 状态高频刷新，仅首次记日志
+          this.log(
+            'warn',
+            `提权服务锁定的内核路径与现役内核不符（服务=${installedSingboxPath} 现役=${expected}），TUN 需修复服务后才会用现役内核`
+          );
+        }
+      }
+    }
     return {
       supported: true,
       installed,
@@ -187,14 +270,11 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
       version,
       // SCM RUNNING 即「已加载」；未安装为 null（对齐 HelperManager.loaded 语义）。
       loaded: installed ? running : null,
-      needsRepair: installed && !ready,
-      // 以下为 macOS 专属字段，Windows 恒默认值（消费方契约：先判 backgroundDisabled 再判 needsRepair）。
+      needsRepair: installed && (!ready || pathMismatch),
+      // macOS 专属字段，Windows 恒 false（消费方契约：先判 backgroundDisabled 再判 needsRepair）。
       backgroundDisabled: false,
-      // 已知限制（待真机/后续）：Windows 核更新（Portable 模式写 userData/core_update）后，服务 binPath
-      // 仍指向安装时锁定的 sing-box，此处不检测漂移（恒 false）→ 不触发修复 gate。后续可比对服务 ImagePath 的 --singbox
-      // 段 vs 当前 getSingBoxPath() 实现之；当前 Windows 核更新走 app 侧、非 helper，影响有限。
-      pathMismatch: false,
-      installedSingboxPath: null,
+      pathMismatch,
+      installedSingboxPath,
     };
   }
 
@@ -303,6 +383,9 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
       };
     }
     this.mutationInFlight = true;
+    // 重装会按当前 getSingBoxPath 重新锁定 --singbox：作废锁定路径缓存（之后的状态重新 sc qc）。
+    this.invalidateLockedPathCache();
+    this.pathMismatchWarned = false;
     try {
       const exe = resourceManager.getWinHelperPath();
       if (!fs.existsSync(exe)) {
@@ -333,6 +416,8 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
 
       const script = this.buildInstallScript(exe, singboxPath, confDir, token);
       const result = await this.runElevatedPowerShell(script);
+      // 提权脚本期间（服务尚未重建）发起的状态查询可能已把旧锁定路径写进缓存：脚本结束（服务已按新路径重建或未变）再作废一次。
+      this.invalidateLockedPathCache();
       if (!result.success) {
         return { success: false, error: result.error, status: await this.computeStatus() };
       }
@@ -367,6 +452,8 @@ export class WindowsServiceHelper implements IPrivilegedHelper {
       };
     }
     this.mutationInFlight = true;
+    this.invalidateLockedPathCache();
+    this.pathMismatchWarned = false;
     try {
       // 1) 管道自卸载（零 UAC）。仅 helper 就绪（有 token + 管道可达）时可行。
       let done = false;

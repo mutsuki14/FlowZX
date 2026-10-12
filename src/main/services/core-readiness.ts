@@ -9,6 +9,8 @@
  */
 import { connect } from 'net';
 
+import type { SingBoxFatalKind } from '../../shared/singbox-fatal';
+
 /**
  * 「核已起但起核期未就绪/退出，应交 runStartWithRetry 静默重起」的标记错误。
  * 关键：startSingBoxProcess 的 helper 路径 catch 会把**普通**错误回退到提权路径（UAC/osascript）——若就绪失败抛普通
@@ -50,7 +52,12 @@ export class CoreStartTunPersistentError extends Error {
   // 冷启拉 ruleset 超时）同样命中——那些场景适配器也从未创建。故文案**不独指 wintun**：先陈述观测事实 + 引导开诊断采集
   // 定位（真正拍板证据），再把 wintun/冲突 VPN 列为常见原因之一。定向到具体根因的日志佐证留真机项 #1 后增强。
   constructor(
-    message = 'TUN 适配器持续未能建立，起核重试均未成功——已停止无谓重试。常见原因：wintun 驱动被杀软拦截/损坏、其它 VPN/TUN 客户端占用，或内核/配置/端口导致起核失败。请开启「诊断采集」重导日志以定位；若确为 wintun，检查杀软隔离区的 wintun.dll 并关闭其它 TUN/VPN 客户端后重试。'
+    message = 'TUN 适配器持续未能建立，起核重试均未成功——已停止无谓重试。常见原因：wintun 驱动被杀软拦截/损坏、其它 VPN/TUN 客户端占用，或内核/配置/端口导致起核失败。请开启「诊断采集」重导日志以定位；若确为 wintun，检查杀软隔离区的 wintun.dll 并关闭其它 TUN/VPN 客户端后重试。',
+    /**
+     * 判定时核自己写的 FATAL 分类（null = 未读到 FATAL，如起核前就崩 / panic）。'tun-*' = 失败落在 TUN 层（地址冲突、
+     * wintun 适配器创建等，环境原因）；'other' / null = 预算耗尽的泛化终态，成因可能就是内核本身（换核后据此决定回滚）。
+     */
+    readonly fatalKind: SingBoxFatalKind | null = null
   ) {
     super(message);
     this.name = 'CoreStartTunPersistentError';

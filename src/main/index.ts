@@ -383,8 +383,10 @@ async function promptHelperGate(
     mainWindow.focus();
   }
   if (process.platform === 'win32') {
-    // Windows：无「允许在后台」概念（backgroundDisabled 恒 false）。needsRepair(已装未就绪) → 修复；未装 → 安装。
-    // 任一路径仅弹一次 UAC（装服务需管理员授权）；「用 UAC 启动」= 本次回退 buildWindowsUacLaunchCommand（每次 UAC）。
+    // Windows：无「允许在后台」概念（backgroundDisabled 恒 false）。needsRepair(已装未就绪 / 锁定的内核路径与现役核不符)
+    // → 修复；未装 → 安装。任一路径仅弹一次 UAC（装服务需管理员授权）；「用 UAC 启动」= 本次回退
+    // buildWindowsUacLaunchCommand（每次 UAC；路径不符时 ProxyManager 也不经服务起旧核）。
+    // pathMismatch：服务只跑安装时锁定的 sing-box，核更新 / 版本选择换了现役核后需重装服务重新锁定（文案分流）。
     if (hs.needsRepair) {
       const { response } = await dialog.showMessageBox({
         type: 'question',
@@ -392,7 +394,7 @@ async function promptHelperGate(
         defaultId: 0,
         cancelId: 2,
         message: mt('dlgWinRepairServiceMsg'),
-        detail: mt('dlgWinRepairDetail'),
+        detail: hs.pathMismatch ? mt('dlgWinRepairPathMismatchDetail') : mt('dlgWinRepairDetail'),
       });
       if (response === 2) return 'abort';
       if (response === 0) await helperManager.install().catch(() => {});
@@ -1931,6 +1933,26 @@ if (gotTheLock) {
     // 说明：同节点「原地重启」由 ProxyManager 内部接管（handleProcessExit / 健康检查 → attemptAutoRestart，
     // 单一计数器 + 上限 + 冷却）。'error' 仅在「自动重启被抑制（核心更新校验窗口）或已达上限」时触发，
     // 故此处只需处理：核心回滚 → 放弃恢复并清理系统代理。崩溃不触发换节点（换节点交给心跳连通性检测）。
+    //
+    // 新核心首次启动失败（自动重启被抑制时）→ 自动回滚旧核心并以旧核重启。'error' 监听与「推迟的回滚」共用：报错时若
+    // 另一内核操作正持锁（安装 / 更新 / 自动轮次 / 手动替换对话框…），CoreUpdateService 把回滚推迟到放锁时再经此执行。
+    const rollbackPendingCoreAndRestart = async (): Promise<boolean> => {
+      const rolledBack = await coreUpdateService.autoRollbackIfPendingUpdate();
+      if (rolledBack) {
+        if (isQuitting) return rolledBack; // 退出拆除中：只回滚，不再起代理
+        logManager.addLog('warn', '新核心启动失败，已自动回滚，正在以旧核心重启代理...', 'Main');
+        const cfg = await configManager.loadConfig();
+        await proxyManager?.start(cfg);
+      }
+      return rolledBack;
+    };
+    coreUpdateService.setDeferredRollbackHandler(async () => {
+      try {
+        await rollbackPendingCoreAndRestart();
+      } catch (rollbackErr) {
+        logManager.addLog('error', `自动回滚重启失败: ${rollbackErr}`, 'Main');
+      }
+    });
     proxyManager.on(
       'error',
       async (error: { message: string; code?: number; errorCode?: string }) => {
@@ -1949,17 +1971,8 @@ if (gotTheLock) {
           const rolledBack =
             error.errorCode === ProxyErrorCode.TUN_INIT_PERSISTENT
               ? false
-              : await coreUpdateService.autoRollbackIfPendingUpdate();
-          if (rolledBack) {
-            logManager.addLog(
-              'warn',
-              '新核心启动失败，已自动回滚，正在以旧核心重启代理...',
-              'Main'
-            );
-            const cfg = await configManager.loadConfig();
-            await proxyManager?.start(cfg);
-            return;
-          }
+              : await rollbackPendingCoreAndRestart();
+          if (rolledBack) return;
         } catch (rollbackErr) {
           logManager.addLog('error', `自动回滚重启失败: ${rollbackErr}`, 'Main');
         }
@@ -2143,7 +2156,9 @@ if (gotTheLock) {
           thresholdMb: RENDERER_RSS_LIMIT_MB,
         }),
         // 测速专项诊断：最近一次临时测速 sing-box config + 逐节点失败 reason。DiagnosticService 内统一脱敏。
-        () => speedTestService?.getLastSpeedTestDiagnostics() ?? null
+        () => speedTestService?.getLastSpeedTestDiagnostics() ?? null,
+        // sing-box 固定版本（内核版本行标「已固定」）：读状态文件 + 版本缓存，不 spawn 内核。
+        () => coreUpdateService.getAutoStatus()
       );
       registerDiagnosticHandlers(diagnosticService);
     }

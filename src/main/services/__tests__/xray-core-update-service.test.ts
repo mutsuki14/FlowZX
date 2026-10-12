@@ -686,6 +686,16 @@ describe('install：摘要（API digest × .dgst）', () => {
     });
   });
 
+  it('下载器以 code HASH_MISMATCH 拒绝（直连摘要不符、镜像腿又失败）→ 按 code 判 HASH_MISMATCH', async () => {
+    const env = makeEnv();
+    env.downloader.downloadFile.mockRejectedValueOnce(
+      Object.assign(new Error('sha256 mismatch'), { code: 'HASH_MISMATCH' })
+    );
+    const res = await env.svc.install({ tag: 'v26.10.10' });
+    expect(res).toMatchObject({ ok: false, code: 'HASH_MISMATCH' });
+    expect(env.readSlot()).toBeNull();
+  });
+
   it('下载内容与摘要不符（镜像投毒）→ HASH_MISMATCH，槽位不动', async () => {
     const env = makeEnv({
       release: { 'v26.10.10': { digest: `sha256:${'1'.repeat(64)}`, listsDgst: false } },

@@ -878,6 +878,17 @@ export class ConfigManager implements IConfigManager {
       );
       delete config.xrayIncludePrerelease;
     }
+    // coreIncludePrerelease：sing-box 版本列表含预发布（同 xrayIncludePrerelease 处置：非 boolean 删除不 throw、不回填默认）。
+    if (
+      config.coreIncludePrerelease !== undefined &&
+      typeof config.coreIncludePrerelease !== 'boolean'
+    ) {
+      this.log(
+        'warn',
+        'coreIncludePrerelease must be a boolean; dropping it (falls back to disabled)'
+      );
+      delete config.coreIncludePrerelease;
+    }
     // mainSessionViaProxy 新增字段：非法类型 sanitize（undefined=true 兼容老配置，gate 用 !== false）
     if (
       config.mainSessionViaProxy !== undefined &&
