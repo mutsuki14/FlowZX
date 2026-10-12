@@ -9,6 +9,8 @@
  *  - 节点（含其前置代理链）只以 describeSelectedNodeCore 产出的闭合枚举进入正文（标签全部来自本文件的常量表）；
  *  - Xray 状态只读 available / version / running / nodes / source / prerelease / belowMinimum / minVersion
  *    （可直接传整份 IPC 结果；path / overrideDir / pid / tag / installedAt 不读）；来源按本文件标签表映射；
+ *  - sing-box 版本通道只读 build / bundledVersion / pinned.version（可直接传整份 getVersionInfo 结果），标注来自
+ *    shared/singbox-release#singboxChannelLabels 的常量词；
  *  - 代理模式 / 分流策略按本文件标签表映射，表外值与其余自由文本（版本号 / 系统串）一律过 sanitizeField：
  *    去控制字符与换行、剥 Markdown 结构字符、限长。
  */
@@ -16,6 +18,8 @@ import type { ProxyMode, ProxyModeType, ServerConfig } from '../../shared/types'
 import { xrayRequirement, type XrayRequirement } from '../../shared/xray';
 import { isDirectSelection } from '../../shared/direct-selection';
 import type { XraySource } from '../../shared/xray-release';
+import { singboxChannelLabels } from '../../shared/singbox-release';
+import type { CoreBuildKind } from '../../shared/core-build';
 
 /**
  * 预填 URL 总长上限。GitHub 新建 issue 页对超长 query 回 414；Electron shell.openExternal 在各平台都能递交该长度
@@ -44,6 +48,19 @@ export interface BugReportXrayStatus {
   minVersion?: string;
 }
 
+/**
+ * sing-box 版本通道（api.coreUpdate.getVersionInfo() 的子集，可直接传整份结果：只读 build / bundledVersion /
+ * pinned.version，备份版本等其它字段不进正文）。
+ */
+export interface BugReportSingboxStatus {
+  /** 现役内核来源：official / fork（第三方）/ unknown。 */
+  build?: CoreBuildKind;
+  /** 本版 FlowZX 随包的 sing-box 版本。 */
+  bundledVersion?: string | null;
+  /** 生效中的固定版本（版本选择里「固定此版本」，自动更新暂停）；null = 未固定。 */
+  pinned?: { version: string } | null;
+}
+
 /** 当前选中出口走哪个内核（闭合枚举，不携带任何节点字段）。 */
 export type SelectedNodeCore =
   | { kind: 'none' } // 未选择节点
@@ -63,6 +80,8 @@ export interface BugReportEnv {
   /** os.release()，如 macOS 的 24.5.0 / Windows 的 10.0.22631 */
   osVersion?: string;
   singBoxVersion?: string;
+  /** sing-box 版本通道（随包 / 预发布 / 已固定 / 第三方）；null / 缺省 = 未取到（只写版本号）。 */
+  singBox?: BugReportSingboxStatus | null;
   /** UserConfig.proxyModeType（接管方式）：'systemProxy' | 'tun' | 'manual' */
   proxyModeType?: string;
   /** UserConfig.proxyMode（分流策略）：'smart' | 'global' | 'direct' */
@@ -157,6 +176,24 @@ export function formatRoutingMode(env: BugReportEnv): string {
   const mode = sanitizeField(env.routingMode);
   if (!mode) return '';
   return ownLabel(ROUTING_MODE_LABEL, mode) ?? mode;
+}
+
+/**
+ * sing-box 版本 + 简短通道标注（与诊断报告同词）：「1.15.0-alpha.12（预发布 · 已固定）」/「1.14.0-rc.1（随包）」/
+ * 「1.14.3」/「1.14.0-rc.1（第三方）」。未取到通道信息 → 只写版本号；版本缺省 → 空串（留空待填）。
+ */
+export function formatSingBoxVersion(env: BugReportEnv): string {
+  const version = sanitizeField(env.singBoxVersion);
+  if (!version) return '';
+  const sb = env.singBox;
+  if (!sb) return version;
+  const pinned = sb.pinned;
+  const labels = singboxChannelLabels(String(env.singBoxVersion), {
+    build: sb.build,
+    bundledVersion: typeof sb.bundledVersion === 'string' ? sb.bundledVersion : null,
+    pinnedVersion: pinned && typeof pinned.version === 'string' ? pinned.version : null,
+  });
+  return labels.length > 0 ? `${version}（${labels.join(' · ')}）` : version;
 }
 
 /**
@@ -281,7 +318,7 @@ function renderBody(env: BugReportEnv, level: BodyLevel): string {
     '## 环境（自动采集，请保留）',
     `- FlowZX 版本：${sanitizeField(env.appVersion)}`,
     `- 系统 + 架构：${formatSystemInfo(env)}`,
-    `- sing-box 内核版本：${sanitizeField(env.singBoxVersion)}`,
+    `- sing-box 内核版本：${formatSingBoxVersion(env)}`,
     `- Xray 内核版本 + 状态：${formatXrayStatus(env)}`,
     `- 当前节点内核：${formatSelectedNodeCore(env)}`,
     `- 代理模式：${formatProxyMode(env)}`,

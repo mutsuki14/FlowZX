@@ -41,6 +41,13 @@ import type {
   XrayRestoreResult,
   XraySource,
 } from '../../shared/xray-release';
+import type {
+  SingboxInstallProgressEvent,
+  SingboxInstallResult,
+  SingboxInstallState,
+  SingboxPin,
+  SingboxReleaseList,
+} from '../../shared/singbox-release';
 
 export const proxyApi = {
   async start(config: UserConfig): Promise<void> {
@@ -663,6 +670,10 @@ export const coreUpdateApi = {
     build: 'official' | 'fork' | 'unknown';
     /** push 型版本变更待展示通知（非空=有一条待弹）；banner 读它决定是否弹（取代旧推断式比对）。 */
     pendingChangeNotice?: { previousVersion: string; currentVersion: string } | null;
+    /** 随包（出厂）内核版本 = 版本选择的最低可选版本。 */
+    bundledVersion: string;
+    /** 生效中的固定版本（当前内核仍是它时自动更新暂停）；无 / 已陈旧 → null。 */
+    pinned: SingboxPin | null;
   }> {
     return ipcClient.invoke(IPC_CHANNELS.CORE_GET_VERSION_INFO);
   },
@@ -694,6 +705,7 @@ export const coreUpdateApi = {
    *   否则直接换核返回 `{ ok:true, build }`（build 供 UI 对 fork/unknown 追加来源提示，B-3）。
    * - 传 `{ filePath, force:true }`：跳过同版本/基线确认，直接换该文件。
    * 用户取消文件选择器时主进程返回 `{ ok:false }`（无 needConfirm），UI 静默不提示。
+   * 另一内核操作 / Xray 切换在进行 → `{ ok:false, code:'BUSY'|'XRAY_BUSY', error }`（rollback / applyStaged 同理以带 code 的错误 reject）。
    */
   async replaceManual(opts?: { filePath?: string; force?: boolean }): Promise<
     | { ok: true; build?: CoreBuildKind }
@@ -706,15 +718,19 @@ export const coreUpdateApi = {
         bundledVersion?: string;
         filePath?: string;
         error?: string;
+        /** 未开始即被拒：BUSY = 另一内核操作（安装 / 更新 / 恢复随包 / 回滚）在飞；XRAY_BUSY = Xray 正在切换。 */
+        code?: 'BUSY' | 'XRAY_BUSY';
       }
   > {
     return ipcClient.invoke(IPC_CHANNELS.CORE_REPLACE_MANUAL, opts);
   },
 
   /**
-   * B6：重置内核到出厂版本（恢复为随 App 出厂的内核）。
+   * B6：重置内核到出厂版本（恢复为随 App 出厂的内核；版本选择的「恢复随包」同经此处）。
+   * 进度经 onInstallProgress 推送（kind 'reset'）。code 仅在未开始时给出：BUSY = 已有内核更新 / 安装 / 换核在进行；
+   * XRAY_BUSY = Xray 正在切换。成功后固定 / 暂存核一并清除。
    */
-  async resetFactory(): Promise<{ ok: boolean; error?: string }> {
+  async resetFactory(): Promise<{ ok: boolean; error?: string; code?: 'BUSY' | 'XRAY_BUSY' }> {
     return ipcClient.invoke(IPC_CHANNELS.CORE_RESET_FACTORY);
   },
 
@@ -723,6 +739,8 @@ export const coreUpdateApi = {
     lastCheckAt: number | null;
     staged: { version: string; stagedAt: string } | null;
     crossBandLatest: string | null;
+    /** 固定版本（非 null = 自动更新暂停；仅当前内核仍是该版本时给出）。 */
+    pinned: SingboxPin | null;
   }> {
     return ipcClient.invoke(IPC_CHANNELS.CORE_UPDATE_GET_AUTO_STATUS);
   },
@@ -742,9 +760,50 @@ export const coreUpdateApi = {
       lastCheckAt: number | null;
       staged: { version: string; stagedAt: string } | null;
       crossBandLatest: string | null;
+      /** 固定版本（安装固定 / 取消固定 / 回滚等改版本路径清除后推送）。 */
+      pinned: SingboxPin | null;
     }) => void
   ): () => void {
     return ipcClient.on(IPC_CHANNELS.EVENT_CORE_AUTO_UPDATE_STATUS, listener);
+  },
+
+  // ── 版本选择（含预发布）：渲染端只传 tag / force / pin；下载 URL 与 sha256 由主进程按 tag 现取并校验。
+  //    预期内的失败（BUSY / NO_ASSET / NO_HASH / PREFLIGHT_FAILED / GVISOR_MISSING / START_FAILED …）以 `{ ok:false, code }`
+  //    返回；listReleases 失败则 reject（error.code = RATE_LIMITED / NETWORK）。
+
+  /** SagerNet/sing-box release 列表（已剔除草稿 / 低于随包版本 / 无本平台资产者，新→旧；是否显示预发布由调用方按开关过滤）。主进程缓存 10 分钟，force 绕过。 */
+  async listReleases(force?: boolean): Promise<SingboxReleaseList> {
+    return ipcClient.invoke(IPC_CHANNELS.CORE_LIST_RELEASES, { force: force === true });
+  },
+
+  /**
+   * 安装并切换到 tag（代理在跑则停 → 换 → 起，起不来自动回滚）。
+   * opts.force：当前是第三方内核时，用户已确认覆盖（fork 留作备份可回滚）；opts.pin：成功后固定此版本（自动更新暂停）。
+   */
+  async installTag(
+    tag: string,
+    opts?: { force?: boolean; pin?: boolean }
+  ): Promise<SingboxInstallResult> {
+    return ipcClient.invoke(IPC_CHANNELS.CORE_INSTALL_TAG, {
+      tag,
+      force: opts?.force === true,
+      pin: opts?.pin === true,
+    });
+  },
+
+  /** 进行中的安装 / 恢复随包（null=空闲）；设置卡挂载时调用以找回卸载期间的进度。 */
+  async getInstallState(): Promise<SingboxInstallState> {
+    return ipcClient.invoke(IPC_CHANNELS.CORE_GET_INSTALL_STATE);
+  },
+
+  /** 取消固定版本（恢复自动更新）。 */
+  async clearPin(): Promise<void> {
+    await ipcClient.invoke(IPC_CHANNELS.CORE_CLEAR_PIN);
+  },
+
+  /** 订阅安装 / 恢复随包进度；载荷 null = 本次操作已结束（应刷新状态）。返回退订函数。 */
+  onInstallProgress(listener: (progress: SingboxInstallProgressEvent) => void): () => void {
+    return ipcClient.on(IPC_CHANNELS.EVENT_CORE_INSTALL_PROGRESS, listener);
   },
 };
 

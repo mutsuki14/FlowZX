@@ -37,6 +37,15 @@ function withErrorFields(err: Error, fields: { code?: string; status?: number })
   return Object.assign(err, fields);
 }
 
+/**
+ * downloadFile 内容摘要不符时 reject 的 Error.code。调用方按它映射「完整性失败」，不靠匹配中文文案；镜像重试腿失败时
+ * 这个错误也会保留下来（见 downloadFile 的 handleError）。
+ */
+export const DOWNLOAD_HASH_MISMATCH = 'HASH_MISMATCH';
+
+const isHashMismatch = (e: unknown): boolean =>
+  (e as { code?: unknown } | null)?.code === DOWNLOAD_HASH_MISMATCH;
+
 export class CoreDownloader {
   // direct 自举兜底会话（强制 mode:direct）：核下载是自举链路，UpdateNetwork 未注入 / update-in 端口不可用 /
   // sessionFor 失败时回落此口——绝不回落 default session（核更新链路统一经本类专用会话，default session 已
@@ -336,7 +345,13 @@ export class CoreDownloader {
               `下载出错，尝试使用加速镜像: ${err.message}`,
               'CoreDownloader'
             );
-            this.downloadFile(mirrorUrl, true, expectedSha256, opts).then(resolve).catch(reject);
+            // 直连那次已拿到字节但摘要不符、而镜像腿又失败（404 / 超时 / 被拦，很常见）：上报完整性失败——它才是没装
+            // 的根因（被篡改 / 劫持的下载），镜像自己的网络错误只挂在 cause 上。否则用户只看到一句泛泛的「下载失败」。
+            this.downloadFile(mirrorUrl, true, expectedSha256, opts)
+              .then(resolve)
+              .catch((mirrorErr: unknown) =>
+                reject(isHashMismatch(err) ? Object.assign(err, { cause: mirrorErr }) : mirrorErr)
+              );
             return;
           }
           reject(err);
@@ -401,8 +416,11 @@ export class CoreDownloader {
               }
               if (actual !== expectedSha256) {
                 handleError(
-                  new Error(
-                    `内核完整性校验失败：sha256 期望 ${expectedSha256}，实得 ${actual}（下载被篡改或镜像返回了不同的文件）`
+                  withErrorFields(
+                    new Error(
+                      `内核完整性校验失败：sha256 期望 ${expectedSha256}，实得 ${actual}（下载被篡改或镜像返回了不同的文件）`
+                    ),
+                    { code: DOWNLOAD_HASH_MISMATCH }
                   )
                 );
                 return;

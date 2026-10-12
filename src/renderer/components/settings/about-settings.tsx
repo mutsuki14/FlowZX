@@ -21,6 +21,9 @@ import {
 } from '@/lib/issue-report';
 import { REPO_URL } from '../../../shared/repo';
 
+/** 内核管理卡同源的 sing-box 版本信息（报告只读 build / bundledVersion / pinned.version 与现役版本号）。 */
+type SingBoxVersionInfo = Awaited<ReturnType<typeof api.coreUpdate.getVersionInfo>>;
+
 interface VersionInfo {
   appVersion: string;
   appName: string;
@@ -40,6 +43,8 @@ export function AboutSettings() {
   // Xray sidecar 状态（版本 / 来源 / 运行态 / 节点数）同样带进报告；代理启停改变运行态 → 随 proxyPhase 刷新（同 Xray 内核卡）。
   const proxyPhase = useAppStore((s) => s.proxyPhase);
   const [xrayStatus, setXrayStatus] = useState<BugReportXrayStatus | null>(null);
+  // sing-box 版本通道（随包 / 预发布 / 已固定 / 第三方）同样带进报告：内核管理卡同源的 getVersionInfo（不阻塞页面加载）。
+  const [singBoxInfo, setSingBoxInfo] = useState<SingBoxVersionInfo | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -57,6 +62,10 @@ export function AboutSettings() {
 
   useEffect(() => {
     loadVersionInfo();
+    void api.coreUpdate
+      .getVersionInfo()
+      .then(setSingBoxInfo)
+      .catch(() => setSingBoxInfo(null));
     return () => {
       if (progressUnsubscribeRef.current) {
         progressUnsubscribeRef.current();
@@ -190,15 +199,23 @@ export function AboutSettings() {
     await openExternal(url);
   };
 
-  // 打开 GitHub 新建 issue 页，正文已自动带上版本/系统/架构/内核（含 Xray 运行态与当前节点所用内核）/代理模式/分流策略，
+  // 打开 GitHub 新建 issue 页，正文已自动带上版本/系统/架构/内核（含 sing-box 通道与固定、Xray 运行态与当前节点所用内核）/代理模式/分流策略，
   // 报告者只需补问题描述与日志。代理模式（系统代理/TUN/仅本地代理）是 #57 类问题的关键定位信息。
   // 节点只以「走哪个内核 + 原因」的枚举进入正文，名称/地址/凭据不出 describeSelectedNodeCore。
   const handleReportIssue = async () => {
     // 点击时再取一次 Xray 状态（页面打开期间配置重载可能改变运行态 / 节点数）；1.5s 未回则用挂载时的快照，不让按钮卡住。
-    const freshXray = await Promise.race([
-      api.proxy.getXrayStatus().catch(() => null),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    // sing-box 通道 / 固定同理（固定可能刚在内核管理卡里改过）。两者并发取，共用 1.5s 上限。
+    const [freshXray, freshSingBox] = await Promise.all([
+      Promise.race([
+        api.proxy.getXrayStatus().catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]),
+      Promise.race([
+        api.coreUpdate.getVersionInfo().catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]),
     ]);
+    const singBox = freshSingBox ?? singBoxInfo;
     // 点击时读 store：代理模式 / 分流策略 / 选中节点都取当下值。
     const config = useAppStore.getState().config;
     const url = buildBugReportUrl(versionInfo?.repositoryUrl || REPO_URL, {
@@ -206,7 +223,11 @@ export function AboutSettings() {
       platform: versionInfo?.platform,
       arch: versionInfo?.arch,
       osVersion: versionInfo?.osVersion,
-      singBoxVersion: versionInfo?.singBoxVersion,
+      // 现役版本优先取与通道同一次读到的（刚在内核管理卡换过版本时「关于」页的缓存可能滞后），取不到再用「关于」页的。
+      singBoxVersion: /^\d+\.\d+/.test(singBox?.currentVersion ?? '')
+        ? singBox?.currentVersion
+        : versionInfo?.singBoxVersion,
+      singBox,
       proxyModeType: config?.proxyModeType,
       routingMode: config?.proxyMode,
       xray: freshXray ?? xrayStatus,

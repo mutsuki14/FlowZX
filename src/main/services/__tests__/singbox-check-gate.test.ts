@@ -26,7 +26,8 @@
  *     的 config 也会 exit=0 假绿。
  *  2. 前置缺失时失败还是静默跳过？—— 内核缺失即**硬 fail**，且**无任何豁免通道**：既没有 return 型 skip，也没有
  *     环境变量开关。豁免曾经存在的唯一理由是「CI 无核却要跑本门」；换成上述调用位置后该前提消失，再留着
- *     就只剩关门用途，故一并删净。
+ *     就只剩关门用途，故一并删净。`SB_CORE=<路径>` 只**换被校验的内核**（验证候选版本，如版本选择要放出的新 tag：
+ *     `SB_CORE=/path/to/sing-box npm run test:core-gate`），不是豁免：它指向的文件缺失 / 不可执行同样硬 fail。
  *  3. 靠语义还是位置巧合？—— 断言的是内核退出码与 stderr 语义，且用**变异自检**证明本 harness 抓得到失败
  *     （最后一个用例：把 strategy 改成非法值，要求 check 必须 FATAL；否则说明 harness 恒绿=没门）。
  *
@@ -69,7 +70,11 @@ function bundledCorePath(): string {
   }
   return path.join(REPO_ROOT, 'resources/linux/sing-box');
 }
-const CORE = bundledCorePath();
+/**
+ * 被校验的内核：缺省随包内核；`SB_CORE` 覆写为任意 sing-box 二进制（相对路径按 cwd 解析）。覆写不放宽任何前置——
+ * 指向的文件缺失 / 不可执行照样硬 fail（见文件头「门的三问」第 2 问）。生成器目标版本仍钉 1.14.0（见 svcFor）。
+ */
+const CORE = process.env.SB_CORE ? path.resolve(process.env.SB_CORE) : bundledCorePath();
 const CORE_PRESENT = (() => {
   try {
     fs.accessSync(CORE, fs.constants.X_OK);
@@ -87,7 +92,7 @@ interface CheckResult {
 function runCheck(config: SingBoxConfig, name: string): CheckResult {
   if (!CORE_PRESENT) {
     throw new Error(
-      `sing-box check 门无法执行：随包内核缺失或不可执行（${CORE}）。` +
+      `sing-box check 门无法执行：${process.env.SB_CORE ? 'SB_CORE 指定的' : '随包'}内核缺失或不可执行（${CORE}）。` +
         '本门只在核确定存在的链路上被调用（npm run test:core-gate，已接进 package:*/dist:*/release:prepare，' +
         '这些链先跑 fetch:core）；走到这里说明环境坏了，必须红。本机手动跑请先 `npm run fetch:core`。'
     );
@@ -144,9 +149,11 @@ const wgDomainNode = (): ServerConfig =>
     protocol: 'wireguard',
     address: 'wg.v6only.test', // 域名 peer → endpoint 侧 domain_resolver
     port: 51820,
+    // 真实形状的 32 字节 X25519 密钥（`sing-box generate wg-keypair` 生成，仅测试用）：1.15.0-alpha.9 起 check 会校验
+    // 密钥长度（假串 → FATAL `invalid public key for peer 0, required 32 bytes`），假密钥会让门对新内核误红。
     wireguardSettings: {
-      privateKey: 'cHJpdmtleQ==',
-      peerPublicKey: 'cHVia2V5',
+      privateKey: '0J6602AtjUbMMpo8avUX7ZRP4yjtjgNHCuV/PRZs1nQ=',
+      peerPublicKey: 'Mu9+fETRkBbnIXHQ9JUno8wJwcXQGqpZIQ/hSwskQWU=',
       localAddress: ['10.0.0.2/32'],
     },
   }) as unknown as ServerConfig;
@@ -196,8 +203,26 @@ afterAll(() => {
 });
 
 describe('sing-box check 门 — 前置', () => {
-  it('随包内核存在且可执行（缺失即硬 fail，无豁免通道）', () => {
+  it('随包内核（或 SB_CORE 指定的内核）存在且可执行（缺失即硬 fail，无豁免通道）', () => {
     expect(CORE_PRESENT).toBe(true);
+    // 记下实际被校验的内核（SB_CORE 覆写时尤其要看得见验的是谁）
+    const line = execFileSync(CORE, ['version'], { stdio: 'pipe', timeout: 30_000 })
+      .toString()
+      .split(/\r?\n/)[0];
+    expect(line).toMatch(/^sing-box version \d+\.\d+\.\d+/);
+    console.log(`sing-box check 门：${CORE}（${line}）`);
+  });
+
+  it('WireGuard 夹具密钥是合法的 32 字节 base64（新内核按长度校验，假密钥会误红）', () => {
+    const wg = (
+      wgDomainNode() as unknown as {
+        wireguardSettings: { privateKey: string; peerPublicKey: string };
+      }
+    ).wireguardSettings;
+    for (const key of [wg.privateKey, wg.peerPublicKey]) {
+      expect(Buffer.from(key, 'base64')).toHaveLength(32);
+      expect(Buffer.from(key, 'base64').toString('base64')).toBe(key);
+    }
   });
 });
 
@@ -311,8 +336,10 @@ describe('sing-box check 门 — 生成的全量 config', () => {
     // ① 验的是不是声称的对象：两条阻断腿都在，且都是 reject（缺一则 check 绿也无意义）。
     const legs = (c.route?.rules ?? []).filter((r) => {
       const x = r as { domain_suffix?: string[]; process_name?: string[] };
-      return (x.domain_suffix ?? []).includes('ads.example') ||
-        (x.process_name ?? []).includes('blocked.exe');
+      return (
+        (x.domain_suffix ?? []).includes('ads.example') ||
+        (x.process_name ?? []).includes('blocked.exe')
+      );
     }) as { action?: string; outbound?: string }[];
     expect(legs).toHaveLength(2);
     for (const leg of legs) {

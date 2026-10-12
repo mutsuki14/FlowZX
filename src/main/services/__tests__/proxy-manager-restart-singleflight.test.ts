@@ -202,6 +202,41 @@ describe('issue #176 — L1.2 就绪等待腿被接管即让位', () => {
     await expect(svc.startSingBoxProcess(0)).rejects.toBeInstanceOf(CoreStartSupersededError);
     expect(viaHelper).toHaveBeenCalled();
   });
+
+  // 版本选择 / 核更新后现役核换到 userData\core_update，而提权服务只跑安装时锁定的路径：经服务起的会是旧核。
+  it('Windows：服务锁定的内核路径与现役核不符（pathMismatch）→ 不经服务起旧核，落到 UAC 直起现役核', async () => {
+    const svc = makeSvc();
+    svc.currentConfig = { proxyModeType: 'systemProxy', servers: [] };
+    svc.needsOsascript = () => false;
+    svc.needsWindowsUAC = () => true;
+    svc.needsLinuxTun = () => false;
+    svc.ensureLinuxTunCapabilities = async () => {};
+    svc.helperManager = {
+      isReady: async () => true,
+      getStatus: async () => ({ pathMismatch: true }),
+    };
+    const viaHelper = jest.spyOn(svc, 'startViaHelper').mockResolvedValue(undefined);
+    // 落到直起分支：现役核路径（/fake/sing-box）不存在 → 以「找不到」拒绝，证明没有经服务起核
+    await expect(svc.startSingBoxProcess(0)).rejects.toThrow(/找不到 sing-box 可执行文件/);
+    expect(viaHelper).not.toHaveBeenCalled();
+
+    // 路径一致 → 照常经服务；状态探测失败 / 旧 helper 无 getStatus → 按无漂移处理（行为同改动前）
+    svc.helperManager = {
+      isReady: async () => true,
+      getStatus: async () => ({ pathMismatch: false }),
+    };
+    await expect(svc.startSingBoxProcess(0)).resolves.toBeUndefined();
+    svc.helperManager = {
+      isReady: async () => true,
+      getStatus: async () => {
+        throw new Error('sc query timeout');
+      },
+    };
+    await expect(svc.startSingBoxProcess(0)).resolves.toBeUndefined();
+    svc.helperManager = { isReady: async () => true };
+    await expect(svc.startSingBoxProcess(0)).resolves.toBeUndefined();
+    expect(viaHelper).toHaveBeenCalledTimes(3);
+  });
 });
 
 // M1（review）：自动重启腿的 start 在就绪等待期被接管 → start() 静默让位返回，attemptAutoRestart 不得误报成功/发 started。
@@ -255,7 +290,7 @@ describe('H-1 — applyConfigForcingRestart 空窗不丢 + pendingForceRestartCo
     expect(sched).not.toHaveBeenCalled();
   });
 
-  it("stop 终态清 pendingForceRestartConfig（停止优先）", () => {
+  it('stop 终态清 pendingForceRestartConfig（停止优先）', () => {
     const svc = makeSvc();
     svc.beginLifecycleOp();
     svc.pendingForceRestartConfig = cfgB;

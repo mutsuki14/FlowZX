@@ -41,6 +41,9 @@ import type { SpeedTestDiagnosticSnapshot } from './SpeedTestService';
 import type { IConfigManager } from './ConfigManager';
 import type { ISystemProxyManager } from './SystemProxyManager';
 import { resourceManager } from './ResourceManager';
+import coreManifest from '../../shared/core-manifest.json';
+import { classifyCoreBuild } from '../../shared/core-build';
+import { singboxChannelLabels, type SingboxPin } from '../../shared/singbox-release';
 
 /** 每个日志文件最多纳入报告的尾部字节数（足够排障，又不让报告爆大）。 */
 const LOG_TAIL_BYTES = 64 * 1024;
@@ -65,8 +68,39 @@ export class DiagnosticService {
       thresholdMb: number;
     },
     /** 最近一次测速诊断快照（临时测速 config + 逐节点失败 reason）；缺省=无测速诊断段。 */
-    private readonly speedTestDiagnosticsProvider?: () => SpeedTestDiagnosticSnapshot | null
+    private readonly speedTestDiagnosticsProvider?: () => SpeedTestDiagnosticSnapshot | null,
+    /**
+     * sing-box 固定版本取数（index.ts 注入 CoreUpdateService.getAutoStatus：读状态文件 + 版本缓存，不 spawn 内核）；
+     * 缺省 = 不标「已固定」。
+     */
+    private readonly coreAutoStatusProvider?: () => Promise<{ pinned: SingboxPin | null } | null>
   ) {}
+
+  /**
+   * 内核版本行的简短标注（与「报告问题」预填同词，shared/singbox-release#singboxChannelLabels）：
+   * 「1.15.0-alpha.12（预发布 · 已固定）」/「1.14.0-rc.1（随包）」/「1.14.0-rc.1（第三方）」。来源取版本行缓存
+   * （getCoreVersion 已顺带写入），固定取 coreAutoStatusProvider；任一取数失败只少标注，绝不阻断报告。
+   */
+  private async describeCoreVersion(coreVersion: string): Promise<string> {
+    let versionLine = '';
+    try {
+      versionLine = await this.proxyManager.getCoreVersionLine();
+    } catch {
+      versionLine = '';
+    }
+    let pinnedVersion: string | null = null;
+    try {
+      pinnedVersion = (await this.coreAutoStatusProvider?.())?.pinned?.version ?? null;
+    } catch {
+      pinnedVersion = null;
+    }
+    const labels = singboxChannelLabels(coreVersion, {
+      build: versionLine ? classifyCoreBuild(versionLine) : undefined,
+      bundledVersion: coreManifest.bundledCoreVersion,
+      pinnedVersion,
+    });
+    return labels.length > 0 ? `${coreVersion}（${labels.join(' · ')}）` : coreVersion;
+  }
 
   /** 读文件尾部最多 maxBytes 字节；不存在/失败返回占位串（绝不抛）。 */
   private async readTail(filePath: string, maxBytes: number): Promise<string> {
@@ -142,7 +176,9 @@ export class DiagnosticService {
           : Promise.resolve(undefined),
       ]);
 
-    const coreVersion = await this.proxyManager.getCoreVersion().catch(() => 'unknown');
+    const coreVersion = await this.describeCoreVersion(
+      await this.proxyManager.getCoreVersion().catch(() => 'unknown')
+    );
     // Xray sidecar 摘要（不含路径：路径带用户名，属节点外标识，不进报告）。
     let xrayStatus: Awaited<ReturnType<ProxyManager['getXrayStatus']>> | null = null;
     try {

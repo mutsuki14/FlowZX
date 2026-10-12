@@ -5,6 +5,7 @@ import {
   formatProxyMode,
   formatRoutingMode,
   formatXrayStatus,
+  formatSingBoxVersion,
   formatSelectedNodeCore,
   describeSelectedNodeCore,
   sanitizeField,
@@ -13,6 +14,7 @@ import {
   MAX_ISSUE_URL_LENGTH,
   FIELD_MAX_LENGTH,
   type BugReportEnv,
+  type BugReportSingboxStatus,
   type BugReportXrayStatus,
   type SelectedNodeCore,
 } from '../issue-report';
@@ -119,6 +121,25 @@ const downloadedXrayStatus = {
   tag: 'v26.10.10',
   prerelease: true,
   installedAt: '2026-10-11T03:14:21.000Z',
+};
+
+/**
+ * 完整 getVersionInfo 结果（含 backupVersion / pendingChangeNotice / pinned.pinnedAt / tag 等：只有 build /
+ * bundledVersion / pinned.version 可进正文）。
+ */
+const fullSingboxInfo = {
+  currentVersion: '1.15.0-alpha.12',
+  backupVersion: '1.14.0-SENTINEL-BACKUP',
+  hasBackup: true,
+  build: 'official' as const,
+  pendingChangeNotice: { previousVersion: '1.14.0-rc.1', currentVersion: '1.15.0-alpha.12' },
+  bundledVersion: '1.14.0-rc.1',
+  pinned: {
+    version: '1.15.0-alpha.12',
+    tag: 'v1.15.0-alpha.12-SENTINEL-TAG',
+    prerelease: true,
+    pinnedAt: '2026-10-11T08:09:10.000Z',
+  },
 };
 
 const fullEnv = (overrides: Partial<BugReportEnv> = {}): BugReportEnv => ({
@@ -271,6 +292,71 @@ describe('issue-report', () => {
     });
   });
 
+  describe('formatSingBoxVersion', () => {
+    const sb = (over: Partial<BugReportSingboxStatus> = {}): BugReportSingboxStatus => ({
+      build: 'official',
+      bundledVersion: '1.14.0-rc.1',
+      pinned: null,
+      ...over,
+    });
+
+    it('labels the bundled core, a user-installed pre-release and a pin', () => {
+      expect(formatSingBoxVersion({ singBoxVersion: '1.14.0-rc.1', singBox: sb() })).toBe(
+        '1.14.0-rc.1（随包）'
+      );
+      expect(formatSingBoxVersion({ singBoxVersion: '1.15.0-alpha.12', singBox: sb() })).toBe(
+        '1.15.0-alpha.12（预发布）'
+      );
+      expect(
+        formatSingBoxVersion({
+          singBoxVersion: '1.15.0-alpha.12',
+          singBox: sb({ pinned: { version: '1.15.0-alpha.12' } }),
+        })
+      ).toBe('1.15.0-alpha.12（预发布 · 已固定）');
+      expect(
+        formatSingBoxVersion({
+          singBoxVersion: '1.14.1',
+          singBox: sb({ pinned: { version: '1.14.1' } }),
+        })
+      ).toBe('1.14.1（已固定）');
+      // 在线装的正式版：不加标注
+      expect(formatSingBoxVersion({ singBoxVersion: '1.14.3', singBox: sb() })).toBe('1.14.3');
+    });
+
+    it('marks a fork instead of a channel, and ignores a stale pin', () => {
+      expect(
+        formatSingBoxVersion({ singBoxVersion: '1.14.0-rc.1', singBox: sb({ build: 'fork' }) })
+      ).toBe('1.14.0-rc.1（第三方）');
+      expect(
+        formatSingBoxVersion({
+          singBoxVersion: '1.14.3',
+          singBox: sb({ pinned: { version: '1.14.1' } }),
+        })
+      ).toBe('1.14.3');
+    });
+
+    it('falls back to the bare version without channel info, and to empty without a version', () => {
+      expect(formatSingBoxVersion({ singBoxVersion: '1.14.0-rc.1' })).toBe('1.14.0-rc.1');
+      expect(formatSingBoxVersion({ singBoxVersion: '1.14.0-rc.1', singBox: null })).toBe(
+        '1.14.0-rc.1'
+      );
+      expect(formatSingBoxVersion({ singBox: sb() })).toBe('');
+      // 未知版本串：原样（净化后）写出，不配标注
+      expect(formatSingBoxVersion({ singBoxVersion: 'Unknown', singBox: sb() })).toBe('Unknown');
+    });
+
+    it('tolerates malformed channel fields from an older main process', () => {
+      const bogus = {
+        build: 'official',
+        bundledVersion: 42,
+        pinned: { version: undefined },
+      } as unknown as BugReportSingboxStatus;
+      expect(formatSingBoxVersion({ singBoxVersion: '1.14.0-rc.1', singBox: bogus })).toBe(
+        '1.14.0-rc.1（预发布）'
+      );
+    });
+  });
+
   describe('describeSelectedNodeCore', () => {
     it('reports Xray with the xrayRequirement reason for the selected node', () => {
       expect(describeSelectedNodeCore([plainVlessNode, xhttpVlessNode], SENTINELS.id)).toEqual({
@@ -402,6 +488,7 @@ describe('issue-report', () => {
 
     it('fills the Xray status and selected-node core lines', () => {
       const body = buildBugReportBody(fullEnv());
+      expect(body).toContain('- sing-box 内核版本：1.14.0-rc.1\n');
       expect(body).toContain('- Xray 内核版本 + 状态：26.3.27（随包，运行中，3 个节点）');
       expect(body).toContain('- 当前节点内核：Xray（xhttp：XHTTP 传输）');
       expect(body).toContain('- 代理模式：TUN');
@@ -416,10 +503,18 @@ describe('issue-report', () => {
       expect(body).toContain('订阅服务器域名');
     });
 
+    it('fills the sing-box channel and pin from the full getVersionInfo result', () => {
+      const body = buildBugReportBody(
+        fullEnv({ singBoxVersion: '1.15.0-alpha.12', singBox: fullSingboxInfo })
+      );
+      expect(body).toContain('- sing-box 内核版本：1.15.0-alpha.12（预发布 · 已固定）\n');
+    });
+
     it('tolerates fully missing env (manual-fill placeholders)', () => {
       const body = buildBugReportBody({});
       expect(body).toContain('- FlowZX 版本：\n');
       expect(body).toContain('- 系统 + 架构：\n');
+      expect(body).toContain('- sing-box 内核版本：\n');
       expect(body).toContain('- Xray 内核版本 + 状态：\n');
       expect(body).toContain('- 当前节点内核：\n');
       expect(body).toContain('- 代理模式：\n');
@@ -441,6 +536,11 @@ describe('issue-report', () => {
       const routingLine = tpl.split('\n').find((l) => l.startsWith('- 分流策略')) ?? '';
       for (const m of ['smart', 'global', 'direct'])
         expect(routingLine).toContain(formatRoutingMode({ routingMode: m }));
+      // sing-box 行提示覆盖每个标注（与预填正文同词）
+      const singBoxLine = tpl.split('\n').find((l) => l.startsWith('- sing-box 内核版本')) ?? '';
+      for (const label of ['随包', '预发布', '已固定', '第三方'])
+        expect(singBoxLine).toContain(label);
+      expect(singBoxLine).toContain('内核管理');
       // Xray 行提示覆盖每个来源标签（与预填正文同词）
       const xrayLine = tpl.split('\n').find((l) => l.startsWith('- Xray 内核版本')) ?? '';
       for (const label of ['随包', '在线安装', '预发布', '自定义文件'])
@@ -501,6 +601,44 @@ describe('issue-report', () => {
       expect(decoded).toContain('- 当前节点内核：sing-box（前置代理走 Xray，xhttp：XHTTP 传输）');
     });
 
+    it('only the whitelisted sing-box version-info fields are read', () => {
+      const spy = jest.fn();
+      const pinSpy = jest.fn();
+      const pinned = new Proxy(fullSingboxInfo.pinned, {
+        get(target, prop, receiver) {
+          pinSpy(prop);
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      const info = new Proxy(
+        { ...fullSingboxInfo, pinned },
+        {
+          get(target, prop, receiver) {
+            spy(prop);
+            return Reflect.get(target, prop, receiver);
+          },
+        }
+      );
+      const url = buildBugReportUrl(
+        'https://github.com/mutsuki14/FlowZX',
+        fullEnv({ singBoxVersion: '1.15.0-alpha.12', singBox: info })
+      );
+      const read = new Set(spy.mock.calls.map((c) => c[0]));
+      for (const forbidden of [
+        'backupVersion',
+        'hasBackup',
+        'pendingChangeNotice',
+        'currentVersion',
+      ])
+        expect(read.has(forbidden)).toBe(false);
+      const pinRead = new Set(pinSpy.mock.calls.map((c) => c[0]));
+      for (const forbidden of ['tag', 'pinnedAt']) expect(pinRead.has(forbidden)).toBe(false);
+      const body = bodyOf(url);
+      expect(body).toContain('- sing-box 内核版本：1.15.0-alpha.12（预发布 · 已固定）');
+      expect(body).not.toContain('SENTINEL');
+      expect(body).not.toContain('2026-10-11T08:09:10');
+    });
+
     it('only the whitelisted Xray status fields are read', () => {
       const spy = jest.fn();
       const status = new Proxy(downloadedXrayStatus, {
@@ -549,6 +687,7 @@ describe('issue-report', () => {
         arch: huge,
         osVersion: huge,
         singBoxVersion: huge,
+        singBox: { build: 'official', bundledVersion: huge, pinned: { version: huge } },
         proxyModeType: huge,
         routingMode: huge,
         xray: { ...fullXrayStatus, version: huge, nodes: 1e12 },

@@ -32,7 +32,7 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - **Xray 独有组合**：XHTTP（auto / packet-up / stream-up / stream-one，支持 `extra`）、VLESS Encryption（`mlkem768x25519plus.*`）、REALITY ML-DSA-65（`pqv`）、`xtls-rprx-vision-udp443`、证书 SHA-256 钉扎（`pcs`），以及任意自定义 Xray outbound JSON。
 - **自动选择内核**：根据节点参数判断是否需要 Xray，需要时自动交给 Xray 运行，并在节点上显示 **Xray** 角标。Xray 节点同样支持热切换、规则指定节点、测速和代理链。
-- **切换 Xray 版本**：在「设置 → 高级 → Xray 内核」中选择 XTLS 官方发布的版本在线安装（26.1.23 及以上，可包含预发布版），按官方 SHA2-256 校验后切换，随时可恢复随包版本。
+- **切换内核版本**：在「设置 → 高级」中为 sing-box（「内核管理」，不低于随包版本）和 Xray（「Xray 内核」，26.1.23 及以上）选择官方发布的版本在线安装，可包含预发布版；下载后校验 SHA-256，并用当前配置检查通过才切换，随时可恢复随包版本。sing-box 还可以固定所选版本，暂停自动更新。
 - **一次授权**：macOS 的 launchd helper、Windows 的系统服务、Linux 的 systemd helper，安装一次后启停 TUN 不再反复请求管理员权限。
 - **减少重启**：切换节点、修改规则的目标节点经 gRPC 热切换；只含域名 / IP / 端口 / 进程条件的规则，修改匹配值后经本地规则集热重载。
 - **组网节点**：WireGuard、Cloudflare WARP（一键匿名注册）、Tailscale（浏览器登录，支持 Headscale）可以像普通节点一样选中和分流。
@@ -190,7 +190,7 @@ FlowZX 是跨平台代理客户端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - sing-box 原生 gRPC 管理 API
 - 随包的官方 sing-box 面板（新安装默认开，代理运行时可用）
-- sing-box 内核在线更新：sha256 校验、启动预检、失败自动回滚
+- sing-box 内核在线更新与版本选择（可含预发布、可固定版本）：sha256 校验、启动预检、失败自动回滚
 - 数据备份与恢复（6 类可选）；应用内完整卸载
 
 ### 界面
@@ -266,6 +266,10 @@ flowchart LR
 
 在「设置 → 高级 → Xray 内核（sidecar）」中选择版本后点「安装」：FlowZX 从 XTLS/Xray-core 官方发布页下载，按官方 SHA2-256 校验并自检后切换（代理运行中会重启一次代理）。打开「包含预发布版本」可选预发布版；低于 26.1.23 的版本不提供；「恢复随包版本」可随时回退。也可以把自己的 `xray`（Windows 为 `xray.exe`）放到 `<userData>/xray_core/` 目录，存在时优先于随包版本（macOS / Linux 需先 `chmod +x`）；之后在线安装会替换它，原文件备份为 `xray.custom-bak`。详见 [docs/XRAY.md](docs/XRAY.md#切换-xray-版本)。
 
+### 怎样更换 sing-box 版本？
+
+在「设置 → 高级 → 内核管理」的「选择版本」中选择版本后点「安装」：FlowZX 从 SagerNet/sing-box 官方发布页下载，按 GitHub API 提供的 SHA-256 摘要校验（上游不发布单独的校验文件），再用 `sing-box check` 检查当前配置，通过后切换（代理运行中会重启一次代理，起不来会自动换回原来的内核）。不提供早于随包版本的版本（4.6.0 为 1.14.0-rc.1）；打开「包含预发布版本」可选 alpha / beta / rc。自动更新开启且稍后会替换所选版本时，确认框提供「固定此版本（暂停自动更新）」。1.15.0-alpha.11 起的构建不含 gVisor，TUN 网络栈为 gvisor 或 mixed（macOS / Windows 上的 Auto 即 gvisor）时会拒绝安装，需先在「设置 → 网络」改为 system。「回滚内核」可换回上一个内核，选中随包版本可「恢复随包」。详见 [docs/CORE.md](docs/CORE.md)。
+
 ### 改了设置后连接短暂中断？
 
 sing-box 不能在运行中增删出站，部分修改需要重启内核。重启有 1.5 秒去抖，连续修改合并为一次，通常几秒内恢复，Windows TUN 下稍慢。
@@ -321,7 +325,7 @@ sing-box 不能在运行中增删出站，部分修改需要重启内核。重�
 
 ## 反馈问题
 
-请在本仓库的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 反馈。应用内「关于」页的「报告问题」会打开本仓库的新建 issue 页面，并预填应用版本、系统与架构、sing-box 版本与接管方式（4.4.1 起）；从 4.4.2 起还会预填 Xray 版本与运行状态、当前选中节点由哪个内核运行及原因（含前置代理是否经过 Xray）与分流策略。预填内容不含节点地址、节点名或凭据。请另外附上：
+请在本仓库的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 反馈。应用内「关于」页的「报告问题」会打开本仓库的新建 issue 页面，并预填应用版本、系统与架构、sing-box 版本与接管方式（4.4.1 起）；从 4.4.2 起还会预填 Xray 版本与运行状态、当前选中节点由哪个内核运行及原因（含前置代理是否经过 Xray）与分流策略；从 4.6.0 起，sing-box 版本后还会标注随包 / 预发布 / 已固定 / 第三方。预填内容不含节点地址、节点名或凭据。请另外附上：
 
 - 问题描述、复现步骤，以及报错前后的日志（Xray 内核的日志以 `[xray]` 开头）。「日志」页的实时日志未脱敏，粘贴前请给节点地址、节点名和域名打码
 - 出问题的节点不是当前选中的节点时：它是否带 Xray 角标，以及角标显示的原因
@@ -369,6 +373,7 @@ npm run dev            # Vite + Electron 开发模式
 | 文档 | 内容 |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 内核：支持的组合、架构、导入参数、注意事项、验证方法 |
+| [docs/CORE.md](docs/CORE.md) | sing-box 内核：版本选择（含预发布）、完整性校验、固定版本与自动更新、回滚 |
 | [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | v4.5.0 发布说明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 发布说明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 发布说明 |

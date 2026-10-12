@@ -32,7 +32,7 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - **Xray 獨有組合**：XHTTP（auto / packet-up / stream-up / stream-one，支援 `extra`）、VLESS Encryption（`mlkem768x25519plus.*`）、REALITY ML-DSA-65（`pqv`）、`xtls-rprx-vision-udp443`、憑證 SHA-256 釘選（`pcs`），以及任意自訂 Xray outbound JSON。
 - **自動選擇核心**：依節點參數判斷是否需要 Xray，需要時自動交由 Xray 執行，並在節點上顯示 **Xray** 標記。Xray 節點同樣支援熱切換、規則指定節點、測速與代理鏈。
-- **切換 Xray 版本**：在「設定 → 進階 → Xray 核心」中選擇 XTLS 官方發行的版本線上安裝（26.1.23 以上，可包含預先發行版），依官方 SHA2-256 驗證後切換，隨時可還原隨附版本。
+- **切換核心版本**：在「設定 → 進階」中為 sing-box（「核心管理」，不低於隨附版本）與 Xray（「Xray 核心」，26.1.23 以上）選擇官方發行的版本線上安裝，可包含預先發行版；下載後驗證 SHA-256，並以目前設定檢查通過才切換，隨時可還原隨附版本。sing-box 還可以固定所選版本，暫停自動更新。
 - **一次授權**：macOS 的 launchd helper、Windows 的系統服務、Linux 的 systemd helper，安裝一次後，啟停 TUN 就不再反覆要求管理員權限。
 - **減少重啟**：切換節點、修改規則的目標節點時經 gRPC 熱切換；僅含網域 / IP / 連接埠 / 處理程序條件的規則，修改符合值後經本地規則集熱重載。
 - **組網節點**：WireGuard、Cloudflare WARP（一鍵匿名註冊）、Tailscale（瀏覽器登入，支援 Headscale）可以像一般節點一樣選取與分流。
@@ -190,7 +190,7 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 - sing-box 原生 gRPC 管理 API
 - 隨附的官方 sing-box 面板（新安裝預設開啟，代理執行時可用）
-- sing-box 核心線上更新：sha256 校驗、啟動預檢、失敗自動回復
+- sing-box 核心線上更新與版本選擇（可含預先發行版、可固定版本）：sha256 校驗、啟動預檢、失敗自動回復
 - 資料備份與還原（6 類可選）；應用程式內完整解除安裝
 
 ### 介面
@@ -266,6 +266,10 @@ flowchart LR
 
 在「設定 → 進階 → Xray 核心（sidecar）」中選擇版本後點「安裝」：FlowZX 會從 XTLS/Xray-core 官方發行頁下載，依官方 SHA2-256 驗證並自我檢測後切換（代理執行中會重新啟動一次代理）。開啟「包含預先發行版本」可選預先發行版；不提供低於 26.1.23 的版本；「還原隨附版本」可隨時回退。也可以將自己的 `xray`（Windows 為 `xray.exe`）放到 `<userData>/xray_core/` 目錄，存在時會優先於隨附版本（macOS / Linux 需先執行 `chmod +x`）；之後線上安裝會取代它，原檔案備份為 `xray.custom-bak`。詳見 [docs/XRAY.md](docs/XRAY.md#切换-xray-版本)。
 
+### 如何更換 sing-box 版本？
+
+在「設定 → 進階 → 核心管理」的「選擇版本」中選擇版本後點「安裝」：FlowZX 會從 SagerNet/sing-box 官方發行頁下載，依 GitHub API 提供的 SHA-256 摘要驗證（上游不另外發布校驗檔），再以 `sing-box check` 檢查目前設定，通過後切換（代理執行中會重新啟動一次代理，無法啟動時會自動換回原本的核心）。不提供早於隨附版本的版本（4.6.0 為 1.14.0-rc.1）；開啟「包含預先發行版本」可選 alpha / beta / rc。自動更新開啟且稍後會取代所選版本時，確認框會提供「固定此版本（暫停自動更新）」。1.15.0-alpha.11 起的建置不含 gVisor，TUN 網路堆疊為 gvisor 或 mixed（macOS / Windows 上的 Auto 即為 gvisor）時會拒絕安裝，需先在「設定 → 網路」改為 system。「回復核心」可換回上一個核心，選取隨附版本可「還原隨附」。詳見 [docs/CORE.md](docs/CORE.md)。
+
 ### 變更設定後連線短暫中斷？
 
 sing-box 無法在執行中增刪出站，部分修改需要重啟核心。重啟有 1.5 秒的防抖，連續修改會合併為一次，通常幾秒內就會恢復，Windows TUN 下稍慢。
@@ -321,7 +325,7 @@ sing-box 無法在執行中增刪出站，部分修改需要重啟核心。重�
 
 ## 回報問題
 
-請在本儲存庫的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 回報。應用程式內「關於」頁的「回報問題」會開啟本儲存庫的新增 issue 頁面，並預先填入應用程式版本、系統與架構、sing-box 版本與接管方式（自 4.4.1 起）；自 4.4.2 起還會預先填入 Xray 版本與執行狀態、目前選取的節點由哪個核心執行及原因（含前置代理是否經過 Xray）與分流策略。預先填入的內容不含節點位址、節點名稱或憑證。請另外附上：
+請在本儲存庫的 [Issues](https://github.com/mutsuki14/FlowZX/issues) 回報。應用程式內「關於」頁的「回報問題」會開啟本儲存庫的新增 issue 頁面，並預先填入應用程式版本、系統與架構、sing-box 版本與接管方式（自 4.4.1 起）；自 4.4.2 起還會預先填入 Xray 版本與執行狀態、目前選取的節點由哪個核心執行及原因（含前置代理是否經過 Xray）與分流策略；自 4.6.0 起，sing-box 版本後還會標註隨附 / 預先發行 / 已固定 / 第三方。預先填入的內容不含節點位址、節點名稱或憑證。請另外附上：
 
 - 問題描述、重現步驟，以及錯誤前後的記錄（Xray 核心的記錄以 `[xray]` 開頭）。「記錄」頁的即時記錄未脫敏，貼上前請遮蔽節點位址、節點名稱與網域
 - 出問題的節點不是目前選取的節點時：它是否帶有 Xray 標記，以及標記顯示的原因
@@ -369,6 +373,7 @@ npm run dev            # Vite + Electron 開發模式
 | 文件 | 內容 |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 核心：支援的組合、架構、匯入參數、注意事項、驗證方法 |
+| [docs/CORE.md](docs/CORE.md) | sing-box 核心：版本選擇（含預先發行版）、完整性驗證、固定版本與自動更新、回復 |
 | [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | v4.5.0 發行說明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 發行說明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 發行說明 |

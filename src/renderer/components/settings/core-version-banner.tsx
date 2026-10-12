@@ -13,6 +13,7 @@ import {
 import { toast } from 'sonner';
 import { api } from '@/ipc';
 import { useTranslation } from 'react-i18next';
+import { errorMessageKey } from './singbox-version-logic';
 
 interface CoreVersionChangeInfo {
   previousVersion: string;
@@ -27,6 +28,9 @@ export function CoreVersionBanner() {
   const [isRollingBack, setIsRollingBack] = useState(false);
   const [isReplacing, setIsReplacing] = useState(false);
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+  // 主进程持有的在线安装 / 恢复随包进行中（与内核管理卡同源）：期间回滚 / 手动替换会与之并发换核 → 按钮置灰
+  // （主进程同样会拒为 BUSY，这里只是不让用户点出一个必然失败的操作）。
+  const [coreOpRunning, setCoreOpRunning] = useState(false);
 
   useEffect(() => {
     // 1. 初始化时主动获取当前状态（防止遗漏主进程启动时触发的事件）
@@ -56,8 +60,22 @@ export function CoreVersionBanner() {
       void api.coreUpdate.ackVersionChange();
     });
 
+    // 3. 安装 / 恢复随包进度：先订阅再取快照——快照返回前若已收到事件，以事件为准（同内核管理卡）。
+    let gotEvent = false;
+    const unsubscribeProgress = api.coreUpdate.onInstallProgress((p) => {
+      gotEvent = true;
+      setCoreOpRunning(p !== null);
+    });
+    void api.coreUpdate
+      .getInstallState()
+      .then((s) => {
+        if (!gotEvent) setCoreOpRunning(s.installing !== null);
+      })
+      .catch(() => {});
+
     return () => {
       unsubscribe();
+      unsubscribeProgress();
     };
   }, []);
 
@@ -74,7 +92,13 @@ export function CoreVersionBanner() {
       toast.success(t('settings.coreVersion.rollbackSuccess'));
       setDismissed(true);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : t('settings.coreVersion.rollbackFail');
+      const code = (error as { code?: unknown } | null)?.code;
+      const msg =
+        code === 'BUSY' || code === 'XRAY_BUSY'
+          ? t(errorMessageKey(code))
+          : error instanceof Error
+            ? error.message
+            : t('settings.coreVersion.rollbackFail');
       toast.error(`${t('settings.coreVersion.rollbackFail')}: ${msg}`);
     } finally {
       setIsRollingBack(false);
@@ -107,7 +131,10 @@ export function CoreVersionBanner() {
           description: t('settings.coreVersion.sameVersionGoManage'),
         });
       } else if (result.error) {
-        toast.error(t('settings.about.coreUpdateFail'), { description: result.error });
+        toast.error(t('settings.about.coreUpdateFail'), {
+          // 未开始即被拒（另一内核操作 / Xray 切换在进行）→ 本地化文案
+          description: result.code ? t(errorMessageKey(result.code)) : result.error,
+        });
       }
       // ok:false 且无 needConfirm/error → 用户取消文件选择器，静默
     } catch (error) {
@@ -145,7 +172,7 @@ export function CoreVersionBanner() {
             type="button"
             className="btn ghost sm"
             onClick={() => setShowRollbackConfirm(true)}
-            disabled={isRollingBack || isReplacing}
+            disabled={isRollingBack || isReplacing || coreOpRunning}
           >
             {isRollingBack ? (
               <>
@@ -164,7 +191,7 @@ export function CoreVersionBanner() {
           type="button"
           className="btn ghost sm"
           onClick={handleReplaceManualCore}
-          disabled={isRollingBack || isReplacing}
+          disabled={isRollingBack || isReplacing || coreOpRunning}
         >
           {isReplacing ? (
             <>

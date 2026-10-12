@@ -28,7 +28,7 @@ import * as path from 'path';
 import type { LogManager } from './LogManager';
 import type { ProxyManager } from './ProxyManager';
 import type { UpdateNetwork } from './UpdateNetwork';
-import { CoreDownloader } from './core-downloader';
+import { CoreDownloader, DOWNLOAD_HASH_MISMATCH } from './core-downloader';
 import { normalizeAssetDigest } from './singbox-asset';
 import { resourceManager } from './ResourceManager';
 import { parseXrayVersion } from './XrayCoreManager';
@@ -583,7 +583,13 @@ export class XrayCoreUpdateService {
       });
     } catch (e) {
       const msg = errMsg(e);
-      if (/完整性校验失败/.test(msg)) throw new XrayInstallError('HASH_MISMATCH', msg);
+      // 按下载器给的 code 判（直连摘要不符而镜像腿失败时同样保留完整性失败）；文案匹配只作兜底。
+      if (
+        (e as { code?: unknown } | null)?.code === DOWNLOAD_HASH_MISMATCH ||
+        /完整性校验失败/.test(msg)
+      ) {
+        throw new XrayInstallError('HASH_MISMATCH', msg);
+      }
       throw new XrayInstallError('DOWNLOAD_FAILED', msg);
     }
   }

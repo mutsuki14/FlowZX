@@ -14,23 +14,41 @@ import type { HelperManager } from './HelperManager';
 import { PlatformPrivilegeService } from './PlatformPrivilegeService';
 import { resourceManager } from './ResourceManager';
 
-import type { UserConfig, HelperStatus } from '../../shared/types';
+import type { UserConfig, HelperStatus, TunStack } from '../../shared/types';
 import { encodeMajorMinor, sameMajorMinor, compareSemver } from '../../shared/version';
+import { resolveTunStack } from '../../shared/tun-defaults';
+import {
+  listableSingboxReleases,
+  normalizeSingboxRelease,
+  parseSingboxBuildTags,
+  singboxTagVersion,
+  type SingboxInstallErrorCode,
+  type SingboxInstallPhase,
+  type SingboxInstallProgress,
+  type SingboxInstallResult,
+  type SingboxInstallState,
+  type SingboxPin,
+  type SingboxRelease,
+  type SingboxReleaseList,
+} from '../../shared/singbox-release';
 import {
   classifyCoreBuild,
   classifyReseedResult,
   comparableCoreVersion,
   decideCoreOverride,
+  extractVersionToken,
   parseUploadedCoreVersion,
   type CoreBuildKind,
 } from '../../shared/core-build';
 import { CoreUpdateStateStore } from './core-update-state-store';
 import type { StagedCoreInfo, CoreAutoUpdateState } from './core-update-state-store';
-import { CoreDownloader } from './core-downloader';
+import { CoreDownloader, DOWNLOAD_HASH_MISMATCH } from './core-downloader';
+import { CoreStartTunPersistentError } from './core-readiness';
 import type { UpdateNetwork } from './UpdateNetwork';
 import coreManifest from '../../shared/core-manifest.json';
 import { IPC_CHANNELS } from '../../shared/ipc-channels';
 import { normalizeAssetDigest } from './singbox-asset';
+import { extractLastFatal, stripAnsi } from '../../shared/singbox-fatal';
 import { system32 } from '../utils/win-system32';
 
 export interface CoreUpdateCheckResult {
@@ -54,6 +72,10 @@ export interface CoreVersionInfo {
   // 内核版本变更「待展示通知」（push 型持久位）：非空 = 有一条由更新动作创建、尚未展示 ack 的变更提示。
   // banner 读它决定是否弹（取代旧推断式比对）；静默 reseed 不创建 → 不弹。
   pendingChangeNotice?: { previousVersion: string; currentVersion: string } | null;
+  /** 随包（出厂）内核版本 = 版本选择的最低可选版本。 */
+  bundledVersion: string;
+  /** 生效中的固定版本（当前内核仍是它时自动更新暂停）；无 / 已陈旧 → null。 */
+  pinned: SingboxPin | null;
 }
 
 // StagedCoreInfo / CoreAutoUpdateState 迁至 core-update-state-store（与 CoreUpdateStateStore 同处）；re-export 保对外兼容。
@@ -71,6 +93,15 @@ export type StagedApplyResult = 'applied' | 'discarded' | 'deferred' | 'failed' 
 
 /** Xray 版本切换（XrayCoreUpdateService）进行中：sing-box 换核类操作一律拒绝/推迟（两条换核流程互斥）。 */
 const XRAY_BUSY_MSG = 'Xray 内核正在切换，请稍后再试';
+/** 另一 sing-box 内核操作（安装 / 更新 / 自动轮次 / 恢复随包 / 回滚 / 手动替换 / 立即应用）在飞：一次只允许一个。 */
+const CORE_BUSY_MSG = '内核更新正在进行中，请稍后再试';
+
+/** withCoreOp 拒绝开始的原因（BUSY = 另一内核操作在飞；XRAY_BUSY = Xray 版本切换在进行）。 */
+type CoreOpBusyCode = 'BUSY' | 'XRAY_BUSY';
+
+/** 带 code 的「未开始」错误（经 IPC ApiResponse.code 透传到渲染端 error.code）。 */
+const coreOpBusyError = (code: CoreOpBusyCode): Error =>
+  Object.assign(new Error(code === 'BUSY' ? CORE_BUSY_MSG : XRAY_BUSY_MSG), { code });
 
 /** replaceManualCore 的结果（needConfirm 系列由前端弹确认后带 force 重入）。 */
 type ManualCoreReplaceResult = {
@@ -83,6 +114,8 @@ type ManualCoreReplaceResult = {
   build?: CoreBuildKind;
   filePath?: string;
   error?: string;
+  /** 未开始即被拒：BUSY = 另一内核操作在飞；XRAY_BUSY = Xray 版本切换在进行。 */
+  code?: CoreOpBusyCode;
 };
 
 /** 推渲染端的内核自动更新状态快照（UI：待生效行 / 跨带提示行）。 */
@@ -91,6 +124,15 @@ export interface CoreAutoStatus {
   lastCheckAt: number | null;
   staged: { version: string; stagedAt: string } | null;
   crossBandLatest: string | null; // 检测到但跨 minor、不自动的最新版本
+  /** 版本选择里「固定此版本」：非 null 时自动更新暂停（不检查下载、不落位 staged），直到取消固定或版本被其它途径改变。 */
+  pinned: SingboxPin | null;
+}
+
+/** resetCoreToFactory 的结果：code 仅在未开始时给出（BUSY = 已有内核更新 / 安装 / 换核在进行；XRAY_BUSY = Xray 正在切换）。 */
+export interface CoreFactoryResetResult {
+  ok: boolean;
+  error?: string;
+  code?: 'BUSY' | 'XRAY_BUSY';
 }
 
 /**
@@ -101,6 +143,87 @@ export interface CoreAutoStatus {
  */
 const BUNDLED_CEILING = encodeMajorMinor(coreManifest.bundledCoreVersion);
 
+// ── 版本选择（installTag / listReleases）常量 ──────────────────────────────────────────────────
+const SINGBOX_API = 'https://api.github.com/repos/SagerNet/sing-box';
+const SINGBOX_DOWNLOAD = 'https://github.com/SagerNet/sing-box/releases/download';
+/** release 列表缓存时长（未认证 GitHub API 60 次/小时/IP，设置页每次挂载都打会很快被限流）。 */
+export const SINGBOX_LIST_TTL_MS = 10 * 60 * 1000;
+/** 下载进度事件节流（~4 次/秒）；阶段切换与结束事件不节流。 */
+const INSTALL_PROGRESS_THROTTLE_MS = 250;
+/**
+ * 预检里 `sing-box version` / `sing-box check` 的超时：外来 / 挂起的二进制不得永久持有 isUpdating / coreOps
+ * （coreOps 还连带阻塞 Xray 切换）。check 大配置实测 < 2s，20s 足够宽裕。
+ */
+const CORE_EXEC_TIMEOUT_MS = 20_000;
+/** 渲染端 detail 上限（`sing-box check` 的 stderr 取尾部）。 */
+const INSTALL_DETAIL_MAX = 2000;
+
+/** installTag 预期内的失败（带 code，映射为 { ok:false, code, detail }）。 */
+class SingboxInstallError extends Error {
+  constructor(
+    readonly code: SingboxInstallErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = 'SingboxInstallError';
+  }
+}
+
+type LifecycleCounts = ReturnType<ProxyManager['getLifecycleRequestCounts']>;
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const clipTail = (s: string): string =>
+  s.length > INSTALL_DETAIL_MAX ? `…${s.slice(-INSTALL_DETAIL_MAX)}` : s;
+
+/** 换核后起代理失败（null = 起来了）。environmental 见 isEnvironmentalStartError。 */
+type InstallStartFailure = { msg: string; environmental: boolean };
+
+/**
+ * 起代理失败是否属于「环境 / 用户」原因、与新内核版本无关——回滚无益（原核照样起不来），还会把健康的新版本误记为
+ * 问题版本（之后自动更新 / 版本列表都避开它）。只认这些在起核前 / 起核外就确定的信号：
+ *  - TUN 持续性初始化失败 / 地址冲突（CoreStartTunPersistentError；index.ts 的首启自动回滚对 TUN_INIT_PERSISTENT
+ *    同样不回滚，issue #324）；
+ *  - 用户在提权引导里点了取消（HELPER_GATE_ABORTED）；
+ *  - 用户取消管理员授权：UAC / osascript 密码框（「用户取消了管理员权限请求」）、Linux pkexec（「授权被取消」）；
+ *  - 起核前的端口 / 残留进程清理受阻（CLASH_API_PORT_BUSY*、ROOT_ORPHAN_BLOCKED：此时新核还没 spawn）。
+ * 泛化的「权限 / EACCES」不算：新二进制没有执行权限这类落位问题正该回滚。
+ */
+function isEnvironmentalStartError(e: unknown): boolean {
+  if (e instanceof CoreStartTunPersistentError) return true;
+  const code = (e as { code?: unknown } | null)?.code;
+  if (code === 'HELPER_GATE_ABORTED' || code === 'ROOT_ORPHAN_BLOCKED') return true;
+  if (typeof code === 'string' && code.startsWith('CLASH_API_PORT_BUSY')) return true;
+  return /用户取消了管理员权限请求|授权被取消/.test(errMsg(e));
+}
+
+/**
+ * 版本号带预发布后缀（`1.15.0-alpha.12`、其 dev 构建，或任何 `X.Y.Z-…` 形态）。这类版本「跑通过」不代表该 minor 带已
+ * 兼容（预发布随时还会改 schema），故不据此抬高兼容带实证上限 verifiedCeiling。
+ */
+const hasPrereleaseSuffix = (version: string): boolean =>
+  /^\d+\.\d+(?:\.\d+)?-/.test(comparableCoreVersion(version));
+
+/**
+ * 流式计算文件 sha256（小写 hex；压缩包几十 MB，不整读进内存）。
+ * 等句柄真正关闭（'close'）才落定：调用方紧接着删临时包，Windows 上不能撞仍打开的读句柄。
+ */
+function sha256OfFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    let ended = false;
+    fs.createReadStream(filePath)
+      .on('error', reject)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => {
+        ended = true;
+      })
+      .on('close', () => {
+        if (ended) resolve(hash.digest('hex'));
+        else reject(new Error('读取文件中断'));
+      });
+  });
+}
+
 export class CoreUpdateService {
   private logManager: LogManager;
   private proxyManager: ProxyManager | null = null;
@@ -110,8 +233,9 @@ export class CoreUpdateService {
   private privilegeService: PlatformPrivilegeService | null = null; // T16：copyFileElevatedWindows delegate
   private isUpdating: boolean = false;
   /**
-   * 换核类操作在飞计数（updateCore / tryApplyStaged / applyStagedNow / replaceManualCore / rollbackCore）：与 Xray
-   * 版本切换互斥。isBusy() 据此回答 XrayCoreUpdateService；自动轮次的后台检查 / 下载段不计（只有落位才计）。
+   * 换核类操作在飞计数（updateCore / installTag / resetCoreToFactory / tryApplyStaged / applyStagedNow /
+   * replaceManualCore / rollbackCore）：与 Xray 版本切换互斥，各公开入口也据它（连同 isUpdating）互斥。isBusy() 据此回答
+   * XrayCoreUpdateService；自动轮次的后台检查 / 下载段不计（只有落位才计）。
    */
   private coreOps = 0;
   /** Xray 版本切换是否在进行（index.ts 注入 XrayCoreUpdateService.isBusy；未注入 → 恒 false）。 */
@@ -140,6 +264,21 @@ export class CoreUpdateService {
   private readonly stateStore: CoreUpdateStateStore;
   private readonly coreDownloader: CoreDownloader;
 
+  // ── 版本选择（installTag / listReleases）状态 ──
+  /** 资产名 / helper 门 / TUN Auto 解析用的平台与架构（缺省取本机；单测覆写以覆盖他平台分支）。 */
+  private platform: NodeJS.Platform = process.platform;
+  private arch: string = process.arch;
+  /** 时钟（列表缓存 / 进度节流 / pinnedAt；单测覆写）。 */
+  private now: () => number = () => Date.now();
+  /** 停代理后等进程完全退出再换核（同 updateCore 的 2s；单测置 0）。 */
+  private swapSettleMs = 2000;
+  private releaseListCache: { releases: SingboxRelease[]; fetchedAt: number } | null = null;
+  private releaseListInflight: Promise<{ releases: SingboxRelease[]; fetchedAt: number }> | null =
+    null;
+  /** 进行中的安装 / 恢复随包进度（主进程持有，设置卡卸载重挂后经 getInstallState 找回）。 */
+  private installProgress: SingboxInstallProgress | null = null;
+  private lastInstallProgressEmit = 0;
+
   constructor(logManager: LogManager) {
     this.logManager = logManager;
     this.stateStore = new CoreUpdateStateStore(logManager, app.getPath('userData'));
@@ -164,11 +303,20 @@ export class CoreUpdateService {
   }
 
   /**
-   * 换核类操作包装：Xray 版本切换在进行 → onBusy()（不开始）；否则持 coreOps 跑 fn。判定与持闸在同一同步段
-   * （async 函数首个 await 之前），与 XrayCoreUpdateService 入口的对称判定构成互斥。
+   * 换核类公开入口（回滚 / 手动替换 / 立即应用）的包装：判定与持闸在同一同步段（async 函数首个 await 之前），不开始
+   * 时 onBusy(code)：
+   *  - BUSY：另一内核操作在飞（isUpdating = 在线安装 / 检查更新 / 自动轮次 / 恢复随包；coreOps>0 = 回滚 / 手动替换 /
+   *    立即应用）。一次只允许一个换核操作——否则两方交错 stop / 门控 / .bak：先结束的一方替仍在写核的一方放开换核门控
+   *    （门控按 owner 记账，同为 'singbox'），回滚还会吃掉对方失败恢复要用的 .bak；
+   *  - XRAY_BUSY：Xray 版本切换在进行（与 XrayCoreUpdateService 入口的对称判定构成互斥）。
+   * 已持锁的内部调用（恢复随包的落位腿）直接调 *Locked 本体，不经此处。
    */
-  private async withCoreOp<T>(fn: () => Promise<T>, onBusy: () => T): Promise<T> {
-    if (this.xrayBusy()) return onBusy();
+  private async withCoreOp<T>(
+    fn: () => Promise<T>,
+    onBusy: (code: CoreOpBusyCode) => T
+  ): Promise<T> {
+    if (this.isUpdating || this.coreOps > 0) return onBusy('BUSY');
+    if (this.xrayBusy()) return onBusy('XRAY_BUSY');
     this.coreOps++;
     try {
       return await fn();
@@ -230,15 +378,24 @@ export class CoreUpdateService {
         return { hasUpdate: false, currentVersion, error: '未找到发布版本' };
       }
 
-      // 过滤出正式版 (非 prerelease)
-      const validReleases = releases.filter((r: any) => !r.prerelease);
+      // 只看正式版：非草稿、非预发布（API 标志或 tag 带 -alpha/-beta/-rc 后缀，与版本选择同一口径）、tag 形状合法。
+      const validReleases = releases.filter((r: any) => {
+        if (!r || r.draft === true || r.prerelease === true) return false;
+        const v = singboxTagVersion(r.tag_name);
+        return !!v && !hasPrereleaseSuffix(v);
+      });
       if (validReleases.length === 0) {
         return { hasUpdate: false, currentVersion, error: '未找到正式版本' };
       }
 
-      const latestRelease = validReleases[0];
-      // release tag 通常是 v1.8.0 格式，去掉 v
-      const latestVersion = latestRelease.tag_name.replace(/^v/, '');
+      // 取**版本号最大**的正式版，不取 API 首个：上游多分支交错发布（1.13.x 补丁与 1.14.x 交替出现），API 的时间序
+      // 不是版本序——取首个会把更晚发布的旧分支补丁当成「最新」（手动检查与自动轮次同经此处）。
+      const latestRelease = validReleases.reduce((best: any, r: any) =>
+        compareSemver(singboxTagVersion(r.tag_name)!, singboxTagVersion(best.tag_name)!) > 0
+          ? r
+          : best
+      );
+      const latestVersion = singboxTagVersion(latestRelease.tag_name)!;
 
       this.logManager.addLog(
         'info',
@@ -355,17 +512,12 @@ export class CoreUpdateService {
   }
 
   async updateCore(downloadUrl: string): Promise<boolean> {
-    if (this.isUpdating) {
+    // 同步临界区：check+set 全在第一个 await 之前完成。旧实现在检查 isUpdating 与置位之间 await 了 fork 守卫，两次调用
+    // （或与自动轮次 / 在线安装）可同时通过 → 并发双换核，且先结束的一方在 finally 里替仍在跑的一方放了锁。
+    // coreOps>0 = 回滚 / 手动替换 / 立即应用 / 恢复随包在飞（它们不一定持 isUpdating）——同样不并发换核。
+    if (this.isUpdating || this.coreOps > 0) {
       throw new Error('更新正在进行中');
     }
-
-    // 第三方（非官方）内核：拒绝在线更新，避免覆盖用户刻意安装的 fork。force 刷新版本行（本方法守卫前无 getCurrentVersion）。
-    if ((await this.getCoreBuild(true)) === 'fork') {
-      throw new Error(
-        '当前为第三方（非官方）内核，已禁用在线更新；请先回滚或重置到出厂内核后再更新'
-      );
-    }
-
     // 与 Xray 版本切换互斥（判定与持闸同一同步段）：Xray 换核期间不换 sing-box 核，反之 Xray 也拒绝开始。
     if (this.xrayBusy()) throw new Error(XRAY_BUSY_MSG);
     this.isUpdating = true;
@@ -373,6 +525,13 @@ export class CoreUpdateService {
     let backupMade = false;
 
     try {
+      // 第三方（非官方）内核：拒绝在线更新，避免覆盖用户刻意安装的 fork。force 刷新版本行（本方法守卫前无 getCurrentVersion）。
+      if ((await this.getCoreBuild(true)) === 'fork') {
+        throw new Error(
+          '当前为第三方（非官方）内核，已禁用在线更新；请先回滚或重置到出厂内核后再更新'
+        );
+      }
+
       // 1. 下载文件（先取摘要：拿不到就不装——运行期换核会回落第三方镜像，无摘要即无从判断拿到的是什么）
       const sha256 = await this.resolveAssetSha256(downloadUrl);
       if (!sha256) {
@@ -459,6 +618,8 @@ export class CoreUpdateService {
         }
       }
 
+      // 用户主动「检查更新 → 更新」换了版本：版本选择里的旧固定随之作废。
+      if (this.dropPin('已通过「检查更新」更新内核')) this.emitAutoStatus();
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -472,6 +633,697 @@ export class CoreUpdateService {
       this.isUpdating = false;
       this.coreOps--;
     }
+  }
+
+  // === 版本选择（含预发布）：列表 / 按 tag 安装 / 安装进度 ===
+  //
+  // 与「检查更新 → 更新」（checkUpdate / updateCore，只认正式版、受兼容带约束）并存：用户显式挑选的任意 ≥ 随包版本的
+  // 官方 release 都可装（含跨带、预发布、降级到随包以上的旧版）。安全不变量（任何一条被改坏都可能「静默装上不是官方
+  // 发布的可执行文件」或「装完代理起不来」）：
+  //  1. 渲染端只给 tag（+ force / pin 两个布尔）；release / 资产 / 摘要由主进程按 tag 现取（GET /releases/tags/{tag}），
+  //     资产按精确名挑（绝不挑 -glibc / -musl / -legacy），下载 URL 必须恰为官方 release 地址；
+  //  2. 摘要只认 API asset.digest（上游无 .dgst 兜底）→ 缺席即 NO_HASH 拒装；下载即使回落镜像，字节也要过这个摘要，
+  //     落盘后再独立复核一次；
+  //  3. 低于随包版本拒装（decideCoreOverride 会在下次连接 / 启动时把它刷回随包核）；
+  //  4. 预检：解出的 `sing-box version` 必须恰为所选版本且是官方构建形态；`sing-box check` 当前配置失败 → 标记问题版本、
+  //     无 force 越过；新核未编入 gVisor 而 TUN 栈（含 Auto）解析为 gvisor / mixed → GVISOR_MISSING（`check` 查不出，
+  //     运行期才 FATAL）；
+  //  5. 换核复用 installCoreFromDir（备份 → 落位 → 首启验证闩），由 ProxyManager 换核门控包住；代理在跑则停 → 换 → 起，
+  //     起不来 → 撤验证闩、门控内恢复备份、标记问题版本、固定恢复到换核前、以原核再起（START_FAILED + rolledBack）；
+  //     起不来但原因与内核无关（TUN 地址冲突 / 取消授权 / 提权引导取消 / 端口被占）→ 新核留用、不回滚不标记（START_BLOCKED）；
+  //     期间用户手动停止 / 连接 / 退出 → 让位（新核留用，不回滚、不再起代理）；
+  //  6. 与「检查更新 / 自动更新 / 回滚 / 手动替换 / 立即应用 / 恢复随包」及 Xray 版本切换互斥：入口同步 check+set
+  //     （isUpdating + coreOps），其它公开入口经 withCoreOp 同样互斥。
+
+  /**
+   * SagerNet/sing-box 的 release 列表（剔除草稿 / 低于随包版本 / 无本平台精确资产者，新→旧）。缓存 10 分钟，force 绕过；
+   * 并发调用合并为一次请求。失败抛 Error（code：RATE_LIMITED / NETWORK，经 IPC ApiResponse.code 透传到渲染端）。
+   * knownBad / currentVersion 每次现算（不进缓存）：前者随预检 / 首启结果变化，后者读 ProxyManager 版本缓存（命中即不 spawn 内核）。
+   */
+  async listReleases(opts: { force?: boolean } = {}): Promise<SingboxReleaseList> {
+    const cache = this.releaseListCache;
+    if (!opts.force && cache && this.now() - cache.fetchedAt < SINGBOX_LIST_TTL_MS) {
+      return this.toReleaseList(cache);
+    }
+    if (!this.releaseListInflight) {
+      this.releaseListInflight = (async () => {
+        try {
+          const raw = await this.coreDownloader.fetchGithubJson(
+            `${SINGBOX_API}/releases?per_page=100`
+          );
+          if (!Array.isArray(raw)) throw new Error('GitHub 返回的 release 列表格式异常');
+          const entry = {
+            releases: listableSingboxReleases(
+              raw,
+              this.platform,
+              this.arch,
+              coreManifest.bundledCoreVersion
+            ),
+            fetchedAt: this.now(),
+          };
+          this.releaseListCache = entry;
+          return entry;
+        } catch (e) {
+          const code =
+            (e as { code?: unknown })?.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'NETWORK';
+          this.logManager.addLog(
+            'warn',
+            `获取 sing-box 版本列表失败（${code}）: ${errMsg(e)}`,
+            'CoreUpdateService'
+          );
+          throw Object.assign(new Error(errMsg(e)), { code });
+        } finally {
+          this.releaseListInflight = null;
+        }
+      })();
+    }
+    return this.toReleaseList(await this.releaseListInflight);
+  }
+
+  private async toReleaseList(entry: {
+    releases: SingboxRelease[];
+    fetchedAt: number;
+  }): Promise<SingboxReleaseList> {
+    const currentVersion = await this.getCurrentVersion(false).catch(() => '未知');
+    return {
+      releases: entry.releases.map((r) => ({ ...r, knownBad: this.isKnownBad(r.version) })),
+      fetchedAt: entry.fetchedAt,
+      bundledVersion: coreManifest.bundledCoreVersion,
+      currentVersion,
+    };
+  }
+
+  /** 进行中的安装 / 恢复随包（null = 空闲）。 */
+  getInstallState(): SingboxInstallState {
+    return { installing: this.installProgress ? { ...this.installProgress } : null };
+  }
+
+  private emitInstallProgress(): void {
+    this.lastInstallProgressEmit = this.now();
+    try {
+      this.eventSender?.(
+        IPC_CHANNELS.EVENT_CORE_INSTALL_PROGRESS,
+        this.installProgress ? { ...this.installProgress } : null
+      );
+    } catch {
+      /* 推送失败（窗口已关）不影响安装 */
+    }
+  }
+
+  /** 阶段切换 / 结束（null）：立即推送（不节流）。 */
+  private setInstallProgress(p: SingboxInstallProgress | null): void {
+    this.installProgress = p;
+    this.emitInstallProgress();
+  }
+
+  /**
+   * 恢复随包进行中（installProgress.kind === 'reset'）时推进其阶段——replaceManualCore 是 reset 的落位腿，在预检 / 换核 /
+   * 重启处调用；普通手动替换时 installProgress 为空（或属在线安装），此处 no-op。
+   */
+  private advanceResetPhase(phase: SingboxInstallPhase): void {
+    const p = this.installProgress;
+    if (p?.kind === 'reset' && p.phase !== phase) this.setInstallProgress({ ...p, phase });
+  }
+
+  /**
+   * 取消固定版本（恢复自动更新）：清持久位 + 清 lastCheckAt 并推状态。固定只由 installTag(pin:true) 写入；
+   * 固定期间自动轮次只记 lastCheckAt 不真正检查，若不清它，取消固定后要再等满 24h 才恢复检查——清掉后下个 6h 巡检
+   * （或开关变更触发的 kick）即恢复。无固定 → no-op（不推事件）。
+   */
+  async clearPin(): Promise<void> {
+    if (!this.dropPin('用户取消固定，恢复自动更新')) return;
+    this.saveAutoState({ lastCheckAt: undefined });
+    this.emitAutoStatus();
+  }
+
+  // ── 固定版本（pin）──────────────────────────────────────────────────────────────────────────────
+  // 语义：用户在版本选择里装了某版本并勾「固定」→ 当前内核仍是该版本时，自动更新暂停（runAutoUpdateCycle 不检查不下载、
+  // tryApplyStaged 的自动触发作废暂存核）；「立即应用」/「检查更新 → 更新」这类用户显式动作不受其约束。
+  // 版本被其它途径改变即作废：回滚（含首启失败自动回滚）/ 手动替换 / 恢复随包 / 检查更新 / 立即应用 显式清除；
+  // App 升级后启动对齐刷回随包核等未经本服务的改变，由 activePin 发现「当前版本 ≠ 固定版本」时惰性清除。
+
+  /** 持久位里形状合法的固定版本（缺失 / 畸形 → null）。 */
+  private storedPin(): SingboxPin | null {
+    const p = this.loadAutoState().pinned as Partial<SingboxPin> | undefined;
+    if (!p || typeof p !== 'object') return null;
+    if (typeof p.version !== 'string' || !p.version || typeof p.tag !== 'string') return null;
+    return {
+      version: p.version,
+      tag: p.tag,
+      prerelease: p.prerelease === true,
+      pinnedAt: typeof p.pinnedAt === 'string' ? p.pinnedAt : '',
+    };
+  }
+
+  /**
+   * 生效中的固定版本：仅当当前内核（可比较形）仍是固定的那个版本时有效，否则视为陈旧——clearStale 时清除并推状态，
+   * 否则只是不认（用于读缓存版本的快照：缓存可能滞后于刚完成的换核，不据此做破坏性清除）。
+   * current 未知（无 ProxyManager → '未知' / 空）→ 无从判断，按固定生效处理（宁可多停一轮自动更新，不误清用户的选择）。
+   *
+   * 清除前先用诚实探测复核：ProxyManager.getCoreVersion 探测失败时回落随包版本（不返回 '' / '未知'），一次瞬时的
+   * `sing-box version` 失败与「版本被刷回随包」分不开，上面的「未知按生效」接不住。getCoreVersionLine(true) 失败返 ''、
+   * 不回落、不吃 B5 指纹缓存——探测失败 → 按未知保留固定；读到的仍是固定版本 → 照常有效。只在「即将清除」时多 spawn
+   * 这一次，热路径（版本一致 / 不清除的快照）不变。
+   */
+  private async activePin(current: string, clearStale = true): Promise<SingboxPin | null> {
+    const raw = this.loadAutoState().pinned;
+    if (!raw) return null;
+    const pin = this.storedPin();
+    if (pin && (!current || current === '未知')) return pin;
+    if (pin && comparableCoreVersion(current) === comparableCoreVersion(pin.version)) return pin;
+    if (!clearStale) return null;
+    let actual = current;
+    if (pin) {
+      let line = '';
+      try {
+        line = (await this.proxyManager?.getCoreVersionLine(true)) ?? '';
+      } catch {
+        line = '';
+      }
+      const probed = extractVersionToken(line);
+      if (!/^\d/.test(probed)) {
+        this.logManager.addLog(
+          'warn',
+          `无法确认当前内核版本（版本探测失败），保留固定的 ${pin.version}`,
+          'CoreUpdateService'
+        );
+        return pin;
+      }
+      if (comparableCoreVersion(probed) === comparableCoreVersion(pin.version)) return pin;
+      actual = probed;
+    }
+    this.saveAutoState({ pinned: undefined });
+    this.logManager.addLog(
+      'info',
+      pin
+        ? `当前内核 ${actual} 已不是固定的 ${pin.version}（版本已被其它途径改变），固定失效，恢复自动更新`
+        : '固定版本记录已损坏，已清除',
+      'CoreUpdateService'
+    );
+    this.emitAutoStatus();
+    return null;
+  }
+
+  /** 清固定（版本被其它途径改变 / 用户取消）。返回是否真的清了（调用方据此决定是否推状态，免空推事件）。 */
+  private dropPin(why: string): boolean {
+    if (!this.loadAutoState().pinned) return false;
+    this.saveAutoState({ pinned: undefined });
+    this.logManager.addLog('info', `已取消固定 sing-box 版本（${why}）`, 'CoreUpdateService');
+    return true;
+  }
+
+  /**
+   * 按 tag 在线安装并切换到该 sing-box 版本（安全不变量见本节头注）。
+   * @param args.tag   所选 tag（`v1.14.3` / `1.15.0-alpha.12`；其它形状 → INVALID_TAG）
+   * @param args.force 仅用于「当前是第三方内核」的确认：true = 用户已确认覆盖（fork 由 installCoreFromDir 留作 .bak，
+   *                   可回滚找回）。不越过任何完整性 / 预检闸。
+   * @param args.pin   true = 安装成功后固定此版本（自动更新暂停）；false = 清除旧固定。
+   * 预期内的失败一律以 `{ ok:false, code, detail }` 返回（不抛），便于渲染端按 code 出文案。
+   */
+  async installTag(
+    args: { tag?: unknown; force?: unknown; pin?: unknown } = {}
+  ): Promise<SingboxInstallResult> {
+    // a) 同步临界区：check+set 在第一个 await 之前完成（修 updateCore 式 TOCTOU：两次调用 / 与自动轮次并发双换核）。
+    //    coreOps>0 = 回滚 / 手动替换 / 立即应用在飞（它们不持 isUpdating）——同样不并发换核。
+    if (this.isUpdating || this.coreOps > 0) {
+      return this.installFailure(
+        new SingboxInstallError('BUSY', '内核更新正在进行中，请稍后再试'),
+        'sing-box 安装未开始'
+      );
+    }
+    if (this.xrayBusy()) {
+      return this.installFailure(
+        new SingboxInstallError('XRAY_BUSY', XRAY_BUSY_MSG),
+        'sing-box 安装未开始'
+      );
+    }
+    if (this.proxyManager?.isCoreSwapInProgress()) {
+      return this.installFailure(
+        new SingboxInstallError('BUSY', '内核正在更新，请稍后再试'),
+        'sing-box 安装未开始'
+      );
+    }
+    this.isUpdating = true;
+    this.coreOps++;
+    let tempPath: string | null = null;
+    let extractDir: string | null = null;
+    try {
+      // b) 守卫（不打网络）
+      const version = singboxTagVersion(args.tag);
+      if (!version) {
+        throw new SingboxInstallError('INVALID_TAG', `非法的 sing-box 版本号: ${String(args.tag)}`);
+      }
+      const tag = `v${version}`;
+      const bundled = coreManifest.bundledCoreVersion;
+      if (this.proxyManager?.isLifecycleBusy()) {
+        throw new SingboxInstallError('PROXY_BUSY', '代理正在启动/停止，请稍后再试');
+      }
+      if (compareSemver(version, bundled) < 0) {
+        throw new SingboxInstallError(
+          'BELOW_MINIMUM',
+          `sing-box ${version} 低于随包版本 ${bundled}（会在下次连接时被刷回随包内核）`
+        );
+      }
+      // macOS 无 install-core 能力的 helper → 落位目标是 .app 内的随包核：破坏 App 签名、且此后「恢复随包」无从恢复。
+      if (this.platform === 'darwin' && !(await this.helperCanInstallCore())) {
+        throw new SingboxInstallError(
+          'HELPER_REQUIRED',
+          'macOS 在线安装内核需要先安装（或升级）提权助手（否则只能改写 App 内的随包内核）'
+        );
+      }
+      if ((await this.getCoreBuild(true)) === 'fork' && args.force !== true) {
+        throw new SingboxInstallError(
+          'FORK_CONFIRM_REQUIRED',
+          '当前为第三方（非官方）内核：确认后才会覆盖（原内核保留为备份，可回滚找回）'
+        );
+      }
+      this.setInstallProgress({ kind: 'install', tag, phase: 'downloading' });
+
+      // c) 按 tag 现取 release（不信任渲染端给的任何 URL / 摘要）
+      const raw = await this.fetchSingboxReleaseByTag(tag);
+      const rel = normalizeSingboxRelease(raw, this.platform, this.arch, bundled);
+      if (!rel || rel.tag !== tag) {
+        throw new SingboxInstallError('NOT_FOUND', `GitHub 返回的 release 与所选 ${tag} 不符`);
+      }
+      if (rel.draft) throw new SingboxInstallError('DRAFT', `sing-box ${tag} 是草稿 release`);
+      const assets: unknown[] = Array.isArray((raw as { assets?: unknown }).assets)
+        ? (raw as { assets: unknown[] }).assets
+        : [];
+      const assetName = rel.assetName;
+      const asset = assetName
+        ? assets.find((a) => !!a && (a as { name?: unknown }).name === assetName)
+        : undefined;
+      if (!assetName || !asset) {
+        throw new SingboxInstallError(
+          'NO_ASSET',
+          `sing-box ${tag} 没有适用于本平台的官方构建（${assetName ?? `${this.platform}-${this.arch}`}）`
+        );
+      }
+      const sha256 = normalizeAssetDigest(asset);
+      if (!sha256) {
+        throw new SingboxInstallError(
+          'NO_HASH',
+          `GitHub 未提供 ${assetName} 的 sha256 摘要，已拒绝安装未经校验的内核`
+        );
+      }
+      const url = `${SINGBOX_DOWNLOAD}/${tag}/${assetName}`;
+      if ((asset as { browser_download_url?: unknown }).browser_download_url !== url) {
+        throw new SingboxInstallError(
+          'NO_ASSET',
+          `${assetName} 的下载地址不是 SagerNet/sing-box 官方 release 地址，已拒绝`
+        );
+      }
+
+      // d) 下载（失败回落镜像时字节仍过摘要）→ 独立复核摘要 → 解压
+      tempPath = await this.downloadInstallArchive(url, sha256, tag);
+      this.setInstallProgress({ kind: 'install', tag, phase: 'verifying' });
+      const actual = await sha256OfFile(tempPath).catch(() => null);
+      if (actual !== sha256) {
+        throw new SingboxInstallError(
+          'HASH_MISMATCH',
+          `压缩包 sha256 不符：期望 ${sha256}，实得 ${actual ?? '无法读取'}`
+        );
+      }
+      this.setInstallProgress({ kind: 'install', tag, phase: 'extracting' });
+      let corePath: string;
+      try {
+        const extracted = await this.coreDownloader.extractCore(tempPath);
+        corePath = extracted.corePath;
+        extractDir = extracted.extractDir;
+      } catch (e) {
+        throw new SingboxInstallError('EXTRACT_FAILED', errMsg(e));
+      }
+
+      // e) 预检：版本 = 所选、官方构建、`check` 当前配置、gVisor 兼容
+      this.setInstallProgress({ kind: 'install', tag, phase: 'testing' });
+      const preflight = await this.preflightValidate(corePath);
+      if (!preflight.version) {
+        // `<new> version` 都跑不起来（架构不符 / 文件损坏 / 临时目录挂了 noexec）：配置根本没检查，也说明不了版本本身
+        // 有问题 → 不标记问题版本，与「check 拒绝当前配置」的 PREFLIGHT_FAILED 分开报。
+        throw new SingboxInstallError(
+          'EXEC_FAILED',
+          preflight.reason ?? '新核心无法执行（架构不符或文件损坏）'
+        );
+      }
+      if (preflight.version !== version) {
+        throw new SingboxInstallError(
+          'VERSION_MISMATCH',
+          `解出的内核报告版本 ${preflight.version}，与所选 ${version} 不符`
+        );
+      }
+      if (classifyCoreBuild(preflight.versionLine) !== 'official') {
+        throw new SingboxInstallError(
+          'NOT_OFFICIAL',
+          `解出的内核不是官方构建形态：${preflight.versionLine}`
+        );
+      }
+      if (!preflight.ok) {
+        // 预检用的配置就是按目标版本生成的现役配置：check 不过 = 换上去必起不来 → 无 force 越过；标记供自动更新跳过。
+        this.markKnownBad(version);
+        throw new SingboxInstallError(
+          'PREFLIGHT_FAILED',
+          clipTail(preflight.detail || preflight.reason || '新核心无法解析当前配置')
+        );
+      }
+      await this.assertGvisorCompatible(preflight.buildTags, version);
+
+      // f) + g) 切换并（代理原先在跑则）重启
+      const pinned = args.pin === true;
+      const res = await this.swapInstalledCore({
+        tag,
+        version,
+        prerelease: rel.prerelease,
+        sourceDir: path.dirname(corePath),
+        pinned,
+      });
+      if (!res.ok) return res;
+      this.logManager.addLog(
+        'info',
+        `sing-box 已切换到 ${tag}${rel.prerelease ? '（预发布）' : ''}${pinned ? '（已固定）' : ''}${res.restarted ? '，代理已重启' : ''}`,
+        'CoreUpdateService'
+      );
+      return {
+        ok: true,
+        version,
+        tag,
+        prerelease: rel.prerelease,
+        restarted: res.restarted,
+        pinned,
+      };
+    } catch (e) {
+      return this.installFailure(e, 'sing-box 安装失败');
+    } finally {
+      // h) 善后：临时包 / 解压目录、释放锁、推结束事件
+      if (tempPath) await fs.promises.unlink(tempPath).catch(() => {});
+      if (extractDir) {
+        await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+      }
+      this.isUpdating = false;
+      this.coreOps--;
+      this.setInstallProgress(null);
+    }
+  }
+
+  private installFailure(
+    e: unknown,
+    what: string
+  ): { ok: false; code: SingboxInstallErrorCode; detail: string } {
+    if (e instanceof SingboxInstallError) {
+      this.logManager.addLog('warn', `${what}（${e.code}）: ${e.message}`, 'CoreUpdateService');
+      return { ok: false, code: e.code, detail: e.message };
+    }
+    this.logManager.addLog('error', `${what}: ${errMsg(e)}`, 'CoreUpdateService');
+    return { ok: false, code: 'FAILED', detail: clipTail(errMsg(e)) };
+  }
+
+  /** helper 是否在位且支持 install-core（按 this.platform 判最低 proto；探测失败 → false）。 */
+  private async helperCanInstallCore(): Promise<boolean> {
+    if (!this.helperManager) return false;
+    try {
+      return this.helperSupportsInstallCore(await this.helperManager.getStatus(), this.platform);
+    } catch {
+      return false;
+    }
+  }
+
+  private async fetchSingboxReleaseByTag(tag: string): Promise<unknown> {
+    try {
+      return await this.coreDownloader.fetchGithubJson(`${SINGBOX_API}/releases/tags/${tag}`);
+    } catch (e) {
+      const err = e as { code?: unknown; status?: unknown };
+      if (err?.code === 'RATE_LIMITED') throw new SingboxInstallError('RATE_LIMITED', errMsg(e));
+      if (err?.status === 404) {
+        throw new SingboxInstallError('NOT_FOUND', `GitHub 上没有 sing-box ${tag}`);
+      }
+      throw new SingboxInstallError('NETWORK', errMsg(e));
+    }
+  }
+
+  private async downloadInstallArchive(url: string, sha256: string, tag: string): Promise<string> {
+    try {
+      return await this.coreDownloader.downloadFile(url, false, sha256, {
+        tempPrefix: 'sing-box-core-install',
+        onProgress: (done, total) => {
+          if (total <= 0) return;
+          const percent = Math.min(100, Math.floor((done * 100) / total));
+          this.installProgress = { kind: 'install', tag, phase: 'downloading', percent };
+          if (
+            percent === 100 ||
+            this.now() - this.lastInstallProgressEmit >= INSTALL_PROGRESS_THROTTLE_MS
+          ) {
+            this.emitInstallProgress();
+          }
+        },
+      });
+    } catch (e) {
+      const msg = errMsg(e);
+      // 按下载器给的 code 判（直连摘要不符而镜像腿失败时 message 是…完整性失败本身，code 才是稳定信号）；文案匹配只作兜底。
+      if (
+        (e as { code?: unknown } | null)?.code === DOWNLOAD_HASH_MISMATCH ||
+        /完整性校验失败/.test(msg)
+      ) {
+        throw new SingboxInstallError('HASH_MISMATCH', msg);
+      }
+      throw new SingboxInstallError('DOWNLOAD_FAILED', msg);
+    }
+  }
+
+  /**
+   * gVisor 守卫：新核的构建 tag 不含 with_gvisor（1.15.0-alpha.11 起的官方构建）而当前 TUN 栈解析为 gvisor / mixed
+   * （Auto 在 macOS / Windows 即 gvisor）→ 拒装。`sing-box check` 对此照样通过，运行期才 FATAL「gVisor is not included」，
+   * 用户若只用系统代理、过了首启验证窗口，备份就被清掉，之后开 TUN 才炸且无从自动回滚。
+   * 版本输出里没有 Tags 行（buildTags=null，格式未知）→ 无从判断，不拦。读配置失败 → 按 Auto 判（失败安全）。
+   */
+  private async assertGvisorCompatible(
+    buildTags: string[] | null | undefined,
+    version: string
+  ): Promise<void> {
+    if (!Array.isArray(buildTags) || buildTags.includes('with_gvisor')) return;
+    let stack: TunStack | undefined;
+    try {
+      const cfg = this.configProvider ? await this.configProvider() : null;
+      stack = cfg?.tunConfig?.stack;
+    } catch {
+      /* 读不到配置 → stack 缺省 = Auto */
+    }
+    const effective = resolveTunStack(stack, this.platform);
+    if (effective === 'gvisor' || effective === 'mixed') {
+      const auto = !stack || stack === 'auto';
+      throw new SingboxInstallError(
+        'GVISOR_MISSING',
+        `sing-box ${version} 未编入 gVisor（构建无 with_gvisor），而当前 TUN 网络栈为 ${effective}${auto ? '（Auto）' : ''}，` +
+          'TUN 模式将无法启动。请先在「设置 → 网络」把网络栈改为 System 再安装此版本'
+      );
+    }
+  }
+
+  /**
+   * 换核 + （原先在跑则）重启代理；失败回滚。决策见本节头注 5。
+   * 门控序列（owner='singbox'）：成功 [true,false]；重启失败回滚 [true,false,true,false]（再起代理时门控已清，否则会被
+   * 自己的闸拒绝）。
+   */
+  private async swapInstalledCore(o: {
+    tag: string;
+    version: string;
+    prerelease: boolean;
+    sourceDir: string;
+    pinned: boolean;
+  }): Promise<
+    | { ok: true; restarted: boolean }
+    | { ok: false; code: SingboxInstallErrorCode; detail?: string; rolledBack?: boolean }
+  > {
+    const pm = this.proxyManager;
+    // 下载 / 预检期间用户可能刚点了连接 / 停止 → 复核（PROXY_BUSY：此刻什么都还没动）
+    if (pm?.isLifecycleBusy()) {
+      throw new SingboxInstallError('PROXY_BUSY', '代理正在启动/停止，请稍后再试');
+    }
+    // 基线（与 getStatus 同一同步段）：此后除本流程自己那一次 stop / start 外的请求 = 用户介入（停止 / 连接 / 托盘 / 退出）。
+    const baseline = pm?.getLifecycleRequestCounts() ?? null;
+    const wasRunning = !!pm && pm.getStatus().running;
+    let cfg: UserConfig | null = null;
+    if (pm && wasRunning) {
+      cfg = this.configProvider ? await this.configProvider().catch(() => null) : null;
+      if (!cfg) throw new SingboxInstallError('FAILED', '无法读取当前配置，未切换（代理保持运行）');
+    }
+    // 互斥复核与持门控同一同步段（clearStaged 同步）：防他方（如 Xray）在下载期间占了换核门控。
+    if (pm?.isCoreSwapInProgress()) {
+      throw new SingboxInstallError('BUSY', '内核正在更新，请稍后再试');
+    }
+    // 换核前的固定：起不来回滚到原核时连同它的固定一起恢复（这次失败的尝试不该替用户撤销对原版本的固定）。
+    const priorPin = this.storedPin();
+    // 用户显式选了版本：作废暂存的自动更新核（否则下次停代理 / 启动时被它覆盖回去）。此处刻意**不**推自动更新状态：
+    // 设置卡收到状态事件会重拉 getVersionInfo，后者执行 `<.bak> version`，而下方 installCoreFromDir 正要覆盖写 .bak
+    // （执行中的文件被写 → ETXTBSY，安装失败）。成功路径在换核后推；失败路径由结束时的进度 null 事件让卡片全量刷新。
+    this.clearStaged();
+    this.setInstallProgress({ kind: 'install', tag: o.tag, phase: 'switching' });
+
+    let backupMade = false;
+    let swapError: unknown = null;
+    pm?.setCoreSwapInProgress(true);
+    try {
+      if (pm && wasRunning) {
+        this.logManager.addLog('info', '正在停止代理服务以切换内核...', 'CoreUpdateService');
+        await pm.stop();
+        await new Promise((resolve) => setTimeout(resolve, this.swapSettleMs)); // 等进程完全退出
+      }
+      await this.installCoreFromDir(o.sourceDir, o.version, () => {
+        backupMade = true;
+      });
+    } catch (e) {
+      swapError = e;
+      // 落位中途失败（已备份）→ 门控内恢复原核（installCoreFromDir 在最后一步才 arm 验证闩，失败路径无需撤闩）
+      if (backupMade) await this.restoreBackup();
+    } finally {
+      pm?.setCoreSwapInProgress(false);
+    }
+    // 换核窗口内（含本流程 stop 之前的 await）用户停止 / 退出过 → 不再起代理。窗口内被门控拒绝的手动连接不算：
+    // 它没起来，恰该由下方重启兑现（最后一次是 start → 照常重启）。
+    const stoppedByUser =
+      !!pm && !!baseline && this.userStoppedSince(pm, baseline, wasRunning ? 1 : 0);
+
+    if (swapError) {
+      if (pm && cfg && !stoppedByUser) {
+        const againErr = await this.startProxyForInstall(pm, cfg);
+        if (againErr) {
+          this.logManager.addLog(
+            'error',
+            `换核失败后代理未能重新启动: ${againErr.msg}`,
+            'CoreUpdateService'
+          );
+        }
+      } else {
+        await pm?.refreshCoreVersionAfterExternalReseed().catch(() => {});
+      }
+      throw new SingboxInstallError('FAILED', `写入新内核失败：${errMsg(swapError)}`);
+    }
+
+    // 固定：pin=true 记下此版本（自动更新暂停）；否则清掉旧固定（用户已改选其它版本，旧固定已无意义）。
+    this.saveAutoState({
+      pinned: o.pinned
+        ? {
+            version: o.version,
+            tag: o.tag,
+            prerelease: o.prerelease,
+            pinnedAt: new Date(this.now()).toISOString(),
+          }
+        : undefined,
+    });
+    this.emitAutoStatus();
+
+    if (!pm || !cfg || stoppedByUser) {
+      // 不重启：ProxyManager 缓存的内核路径 / 版本可能陈旧（首次落位到新槽位时路径本身就变了）→ 立即重解析。
+      if (stoppedByUser) {
+        this.logManager.addLog(
+          'info',
+          `sing-box 已切换到 ${o.tag}；切换期间代理被手动停止，不再自动重启`,
+          'CoreUpdateService'
+        );
+      }
+      await pm?.refreshCoreVersionAfterExternalReseed().catch(() => {});
+      return { ok: true, restarted: false };
+    }
+
+    this.setInstallProgress({ kind: 'install', tag: o.tag, phase: 'restarting' });
+    const beforeStart = pm.getLifecycleRequestCounts();
+    const startErr = await this.startProxyForInstall(pm, cfg);
+    if (this.takenOverSince(pm, beforeStart)) {
+      // 重启期间用户停止 / 连接 / 退出：代理此刻归用户操作所有。回滚要先 stop——会杀掉用户刚发起的连接，
+      // 或在退出拆除后再起 sing-box；判不了成败也不该替用户做主 → 新核留用（首启验证闩仍在，坏核由其兜底）。
+      this.logManager.addLog(
+        'info',
+        `sing-box 已切换到 ${o.tag}；重启代理期间用户已停止或接管代理，未回滚、不再自动重启` +
+          (startErr ? `（本次启动: ${startErr.msg}）` : ''),
+        'CoreUpdateService'
+      );
+      return { ok: true, restarted: false };
+    }
+    if (!startErr) return { ok: true, restarted: true };
+
+    if (startErr.environmental) {
+      // 起不来的原因与新内核无关（TUN 地址冲突 / 取消授权 / 提权引导取消 / 端口被占，见 isEnvironmentalStartError）：
+      // 回滚无益（原核照样起不来），还会把健康的新版本误记为问题版本。新核留用、固定照写、不标记；首启验证闩保持
+      // armed——之后真正的首启崩溃仍由 autoRollbackIfPendingUpdate 兜底（它对 TUN_INIT_PERSISTENT 同样不回滚）。
+      this.logManager.addLog(
+        'warn',
+        `sing-box 已切换到 ${o.tag}，但代理未能启动（与内核版本无关，未回滚）: ${startErr.msg}`,
+        'CoreUpdateService'
+      );
+      await pm.refreshCoreVersionAfterExternalReseed().catch(() => {});
+      return {
+        ok: false,
+        code: 'START_BLOCKED',
+        detail: clipTail(startErr.msg),
+        rolledBack: false,
+      };
+    }
+
+    // 起不来：照 replaceManualCore 的 catch——撤验证闩（防原核首启被当新核记录/观察）→ 门控内恢复备份 → 标记问题版本 →
+    // 固定回到换核前（恢复成功才恢复原固定，否则清除）→ 以原核再起。
+    this.logManager.addLog(
+      'error',
+      `切换到 sing-box ${o.tag} 后代理启动失败，回滚到原内核: ${startErr.msg}`,
+      'CoreUpdateService'
+    );
+    this.disarmPendingValidation();
+    let restored = false;
+    // 判定与持门控同一同步段（无 await）：其后的手动连接被门控拒绝，不会被下方 stop 误杀。
+    pm.setCoreSwapInProgress(true);
+    const beforeRollback = pm.getLifecycleRequestCounts();
+    try {
+      await pm.stop().catch(() => {});
+      restored = backupMade && (await this.restoreBackup());
+    } finally {
+      pm.setCoreSwapInProgress(false);
+    }
+    this.markKnownBad(o.version);
+    // 原核回来了 → 它原先的固定一并回来（pin:false 的这次尝试在换核后清掉了它）；恢复失败 → 现役核不明，清固定。
+    this.saveAutoState({ pinned: restored && priorPin ? priorPin : undefined });
+    this.emitAutoStatus();
+    // 回滚窗口内用户停止 / 退出 → 保持停止（不在退出拆除后再拉起 sing-box）
+    const stoppedDuringRollback = this.userStoppedSince(pm, beforeRollback, 1);
+    const againErr = stoppedDuringRollback ? null : await this.startProxyForInstall(pm, cfg);
+    if (stoppedDuringRollback) await pm.refreshCoreVersionAfterExternalReseed().catch(() => {});
+    if (!restored) this.logManager.addLog('error', '回滚原内核失败', 'CoreUpdateService');
+    if (againErr) {
+      this.logManager.addLog('error', `回滚后代理仍未能启动: ${againErr.msg}`, 'CoreUpdateService');
+    }
+    return {
+      ok: false,
+      code: 'START_FAILED',
+      detail: clipTail(restored ? startErr.msg : `${startErr.msg}；回滚原内核失败`),
+      rolledBack: restored,
+    };
+  }
+
+  /**
+   * 起代理：成功 null；失败返回文案 + 是否为与内核无关的环境 / 用户原因（start 失败抛错、不发 'error' 事件，故由调用方
+   * 判定回滚）。
+   */
+  private async startProxyForInstall(
+    pm: ProxyManager,
+    cfg: UserConfig
+  ): Promise<InstallStartFailure | null> {
+    try {
+      await pm.start(cfg);
+      return null;
+    } catch (e) {
+      return { msg: errMsg(e), environmental: isEnvironmentalStartError(e) };
+    }
+  }
+
+  /**
+   * 自 before 起、扣除本流程自己的 ownStops 次 stop 后仍有 stop 请求，且最近一次请求是 stop（用户停止 / 托盘 / 退出）。
+   * 用于持门控的窗口：窗口内的手动 start 被门控拒绝、没起来，最后一次是 start 时仍应由本流程把代理拉回来。
+   */
+  private userStoppedSince(pm: ProxyManager, before: LifecycleCounts, ownStops: number): boolean {
+    const now = pm.getLifecycleRequestCounts();
+    return now.stops > before.stops + ownStops && now.last === 'stop';
+  }
+
+  /** 自 before 起，除本流程自己那一次 start 外是否还有 start/stop 请求（用户停止 / 连接 / 托盘 / 退出 / 重启）。 */
+  private takenOverSince(pm: ProxyManager, before: LifecycleCounts): boolean {
+    const now = pm.getLifecycleRequestCounts();
+    return now.stops !== before.stops || now.starts !== before.starts + 1;
   }
 
   /**
@@ -490,9 +1342,12 @@ export class CoreUpdateService {
    * 旧门 `ready && !upgradeable` 让 macOS proto 5-8 的旧 helper 用户被判「无 install-core」→ 内核更新走 bundle
    * 写入却仍跑受保护目录旧核，更新静默失效。故改按 ready + 平台最低 proto 判定。version 即 ping 返回的 proto 串。
    */
-  private helperSupportsInstallCore(st: HelperStatus): boolean {
+  private helperSupportsInstallCore(
+    st: HelperStatus,
+    platform: NodeJS.Platform = process.platform
+  ): boolean {
     if (!st.ready) return false;
-    const minProto = process.platform === 'darwin' ? 5 : 1;
+    const minProto = platform === 'darwin' ? 5 : 1;
     const proto = Number.parseInt(st.version ?? '', 10);
     // version 非数字串（异常 ping 应答/未来格式变体）→ NaN 比较恒 false 会把有能力 helper 误判无能力、
     // 静默走 bundle 分支复现本 bug；回退旧布尔语义（ready && !upgradeable）而非一票否决。
@@ -766,6 +1621,8 @@ export class CoreUpdateService {
           extra && 'crossBandLatest' in extra
             ? (extra.crossBandLatest ?? null)
             : (st.crossBandNotifiedVersion ?? null),
+        // 同步 emit 拿不到当前版本 → 发持久位原值；各改版本路径都先显式清固定再推，陈旧位由 activePin 清后再推。
+        pinned: this.storedPin(),
       };
       this.eventSender(IPC_CHANNELS.EVENT_CORE_AUTO_UPDATE_STATUS, payload);
     } catch {
@@ -783,11 +1640,17 @@ export class CoreUpdateService {
     } catch {
       /* ignore */
     }
+    // 固定只在当前内核仍是该版本时展示。读版本缓存（命中即不 spawn 内核：快照被设置页 / 调度频繁调用），缓存可能滞后于
+    // 刚完成的换核，故只过滤不清除（clearStale=false）；真正的陈旧清除在读活二进制的调度路径 / getVersionInfo 里做。
+    const pinned = st.pinned
+      ? await this.activePin(await this.getCurrentVersion(false).catch(() => ''), false)
+      : null;
     return {
       autoUpdateEnabled: enabled,
       lastCheckAt: st.lastCheckAt ?? null,
       staged: st.staged ? { version: st.staged.version, stagedAt: st.staged.stagedAt } : null,
       crossBandLatest: st.crossBandNotifiedVersion ?? null,
+      pinned,
     };
   }
 
@@ -823,7 +1686,8 @@ export class CoreUpdateService {
    * 不变量：自动路径恒强制 sameMajorMinor（跨 minor 绝不自动），不受 restrictCoreUpdateToCompatibleMinor 影响。
    */
   async runAutoUpdateCycle(): Promise<void> {
-    if (this.isUpdating) return;
+    // coreOps>0 = 回滚 / 手动替换 / 立即应用在飞（不持 isUpdating）：本轮让开，下个 tick 再来。
+    if (this.isUpdating || this.coreOps > 0) return;
     // H1：入口同步持闸（与 isUpdating 检查间无 await，原子），覆盖 check→下载→解压→预检→暂存→落位全程，
     // 防与手动 updateCore 并发双换核（原仅末尾 tryApplyStaged 持闸，数十秒下载/暂存段 isUpdating=false 留并发
     // 窗口，两条链同写 core-staged/目标目录/*.bak 互相覆盖、备份取自半替换核心、回滚失真）。内部 tryApplyStaged
@@ -832,6 +1696,21 @@ export class CoreUpdateService {
     try {
       const cfg = this.configProvider ? await this.configProvider() : null;
       if (cfg?.autoUpdateCore !== true) return;
+
+      // 用户固定了当前版本 → 本轮不检查、不下载、不暂存（不打 GitHub）。记 lastCheckAt 让调度维持 24h 节奏（取消固定时
+      // clearPin 清掉它 → 下个巡检即恢复）。先看持久位再读版本：没固定的用户不多一次版本探测。
+      if (this.loadAutoState().pinned) {
+        const pin = await this.activePin(await this.getCurrentVersion());
+        if (pin) {
+          this.saveAutoState({ lastCheckAt: Date.now() });
+          this.logManager.addLog(
+            'info',
+            `已固定 sing-box ${pin.version}，跳过本轮自动更新`,
+            'CoreUpdateService'
+          );
+          return;
+        }
+      }
 
       const check = await this.checkUpdate();
       // 仅成功检查才刷新 lastCheckAt：失败轮（network/API 限流等，check.error 有值）保留旧值，
@@ -956,7 +1835,12 @@ export class CoreUpdateService {
   async tryApplyStaged(trigger: string, lockHeld = false): Promise<StagedApplyResult> {
     // L1：入口同步置 applying 闸（与 isUpdating 检查间无 await），防并发 tryApplyStaged 双通过。
     // lockHeld=true（runAutoUpdateCycle 内调）→ 复用外层已持的 isUpdating 闸，不二次检查/置/复位（H1）。
-    if (!lockHeld && this.isUpdating) return 'noop';
+    // 自动触发（启动 / 代理停止 / tick）还要让开不持 isUpdating 的回滚 / 手动替换（coreOps>0）——例如手动替换停了
+    // 代理、写核加落位后预检超过 5s 时，「代理已停止」触发会与之并发换核。'manual-apply' 只由 applyStagedNow 在其自持
+    // 的 coreOps 内调用，故它只看 isUpdating。
+    if (!lockHeld && (this.isUpdating || (trigger !== 'manual-apply' && this.coreOps > 0))) {
+      return 'noop';
+    }
     if (!lockHeld) this.isUpdating = true;
     let heldOp = false;
     try {
@@ -989,6 +1873,22 @@ export class CoreUpdateService {
       }
       this.coreOps++;
       heldOp = true;
+
+      // 用户固定了当前版本：自动触发一律作废暂存核（否则下次停代理 / 启动时被它覆盖掉用户选的版本）。用户点「立即应用」
+      // （manual-apply）是显式意愿，照常落位（落位后固定随版本改变而清除，见下方 applied 分支）。
+      if (trigger !== 'manual-apply' && this.loadAutoState().pinned) {
+        const pin = await this.activePin(await this.getCurrentVersion());
+        if (pin) {
+          this.logManager.addLog(
+            'info',
+            `已固定 sing-box ${pin.version}，作废暂存的自动更新内核 ${staged.version}（${trigger}）`,
+            'CoreUpdateService'
+          );
+          this.clearStaged();
+          this.emitAutoStatus();
+          return 'discarded';
+        }
+      }
 
       // M4：自动触发（非用户「立即应用」）须开关开启才落位；关则保持 staged、不动现役核心。
       if (trigger !== 'manual-apply') {
@@ -1091,6 +1991,8 @@ export class CoreUpdateService {
       this.saveAutoState({
         pendingChangeNotice: { previousVersion: current, currentVersion: staged.version },
       });
+      // 版本已变（只有 manual-apply 能在固定生效时走到这里）→ 固定随之作废；下方 emitAutoStatus 一并推出。
+      this.dropPin(`已应用暂存内核 ${staged.version}`);
       this.eventSender?.(IPC_CHANNELS.EVENT_CORE_VERSION_CHANGED, {
         previousVersion: current,
         currentVersion: staged.version,
@@ -1120,8 +2022,8 @@ export class CoreUpdateService {
     if (!staged) return 'noop';
     return this.withCoreOp(
       () => this.applyStagedNowLocked(),
-      () => {
-        throw new Error(XRAY_BUSY_MSG);
+      (code) => {
+        throw coreOpBusyError(code);
       }
     );
   }
@@ -1244,8 +2146,14 @@ export class CoreUpdateService {
       this.clearKnownBad(version);
 
       // B0：成功运行即「实证兼容」该版本带 → 棘轮抬高 verifiedCeiling，让兼容带闸放行该带内后续更新。
+      // 预发布（1.15.0-alpha.N 等）不算实证：试装一次 alpha 不得永久放宽「检查更新」的兼容带闸（预发布随时还会改 schema；
+      // 该带正式版发布后，用户实跑过它才算数）。
       const enc = encodeMajorMinor(version);
-      if (!isNaN(enc) && enc > (this.loadAutoState().verifiedCeiling ?? 0)) {
+      if (
+        !hasPrereleaseSuffix(version) &&
+        !isNaN(enc) &&
+        enc > (this.loadAutoState().verifiedCeiling ?? 0)
+      ) {
         this.saveAutoState({ verifiedCeiling: enc });
       }
 
@@ -1293,12 +2201,16 @@ export class CoreUpdateService {
     const build = await this.getCoreBuild();
     // push 型：banner 读 pendingChangeNotice 决定是否弹（取代旧「持久历史 vs 运行时实际」推断比对；lastKnownVersion 死字段已删）。
     const pendingChangeNotice = this.loadAutoState().pendingChangeNotice ?? null;
+    // currentVersion 读的是活二进制（force）→ 可据此清陈旧固定；但换核 / 安装 / 恢复进行中版本在变，只过滤不清。
+    const pinned = await this.activePin(currentVersion, !this.isUpdating && this.coreOps === 0);
     return {
       currentVersion,
       backupVersion,
       hasBackup,
       build,
       pendingChangeNotice,
+      bundledVersion: coreManifest.bundledCoreVersion,
+      pinned,
     };
   }
 
@@ -1315,8 +2227,8 @@ export class CoreUpdateService {
   async rollbackCore(): Promise<void> {
     return this.withCoreOp(
       () => this.rollbackCoreLocked(),
-      () => {
-        throw new Error(XRAY_BUSY_MSG);
+      (code) => {
+        throw coreOpBusyError(code);
       }
     );
   }
@@ -1355,8 +2267,7 @@ export class CoreUpdateService {
         }
         this.logManager.addLog('info', '核心回滚成功（写回受保护目录）', 'CoreUpdateService');
         await this.recordSuccessfulVersion();
-        const rolledEnc = encodeMajorMinor(await this.getCurrentVersion());
-        if (!isNaN(rolledEnc)) this.saveAutoState({ verifiedCeiling: rolledEnc });
+        await this.settleStateAfterRollback();
         return;
       }
 
@@ -1401,14 +2312,29 @@ export class CoreUpdateService {
 
       // 更新版本记录
       await this.recordSuccessfulVersion();
-
-      // B0：回滚 = 被回滚版本带验证失败 → 把 verifiedCeiling 重置到回滚后实跑带（撤销更高带的「已验证」，兼容带闸
-      // 不再放行那个出问题的更高带）。recordSuccessfulVersion 的棘轮 max 不会下降，故此处显式覆盖。
-      const rolledEnc = encodeMajorMinor(await this.getCurrentVersion());
-      if (!isNaN(rolledEnc)) this.saveAutoState({ verifiedCeiling: rolledEnc });
+      await this.settleStateAfterRollback();
     } finally {
       this.proxyManager?.setCoreSwapInProgress(false);
     }
+  }
+
+  /**
+   * 回滚成功后的状态收尾（受保护目录 / 普通两条回滚腿共用；手动回滚与首启失败自动回滚同经此处）：
+   *  - B0：回滚 = 被回滚版本带验证失败 → 把 verifiedCeiling 重置到回滚后实跑带（撤销更高带的「已验证」，兼容带闸不再放行
+   *    那个出问题的更高带）。recordSuccessfulVersion 的棘轮 max 不会下降，故此处显式覆盖。回滚后是预发布核时只降不升
+   *    （与「预发布不算实证」一致：从正式版回滚到先前试装的 alpha，不得借回滚把上限抬到 alpha 的带）；
+   *  - 固定作废：版本已回退，「固定 X」不再成立（首启失败自动回滚时更是 X 本身有问题）。
+   */
+  private async settleStateAfterRollback(): Promise<void> {
+    const rolled = await this.getCurrentVersion();
+    const rolledEnc = encodeMajorMinor(rolled);
+    if (!isNaN(rolledEnc)) {
+      const prev = this.loadAutoState().verifiedCeiling ?? BUNDLED_CEILING;
+      this.saveAutoState({
+        verifiedCeiling: hasPrereleaseSuffix(rolled) ? Math.min(rolledEnc, prev) : rolledEnc,
+      });
+    }
+    if (this.dropPin('内核已回滚')) this.emitAutoStatus();
   }
 
   /**
@@ -1424,11 +2350,14 @@ export class CoreUpdateService {
   }): Promise<ManualCoreReplaceResult> {
     return this.withCoreOp(
       () => this.replaceManualCoreLocked(opts),
-      () => ({ ok: false, error: XRAY_BUSY_MSG })
+      (code) => ({ ok: false, code, error: code === 'BUSY' ? CORE_BUSY_MSG : XRAY_BUSY_MSG })
     );
   }
 
-  /** replaceManualCore 本体（已持 coreOps；含选文件对话框——其间 Xray 切换被拒，免得两边同时换核）。 */
+  /**
+   * replaceManualCore 本体（已持 coreOps；含选文件对话框——其间 Xray 切换与其它内核操作被拒，免得两边同时换核）。
+   * resetCoreToFactory 持锁后直接调本体（经公开入口会被自己的锁拒为 BUSY）。
+   */
   private async replaceManualCoreLocked(opts?: {
     filePath?: string;
     force?: boolean;
@@ -1452,6 +2381,7 @@ export class CoreUpdateService {
     }
 
     // 预检源文件（可执行 + 解析当前配置）——在停代理前，预检失败时现役核心继续运行、不动。
+    this.advanceResetPhase('testing');
     const preSrc = await this.preflightValidate(sourcePath);
     if (!preSrc.ok) {
       return {
@@ -1496,6 +2426,7 @@ export class CoreUpdateService {
     }
 
     // 停止代理（记录 wasRunning 供落位后重启——统一不变量：停了就在落位后恢复，不留停止态致断网）
+    this.advanceResetPhase('switching');
     let wasRunning = false;
     if (this.proxyManager) {
       const status = this.proxyManager.getStatus();
@@ -1552,11 +2483,15 @@ export class CoreUpdateService {
           await this.recordSuccessfulVersion();
         }
         this.logManager.addLog('info', '手动替换完成，正在重启代理服务...', 'CoreUpdateService');
+        this.advanceResetPhase('restarting');
         const cfg = this.configProvider ? await this.configProvider() : null;
         if (cfg) await this.proxyManager.start(cfg);
       } else {
         await this.recordSuccessfulVersion();
       }
+      // 内核已换成用户选的文件（或随包核）：版本选择里的旧固定随之作废。
+      if (this.dropPin(opts?.skipBackup ? '已恢复随包版本' : '内核已手动替换'))
+        this.emitAutoStatus();
       // B-3：回传内核来源（预检 versionLine 判定），前端替换成功后据此对 fork/unknown 追加来源提示。
       return { ok: true, build: uploadBuild };
     } catch (error) {
@@ -1655,21 +2590,60 @@ export class CoreUpdateService {
     }
   }
 
-  async resetCoreToFactory(): Promise<{ ok: boolean; error?: string }> {
-    this.logManager.addLog('info', '重置内核到出厂版本...', 'CoreUpdateService');
-    const bundlePath = resourceManager.getBundledSingBoxPath();
-    // 出厂核完整性：reset 是「回到已知良好」的动作，装回一个已被替换的二进制比不 reset 更糟。
-    const bad = this.verifyFactoryCore(bundlePath);
-    if (bad) {
-      this.logManager.addLog('error', `重置内核被拒绝：${bad}`, 'CoreUpdateService');
-      return { ok: false, error: bad };
+  /**
+   * 恢复随包（出厂）版本。也是版本选择里「恢复随包」的落位腿。
+   *  - 入口同步 check+set isUpdating（同 installTag）：与在线安装 / 检查更新 / 自动轮次 / staged 落位互斥——否则 reset 停代理
+   *    后 onProxyStopped 5s 内可把暂存核落位回去，或与安装并发双换核。已有内核操作在飞 → BUSY；Xray 正在切换 → XRAY_BUSY；
+   *  - 进度以 kind 'reset' 推送（设置卡卸载重挂后经 getInstallState 找回），结束推 null；
+   *  - 成功后回到干净状态：删旧备份、清固定 / 暂存核、verifiedCeiling 重置为出厂带（试过的预发布 / 跨带不再放宽
+   *    「检查更新」的兼容带闸）。问题版本名单 / 跨带提示等其它状态不动。
+   */
+  async resetCoreToFactory(): Promise<CoreFactoryResetResult> {
+    // 同步临界区：check+set（isUpdating + coreOps，同 installTag）在第一个 await 之前；落位腿直接调 replaceManualCoreLocked
+    // （公开的 replaceManualCore 会被这把锁拒为 BUSY）。
+    if (this.isUpdating || this.coreOps > 0) {
+      this.logManager.addLog('warn', '恢复随包内核未开始：内核更新正在进行中', 'CoreUpdateService');
+      return { ok: false, code: 'BUSY', error: CORE_BUSY_MSG };
     }
-    const r = await this.replaceManualCore({ filePath: bundlePath, force: true, skipBackup: true });
-    if (r.ok) {
-      this.pruneBackup(); // 清理旧备份（reset 到出厂 = 干净状态，残留 .bak 无意义）
-      this.logManager.addLog('info', '内核已重置到出厂版本', 'CoreUpdateService');
+    if (this.xrayBusy()) {
+      this.logManager.addLog('warn', `恢复随包内核未开始：${XRAY_BUSY_MSG}`, 'CoreUpdateService');
+      return { ok: false, code: 'XRAY_BUSY', error: XRAY_BUSY_MSG };
     }
-    return { ok: r.ok, error: r.error };
+    this.isUpdating = true;
+    this.coreOps++;
+    try {
+      this.logManager.addLog('info', '重置内核到出厂版本...', 'CoreUpdateService');
+      this.setInstallProgress({
+        kind: 'reset',
+        tag: `v${coreManifest.bundledCoreVersion}`,
+        phase: 'testing',
+      });
+      const bundlePath = resourceManager.getBundledSingBoxPath();
+      // 出厂核完整性：reset 是「回到已知良好」的动作，装回一个已被替换的二进制比不 reset 更糟。
+      const bad = this.verifyFactoryCore(bundlePath);
+      if (bad) {
+        this.logManager.addLog('error', `重置内核被拒绝：${bad}`, 'CoreUpdateService');
+        return { ok: false, error: bad };
+      }
+      const r = await this.replaceManualCoreLocked({
+        filePath: bundlePath,
+        force: true,
+        skipBackup: true,
+      });
+      if (r.ok) {
+        this.pruneBackup(); // 清理旧备份（reset 到出厂 = 干净状态，残留 .bak 无意义）
+        this.clearStaged();
+        this.saveAutoState({ pinned: undefined, verifiedCeiling: BUNDLED_CEILING });
+        this.emitAutoStatus();
+        this.logManager.addLog('info', '内核已重置到出厂版本', 'CoreUpdateService');
+      }
+      return { ok: r.ok, error: r.error };
+    } finally {
+      // 先清暂存（上方）再放锁，同一同步段：放锁后才可能进入的 tryApplyStaged 看不到旧暂存。
+      this.isUpdating = false;
+      this.coreOps--;
+      this.setInstallProgress(null);
+    }
   }
 
   // === 核心更新健壮性：预检 / 问题版本跳过 / 备份生命周期 / 自动回滚 ===
@@ -1680,14 +2654,22 @@ export class CoreUpdateService {
    */
   private async getBinaryVersion(
     binPath: string
-  ): Promise<{ version: string | null; versionLine: string }> {
+  ): Promise<{ version: string | null; versionLine: string; buildTags: string[] | null }> {
     try {
       const execFileAsync = require('util').promisify(require('child_process').execFile);
-      const { stdout } = await execFileAsync(binPath, ['version']);
+      // 超时：外来 / 挂起的二进制不得永久持有更新锁（见 CORE_EXEC_TIMEOUT_MS）；超时 = 不可执行。
+      const { stdout } = await execFileAsync(binPath, ['version'], {
+        timeout: CORE_EXEC_TIMEOUT_MS,
+        windowsHide: true,
+      });
       // 保留完整后缀：同版本短路需精确匹配预览版、B-2 基线预判 / B-3 来源识别需原始行（单一真值 shared/core-build）。
-      return parseUploadedCoreVersion(String(stdout));
+      // buildTags：`Tags:` 行（with_gvisor 等），供 installTag 的 gVisor 守卫。
+      return {
+        ...parseUploadedCoreVersion(String(stdout)),
+        buildTags: parseSingboxBuildTags(String(stdout)),
+      };
     } catch {
-      return { version: null, versionLine: '' };
+      return { version: null, versionLine: '', buildTags: null };
     }
   }
 
@@ -1719,15 +2701,23 @@ export class CoreUpdateService {
    * 核心更新预检：新核心二进制可执行 + 能解析"针对其版本生成的"当前配置（sing-box check）。
    * 在替换现役核心之前调用 —— 不通过则现役核心不动、代理继续运行（永不 brick）。
    */
-  private async preflightValidate(
-    newCorePath: string
-  ): Promise<{ ok: boolean; version: string | null; versionLine: string; reason?: string }> {
-    const { version, versionLine } = await this.getBinaryVersion(newCorePath);
+  private async preflightValidate(newCorePath: string): Promise<{
+    ok: boolean;
+    version: string | null;
+    versionLine: string;
+    reason?: string;
+    /** `sing-box check` 失败时的完整输出（stderr 优先，过长取尾部）；仅 check 失败时有。 */
+    detail?: string;
+    /** 新核构建 tag（`sing-box version` 的 Tags 行）；输出无此行为 null。 */
+    buildTags?: string[] | null;
+  }> {
+    const { version, versionLine, buildTags } = await this.getBinaryVersion(newCorePath);
     if (!version) {
       return {
         ok: false,
         version: null,
         versionLine,
+        buildTags,
         reason: '新核心无法执行（架构不符或文件损坏）',
       };
     }
@@ -1740,23 +2730,47 @@ export class CoreUpdateService {
         `预检：新核心 ${version} 可执行（无活动配置，跳过 check）`,
         'CoreUpdateService'
       );
-      return { ok: true, version, versionLine };
+      return { ok: true, version, versionLine, buildTags };
     }
 
     const tmpCfg = path.join(app.getPath('temp'), `flowz-preflight-${Date.now()}.json`);
     try {
       fs.writeFileSync(tmpCfg, cfgJson, 'utf-8');
       const execFileAsync = require('util').promisify(require('child_process').execFile);
-      await execFileAsync(newCorePath, ['check', '-c', tmpCfg]);
+      await execFileAsync(newCorePath, ['check', '-c', tmpCfg], {
+        timeout: CORE_EXEC_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+      });
       this.logManager.addLog(
         'info',
         `预检通过：新核心 ${version} 可解析当前配置`,
         'CoreUpdateService'
       );
-      return { ok: true, version, versionLine };
+      return { ok: true, version, versionLine, buildTags };
     } catch (e: any) {
-      const detail = String(e?.stderr || e?.message || e).split('\n')[0];
-      return { ok: false, version, versionLine, reason: `新核心无法解析当前配置：${detail}` };
+      if (e?.killed) {
+        const reason = `新核心检查当前配置超时（${CORE_EXEC_TIMEOUT_MS / 1000}s 未结束）`;
+        return { ok: false, version, versionLine, buildTags, reason, detail: reason };
+      }
+      // sing-box 即使输出到管道也带 ANSI 色码（实测 `\x1b[31mFATAL\x1b[0m[0000] …`）→ 先剥，再给渲染端 / 日志。
+      const out = stripAnsi(String(e?.stderr || e?.message || e)).trim();
+      // 摘要取 FATAL 行：1.15 起 check 会先打 WARN（如 TUN stack 弃用提示），首行不再是失败原因。
+      const headline =
+        extractLastFatal(out) ??
+        out
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find(Boolean) ??
+        '';
+      return {
+        ok: false,
+        version,
+        versionLine,
+        buildTags,
+        reason: `新核心无法解析当前配置：${headline}`,
+        detail: clipTail(out),
+      };
     } finally {
       try {
         fs.unlinkSync(tmpCfg);
@@ -1807,6 +2821,19 @@ export class CoreUpdateService {
    * 问题版本。返回 true 表示已回滚（调用方应以旧核心重启代理）。先清除待验证标记防重入/回滚循环。
    */
   async autoRollbackIfPendingUpdate(): Promise<boolean> {
+    // 另一内核操作持锁（在线安装 / 更新 / 恢复随包 / 回滚 / 手动替换 / 立即应用在飞）：此刻回滚会与之并发写同一核槽位
+    // 与 .bak（并先于它放开换核门控）。不回滚、也不动待验证态（闩 / 计时器原样保留）——持锁方自己的起核失败由其自行回滚
+    // （installTag / updateCore / replaceManualCore 的失败分支）。判定与下方 rollbackCore 的持闸之间无 await。
+    if (this.isUpdating || this.coreOps > 0) {
+      if (this.pendingUpdateVersion) {
+        this.logManager.addLog(
+          'warn',
+          `新核心 ${this.pendingUpdateVersion} 报错，但另一内核操作正在进行，本次不自动回滚`,
+          'CoreUpdateService'
+        );
+      }
+      return false;
+    }
     if (this.stabilityTimer) {
       clearTimeout(this.stabilityTimer);
       this.stabilityTimer = null;
@@ -1877,21 +2904,36 @@ export class CoreUpdateService {
         // On Windows copy to userData dir (no UAC needed)
         await this.copyFileElevatedWindows(currentPath, backupPath);
       } else {
-        fs.copyFileSync(currentPath, backupPath);
+        // 原子落位：先写同目录临时名，再 rename 覆盖。.bak 可能正被执行（设置页 getVersionInfo 的 `<.bak> version`），
+        // 原地 copyFileSync（O_TRUNC 打开执行中的文件）→ ETXTBSY，安装 / 更新随之失败；rename 只替换目录项，执行中的
+        // 进程继续持有旧 inode（同 ensureWritableCore 的 atomicCopy、installCoreFromDir 的 .flowz-new）。
+        const tmp = `${backupPath}.tmp`;
+        try {
+          fs.copyFileSync(currentPath, tmp);
+          fs.renameSync(tmp, backupPath);
+        } catch (e) {
+          try {
+            fs.unlinkSync(tmp);
+          } catch {
+            /* 临时文件可能根本没建起来 */
+          }
+          throw e;
+        }
       }
       this.logManager.addLog('info', `已备份当前核心到: ${backupPath}`, 'CoreUpdateService');
     }
   }
 
-  private async restoreBackup(): Promise<void> {
+  /** 从 .bak 恢复现役核心。返回是否真的恢复了（无备份 / 写失败 → false；错误只记日志不抛，调用方多在 catch 内兜底）。 */
+  private async restoreBackup(): Promise<boolean> {
     const backupPath = this.getBackupPath();
-    if (!fs.existsSync(backupPath)) return;
+    if (!fs.existsSync(backupPath)) return false;
     try {
       // B 块 macOS（helper v5）：经 helper install-core 把 backup 写回受保护目录（与 rollbackCore 同源）。
       if (await this.isProtectedCoreActive()) {
         await this.installSingleCoreViaHelper(backupPath);
         this.logManager.addLog('info', '已从备份恢复核心（受保护目录）', 'CoreUpdateService');
-        return;
+        return true;
       }
       const currentPath = resourceManager.getSingBoxUpdateTargetPath();
       if (process.platform === 'win32') {
@@ -1901,8 +2943,10 @@ export class CoreUpdateService {
         fs.chmodSync(currentPath, 0o755);
       }
       this.logManager.addLog('info', '已从备份恢复核心', 'CoreUpdateService');
+      return true;
     } catch {
       this.logManager.addLog('error', '恢复备份失败', 'CoreUpdateService');
+      return false;
     }
   }
 

@@ -32,7 +32,7 @@ FlowZX is a fork of the cross-platform proxy client [FlowZ](https://github.com/d
 
 - **Xray-only combinations**: XHTTP (auto / packet-up / stream-up / stream-one, with `extra` support), VLESS Encryption (`mlkem768x25519plus.*`), REALITY ML-DSA-65 (`pqv`), `xtls-rprx-vision-udp443`, certificate SHA-256 pinning (`pcs`), and arbitrary custom Xray outbound JSON.
 - **Automatic core selection**: FlowZX decides from a node's parameters whether it needs Xray, hands it to Xray automatically when it does, and marks the node with an **Xray** badge. Xray nodes also support hot switching, rule-targeted nodes, latency tests and proxy chains.
-- **Choose your Xray version**: under **Settings → Advanced → Xray core**, install an official XTLS release online (26.1.23 or newer; pre-releases optional). Downloads are checked against the official SHA2-256 before switching, and you can go back to the bundled version at any time.
+- **Choose your core versions**: under **Settings → Advanced**, install official releases of sing-box (**Core Management**, no older than the bundled version) and Xray (**Xray core**, 26.1.23 or newer) online, pre-releases optional. Downloads are checked against their SHA-256 and tested with your current config before switching, and you can go back to the bundled version at any time. For sing-box you can also pin the chosen version to pause auto-update.
 - **Authorize once**: a launchd helper on macOS, a system service on Windows and a systemd helper on Linux. Install it once, and starting or stopping TUN no longer asks for administrator rights every time.
 - **Fewer restarts**: switching nodes and changing a rule's target node hot-switch over gRPC; for rules with only domain / IP / port / process conditions, editing the match values hot-reloads a local rule set.
 - **Mesh nodes**: WireGuard, Cloudflare WARP (one-click anonymous registration) and Tailscale (browser login, Headscale supported) can be selected and routed just like regular nodes.
@@ -190,7 +190,7 @@ When you import Xray JSON, nodes the form can represent become regular nodes; ev
 
 - Native sing-box gRPC management API
 - Bundled official sing-box dashboard (on by default for new installs, available while the proxy is running)
-- Online sing-box core updates: sha256 verification, pre-launch check, automatic rollback on failure
+- Online sing-box core updates and version selection (pre-releases optional, version pinning): sha256 verification, pre-launch check, automatic rollback on failure
 - Data backup & restore (6 selectable categories); complete uninstall from within the app
 
 ### Interface
@@ -266,6 +266,10 @@ TLS nodes with **Certificate SHA-256 pin** (`pcs`) filled in automatically run o
 
 Pick a version under **Settings → Advanced → Xray core (sidecar)** and click **Install**: FlowZX downloads it from the official XTLS/Xray-core releases, verifies it against the official SHA2-256, self-tests it and switches (restarting the proxy once if it is running). Turn on **Include pre-releases** to see pre-releases; versions older than 26.1.23 are not offered, and **Restore bundled** goes back at any time. You can still put your own `xray` (`xray.exe` on Windows) in the `<userData>/xray_core/` directory; when present, it takes precedence over the bundled version (on macOS / Linux, `chmod +x` it first). Installing a version online later replaces it and keeps the original as `xray.custom-bak`. See [docs/XRAY.md](docs/XRAY.md#切换-xray-版本) for details.
 
+### How do I change the sing-box version?
+
+Pick a version under **Choose version** in **Settings → Advanced → Core Management** and click **Install**: FlowZX downloads it from the official SagerNet/sing-box releases, verifies it against the SHA-256 digest the GitHub API provides (upstream publishes no separate checksum files), checks your current config with `sing-box check` and switches (restarting the proxy once if it is running; if it then fails to start, the previous core is restored automatically). Versions older than the bundled one (1.14.0-rc.1 in 4.6.0) are not offered; turn on **Include pre-releases** to see alpha / beta / rc builds. If auto-update is on and would later replace your pick, the confirmation offers **Pin this version (pause auto-update)**. Builds from 1.15.0-alpha.11 on ship without gVisor, so they are refused while the TUN network stack is gvisor or mixed (Auto means gvisor on macOS / Windows); switch it to system under **Settings → Network** first. **Roll back** returns to the previous core, and picking the bundled version offers **Restore bundled**. See [docs/CORE.md](docs/CORE.md).
+
 ### Connections drop briefly after changing settings?
 
 sing-box can't add or remove outbounds while running, so some changes require a core restart. Restarts are debounced by 1.5 seconds, so a burst of changes results in a single restart; connections usually recover within a few seconds, a little slower with TUN on Windows.
@@ -321,7 +325,7 @@ Yes. The system proxy only affects apps that honor proxy settings, and DNS takeo
 
 ## Reporting issues
 
-Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). **Report an issue** on the in-app **About** page opens this repository's new-issue page and prefills the app version, operating system and architecture, sing-box version and takeover mode (since 4.4.1); since 4.4.2 it also prefills the Xray version and status, which core runs the selected node and why (including whether its detour chain goes through Xray), and the routing mode. No node addresses, node names or credentials are prefilled. Please also include:
+Please report issues in this repository's [Issues](https://github.com/mutsuki14/FlowZX/issues). **Report an issue** on the in-app **About** page opens this repository's new-issue page and prefills the app version, operating system and architecture, sing-box version and takeover mode (since 4.4.1); since 4.4.2 it also prefills the Xray version and status, which core runs the selected node and why (including whether its detour chain goes through Xray), and the routing mode; since 4.6.0 the sing-box version also carries a short note (bundled / pre-release / pinned / third-party). No node addresses, node names or credentials are prefilled. Please also include:
 
 - A description of the problem, steps to reproduce, and the log lines around the error (Xray core lines start with `[xray]`). The live log on the **Logs** page is not redacted, so mask node addresses, node names and domains before pasting
 - If the problematic node isn't the selected node: whether it has the Xray badge, and the reason the badge shows
@@ -369,6 +373,7 @@ Tech stack: Electron 42 · React 19 · TypeScript · Vite · Tailwind CSS · Rad
 | Document | Contents |
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray core: supported combinations, architecture, import parameters, caveats, verification |
+| [docs/CORE.md](docs/CORE.md) | sing-box core: version selection (incl. pre-releases), integrity checks, pinning vs auto-update, rollback |
 | [docs/releases/v4.5.0.md](docs/releases/v4.5.0.md) | v4.5.0 release notes |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 release notes |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 release notes |

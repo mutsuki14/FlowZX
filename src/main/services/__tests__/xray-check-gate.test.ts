@@ -59,7 +59,11 @@ function platformDir(): string {
 }
 const EXE = process.platform === 'win32' ? '.exe' : '';
 const XRAY = path.join(REPO_ROOT, platformDir(), `xray${EXE}`);
-const SINGBOX = path.join(REPO_ROOT, platformDir(), `sing-box${EXE}`);
+// SB_CORE：与 singbox-check-gate 同一覆写口（`SB_CORE=<路径> npm run test:core-gate` 用候选 sing-box 跑两道门）；
+// 不是豁免——指向的文件缺失 / 不可执行同样硬 fail。
+const SINGBOX = process.env.SB_CORE
+  ? path.resolve(process.env.SB_CORE)
+  : path.join(REPO_ROOT, platformDir(), `sing-box${EXE}`);
 const present = (p: string): boolean => {
   try {
     fs.accessSync(p, fs.constants.X_OK);

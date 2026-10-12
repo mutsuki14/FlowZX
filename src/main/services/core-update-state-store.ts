@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { LogManager } from './LogManager';
+import type { SingboxPin } from '../../shared/singbox-release';
 
 /** 已下载预检通过、待落位的内核（代理运行中暂存，延到安全窗口落位）。 */
 export interface StagedCoreInfo {
@@ -22,6 +23,9 @@ export interface CoreAutoUpdateState {
   pendingChangeNotice?: { previousVersion: string; currentVersion: string };
   // B0：已成功稳定运行、实证兼容过的最高版本带（编码）。棘轮：成功运行抬高、回滚重置到回滚后带。参与有效兼容上限。
   verifiedCeiling?: number;
+  // 用户在版本选择里「固定此版本」（installTag pin:true 写入）：当前内核仍是该版本时自动更新暂停（不检查下载 / 不落位 staged）。
+  // 版本被其它途径改变（回滚 / 手动替换 / 恢复随包 / App 升级刷回随包核）即视为陈旧并清除；clearPin 手动取消。
+  pinned?: SingboxPin;
 }
 
 /**

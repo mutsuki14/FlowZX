@@ -1867,6 +1867,19 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   }
 
   /**
+   * Windows：提权服务锁定的 sing-box 路径与现役核不符（WindowsServiceHelper 状态的 pathMismatch）。
+   * 状态探测失败 / helper 无 getStatus → false（按无漂移处理，行为同改动前）。
+   */
+  private async windowsHelperPathDrift(): Promise<boolean> {
+    try {
+      const st = await this.helperManager?.getStatus();
+      return st?.pathMismatch === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * macOS 提权 helper 引导门控（收敛单点，唯一弹窗实现）。所有 start/restart 入口（开启代理按钮/托盘/
    * 切接管/CONFIG_CHANGED 重启/换节点回退重启…）汇入此处；仅 interactive 启动 + darwin + TUN +
    * helper 未就绪 + 用户未 dismiss 时，经注入回调弹 native 引导（无窗口依赖）；回调返回 'abort' → 抛
@@ -2583,6 +2596,12 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       windowEffects: null,
       // Xray 版本列表「含预发布」纯 UI 偏好（只过滤设置页列表，不触发下载、不影响生成）→ 排除出 norm，运行中拨开关不重启断流。
       xrayIncludePrerelease: null,
+      // sing-box 内核管理三项同属「内核更新偏好」，均不影响 sing-box 生成 → 排除出 norm（运行中拨开关不重启断流）：
+      //   coreIncludePrerelease（版本列表含预发布，纯 UI 过滤）/ autoUpdateCore（调度器读）/
+      //   restrictCoreUpdateToCompatibleMinor（checkUpdate 读）。
+      coreIncludePrerelease: null,
+      autoUpdateCore: null,
+      restrictCoreUpdateToCompatibleMinor: null,
       // fakeIpToggleMigrated / fakeIpTunAutoEnable / nodeResolverMigrated 都是一次性迁移元数据标记，不影响生成
       //   （enableFakeIp / nodeResolver* 本身仍在 norm 内 → 影响生成保留）。若不排除：未来某路径重建 dnsConfig 丢/带
       //   该标记 → norm 翻转无谓重启断流 + 迁移重跑可能从 deprecated 字段回灌覆盖用户自选值。
@@ -6065,17 +6084,26 @@ rm -f "$STOPFLAG"
     // 启动失败 → 回退 buildWindowsUacLaunchCommand（每次 UAC）兜底，不在 helper 路径死循环。Windows 无「允许在
     // 后台」概念（backgroundDisabled 恒 false），无需该前置判定；未装 helper → isReady=false → 落下方 UAC 路径。
     if (this.needsWindowsUAC() && this.helperManager && (await this.helperManager.isReady())) {
-      try {
-        return await this.startViaHelper(startGen);
-      } catch (e) {
-        // 起核期未就绪/退出（CoreStartRetryError）≠ helper 启动失败：透传给 runStartWithRetry 静默重起，不回退 UAC。
-        // issue #176：就绪等待期被接管（CoreStartSupersededError）同样透传让位——绝不回退 UAC 起第二条流抢适配器
-        //   （这是 #176 风暴的 Windows 主路径；与上方 macOS 分支 :3559 对齐）。
-        if (e instanceof CoreStartRetryError || e instanceof CoreStartSupersededError) throw e;
+      // 服务只跑安装时锁定的 sing-box：锁定路径与现役核不符（首次核更新 / 版本选择后未修复服务）时经服务起的是旧路径的
+      // 旧核（配置却按现役核版本生成）→ 本次走 UAC 起现役核。引导门控已提示修复；用户选「本次用 UAC 启动」也须走到这里。
+      if (await this.windowsHelperPathDrift()) {
         this.logToManager(
           'warn',
-          `helper 服务启动失败，回退 UAC 路径: ${e instanceof Error ? e.message : String(e)}`
+          '提权服务锁定的内核路径与现役内核不符，本次经 UAC 启动现役内核（修复提权服务后恢复免授权启停）'
         );
+      } else {
+        try {
+          return await this.startViaHelper(startGen);
+        } catch (e) {
+          // 起核期未就绪/退出（CoreStartRetryError）≠ helper 启动失败：透传给 runStartWithRetry 静默重起，不回退 UAC。
+          // issue #176：就绪等待期被接管（CoreStartSupersededError）同样透传让位——绝不回退 UAC 起第二条流抢适配器
+          //   （这是 #176 风暴的 Windows 主路径；与上方 macOS 分支 :3559 对齐）。
+          if (e instanceof CoreStartRetryError || e instanceof CoreStartSupersededError) throw e;
+          this.logToManager(
+            'warn',
+            `helper 服务启动失败，回退 UAC 路径: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
       }
     }
 

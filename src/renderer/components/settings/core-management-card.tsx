@@ -1,14 +1,25 @@
 /**
  * 内核管理卡片（Conduit 高级面板 `.card.set-card`；sing-box 核心版本 / 检查更新 / 回滚 / 手动替换 /
- * 自动更新开关 / staged 待生效 / 跨带提示 / 危险区）。从 about-settings 的「sing-box 版本」区块迁入。
+ * 自动更新开关 / staged 待生效 / 跨带提示 / 版本选择 / 危险区）。从 about-settings 的「sing-box 版本」区块迁入。
  * 自动更新仅在兼容版本带内（如 1.13.x→1.13.y）；跨大版本（1.13→1.14）需手动确认。
  *
  * 更新呈现 = 常驻状态 + 可选弹窗：检查到新内核后在卡内常驻显示「发现新内核 vX.Y.Z + 更新按钮」（数据放
  * store 的 availableCoreUpdate，跨设置子节卸载持久）；toast 降级为可选提醒，点击只滚动/高亮到常驻入口，
  * 不再是唯一更新触发。crossBand 时警告色 + 风险文案。
+ *
+ * 版本选择（含预发布；契约见 shared/singbox-release.ts 与主进程 CoreUpdateService.installTag）：
+ *  - 渲染端只回传 tag / force / pin；下载 URL 与 sha256（仅 GitHub API digest）由主进程按 tag 现取并校验。
+ *    预期内的失败以 `{ ok:false, code }` 返回，按 code 出文案（singbox-version-logic.errorMessageKey）。
+ *  - 低于随包版本的不列出（会被启动对齐刷回随包核）；选中随包版本 =「恢复随包」，走既有 resetFactory（本地落位，
+ *    不下载；不留备份 → 第三方内核时确认框专门警示）。
+ *  - 确认理由统一在一个对话框里逐条列出；含 autoUpdate 理由时给「固定此版本」勾选（pin），含 fork 理由时以
+ *    force 确认覆盖第三方内核（主进程把它留作 .bak，可回滚）。
+ *  - 进度由主进程持有：挂载时 getInstallState 找回 + 订阅 onInstallProgress（载荷 null = 操作结束 → 刷新状态），
+ *    故本卡随设置子节卸载重挂也不丢进度；安装 / 恢复进行中或代理启停中（proxyPhase ≠ idle）禁用全部操作按钮。
+ * 决策逻辑（过滤 / 动作 / 确认理由 / 徽章 / 错误码）全在 singbox-version-logic.ts（node 单测）。
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,21 +30,71 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
-import { Loader2, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+import { Loader2, ArrowUpCircle, AlertTriangle, ExternalLink, Pin } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { checkCoreUpdate, updateCore } from '@/bridge/api-wrapper';
+import { checkCoreUpdate, openExternal, updateCore } from '@/bridge/api-wrapper';
 import { api } from '@/ipc/api-client';
 import { useAppStore } from '@/store/app-store';
 import { useTranslation } from 'react-i18next';
 import type { CoreBuildKind } from '../../../shared/core-build';
+import { compareSemver } from '../../../shared/version';
+import type {
+  SingboxInstallProgress,
+  SingboxPin,
+  SingboxRelease,
+  SingboxReleaseList,
+} from '../../../shared/singbox-release';
 import { Srow, Swt } from './conduit-controls';
+import {
+  autoUpdateSupersedes,
+  channelPill,
+  composeOptionLabel,
+  confirmAnyway,
+  confirmReasonKey,
+  errorMessageKey,
+  failureDetail,
+  filterSingboxReleases,
+  installOptions,
+  isolateLtr,
+  listErrorCode,
+  optionParts,
+  phaseKey,
+  pickSelection,
+  progressBarPercent,
+  releaseDate,
+  singboxConfirms,
+  singboxReleaseAction,
+  type SingboxConfirmReason,
+  type SingboxStatusLike,
+} from './singbox-version-logic';
 
 interface AutoStatus {
   // autoUpdateEnabled 不在此快照消费（开关 UI 直接读 config.autoUpdateCore）；事件也不再推送该字段。
   lastCheckAt: number | null;
   staged: { version: string; stagedAt: string } | null;
   crossBandLatest: string | null;
+}
+
+/**
+ * 待确认的版本操作：install = 按 tag 在线安装；restore = 选中随包版本时的「恢复随包」（走 resetFactory）。
+ * latest = 自动更新稍后会把它换成的版本（用于 autoUpdate 理由文案；恢复随包同样会被自动更新升走，只是不提供固定）。
+ */
+type PendingConfirm =
+  | {
+      kind: 'install';
+      release: SingboxRelease;
+      reasons: SingboxConfirmReason[];
+      latest: string | null;
+    }
+  | { kind: 'restore'; reasons: SingboxConfirmReason[]; latest: string | null };
+
+interface FailureLike {
+  /** SingboxInstallErrorCode（未知 code 由 errorMessageKey 归为 FAILED）。 */
+  code: string;
+  detail?: string;
+  rolledBack?: boolean;
 }
 
 export function CoreManagementCard() {
@@ -43,6 +104,9 @@ export function CoreManagementCard() {
   // 常驻内核更新入口数据源（放 store：本卡随设置子节切换会卸载，本地 state 承载不了「toast 消失后入口仍在」）
   const availableCoreUpdate = useAppStore((s) => s.availableCoreUpdate);
   const setAvailableCoreUpdate = useAppStore((s) => s.setAvailableCoreUpdate);
+  // 代理启停中禁止换核类操作（主进程同样以 PROXY_BUSY 拒绝）；代理在跑 → 换核会整体重启代理（确认理由 restart）。
+  const proxyPhase = useAppStore((s) => s.proxyPhase);
+  const proxyRunning = useAppStore((s) => s.connectionStatus?.proxyCore.running === true);
 
   const [currentVersion, setCurrentVersion] = useState<string>('—');
   const [backupVersion, setBackupVersion] = useState<string | null>(null);
@@ -50,14 +114,30 @@ export function CoreManagementCard() {
   const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null);
   // 内核来源：official / fork（第三方→禁在线·自动更新+置灰）/ unknown（仅提示）。
   const [coreBuild, setCoreBuild] = useState<'official' | 'fork' | 'unknown'>('official');
+  // 随包版本（= 版本选择的最低可选版本）与生效中的固定版本；versionLoaded 前不允许版本操作（状态未知）。
+  const [bundledVersion, setBundledVersion] = useState('');
+  const [pinned, setPinned] = useState<SingboxPin | null>(null);
+  const [versionLoaded, setVersionLoaded] = useState(false);
 
   const [checkingCoreUpdate, setCheckingCoreUpdate] = useState(false);
   const [updatingCore, setUpdatingCore] = useState(false);
   const [replacingManual, setReplacingManual] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
   const [applyingStaged, setApplyingStaged] = useState(false);
-  const [resettingFactory, setResettingFactory] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
+  const [clearingPin, setClearingPin] = useState(false);
+
+  // 版本选择：列表（主进程缓存 10 分钟）/ 选中项 / 主进程推送的进行中进度（null = 空闲）；requesting 覆盖本卡发起后、
+  // 首个进度事件到达前的窗口（恢复随包与危险区「重置」同走 resetFactory，均记为 'reset'）。
+  const [list, setList] = useState<SingboxReleaseList | null>(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState<'RATE_LIMITED' | 'NETWORK' | null>(null);
+  const [selectedTag, setSelectedTag] = useState('');
+  const [progress, setProgress] = useState<SingboxInstallProgress | null>(null);
+  const [requesting, setRequesting] = useState<'install' | 'reset' | null>(null);
+  const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  // 确认框里「固定此版本（暂停自动更新）」：仅在出现 autoUpdate 理由时显示，默认勾选。
+  const [pinChecked, setPinChecked] = useState(true);
 
   // 同版本换核确认（手动替换返回 needConfirm 时打开）
   const [sameVersionConfirm, setSameVersionConfirm] = useState<{
@@ -87,6 +167,9 @@ export function CoreManagementCard() {
       setHasBackup(info.hasBackup);
       const build = info.build ?? 'official';
       setCoreBuild(build);
+      setBundledVersion(info.bundledVersion ?? '');
+      setPinned(info.pinned ?? null);
+      setVersionLoaded(true);
       // 换到第三方内核后清掉此前官方核检查残留的「发现新内核」常驻入口（其更新按钮已置灰，留着是误导性死 UI）。
       if (build === 'fork') setAvailableCoreUpdate(null);
     } catch (error) {
@@ -102,16 +185,57 @@ export function CoreManagementCard() {
     }
   };
 
+  // force=true：用户点「刷新列表」（绕过主进程 10 分钟缓存，失败 toast）；挂载 / 操作后走缓存、失败只在卡内提示。
+  const loadList = async (force: boolean) => {
+    setListLoading(true);
+    try {
+      setList(await api.coreUpdate.listReleases(force));
+      setListError(null);
+    } catch (error) {
+      const code = listErrorCode(error);
+      setListError(code); // 保留上次成功的列表
+      if (force) {
+        toast.error(t('settings.coreManagement.listFail'), {
+          description: t(errorMessageKey(code)),
+        });
+      }
+    } finally {
+      setListLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadVersionInfo();
     loadAutoStatus();
-    // 监听主进程推送的自动更新状态变更（staged 待生效 / 跨带提示 / 落位成功）
+    // 监听主进程推送的自动更新状态变更（staged 待生效 / 跨带提示 / 落位成功 / 固定变化）
     const unsubscribe = api.coreUpdate.onAutoStatusChanged((data) => {
       setAutoStatus((prev) => ({ ...(prev ?? data), ...data }));
-      // 落位可能改变当前版本/备份 → 重拉版本信息
+      // 落位可能改变当前版本/备份 → 重拉版本信息（固定也随之刷新）
       void loadVersionInfo();
     });
-    return () => unsubscribe();
+    // 安装 / 恢复随包进度：先订阅再取快照——快照返回前若已收到事件，以事件为准（快照可能已过时）。
+    let gotEvent = false;
+    const unsubscribeProgress = api.coreUpdate.onInstallProgress((p) => {
+      gotEvent = true;
+      setProgress(p);
+      if (p === null) {
+        // 操作结束（含本卡卸载期间完成的）→ 刷新版本 / 暂存 / 列表里的问题版本标记
+        void loadVersionInfo();
+        void loadAutoStatus();
+        void loadList(false);
+      }
+    });
+    void api.coreUpdate
+      .getInstallState()
+      .then((s) => {
+        if (!gotEvent) setProgress(s.installing);
+      })
+      .catch(() => {});
+    void loadList(false);
+    return () => {
+      unsubscribe();
+      unsubscribeProgress();
+    };
   }, []);
 
   // 滚动到常驻更新入口并短暂高亮（供 toast 的「查看」动作调用）
@@ -152,15 +276,18 @@ export function CoreManagementCard() {
           downloadUrl: data.downloadUrl,
           crossBand: data.crossBand,
         });
-        toast.success(t('settings.about.foundCoreUpdate', { version: data.latestVersion }), {
-          id: coreToastId,
-          description: t('settings.coreManagement.updateEntryHint'),
-          action: {
-            label: t('settings.coreManagement.viewUpdate'),
-            onClick: focusUpdateEntry,
-          },
-          duration: 8000,
-        });
+        toast.success(
+          t('settings.about.foundCoreUpdate', { version: isolateLtr(data.latestVersion) }),
+          {
+            id: coreToastId,
+            description: t('settings.coreManagement.updateEntryHint'),
+            action: {
+              label: t('settings.coreManagement.viewUpdate'),
+              onClick: focusUpdateEntry,
+            },
+            duration: 8000,
+          }
+        );
       } else if (data.error) {
         toast.error(t('settings.about.checkCoreUpdateFail'), {
           id: coreToastId,
@@ -171,7 +298,9 @@ export function CoreManagementCard() {
         setAvailableCoreUpdate(null);
         toast.success(t('settings.about.coreAlreadyLatest'), {
           id: coreToastId,
-          description: t('settings.about.currentVersion', { version: data.currentVersion }),
+          description: t('settings.about.currentVersion', {
+            version: isolateLtr(data.currentVersion),
+          }),
         });
       }
     } catch (error) {
@@ -188,9 +317,12 @@ export function CoreManagementCard() {
   const handleUpdateCore = async (downloadUrl: string, version: string) => {
     setUpdatingCore(true);
     // 进度 toast 捕获 id：成功/失败原地替换「正在更新核心」（声明在 try 外供 catch 引用）。
-    const updateCoreToastId = toast.loading(t('settings.about.updatingCore', { version }), {
-      description: t('settings.about.doNotClose'),
-    });
+    const updateCoreToastId = toast.loading(
+      t('settings.about.updatingCore', { version: isolateLtr(version) }),
+      {
+        description: t('settings.about.doNotClose'),
+      }
+    );
     try {
       const response = await updateCore(downloadUrl);
       if (response && response.success && response.data) {
@@ -216,6 +348,16 @@ export function CoreManagementCard() {
     }
   };
 
+  /**
+   * 回滚 / 手动替换 / 立即应用未开始即被拒（另一内核操作或 Xray 切换在进行，主进程给 code BUSY / XRAY_BUSY）→ 本地化文案；
+   * 其它 → 主进程原文（replaceManual 的 error / 抛错的 message），非这两种 code 时对 throw 形返回 undefined。
+   */
+  const busyAwareError = (e: unknown): string | undefined => {
+    const r = e as { code?: unknown; error?: unknown } | null;
+    if (r?.code === 'BUSY' || r?.code === 'XRAY_BUSY') return t(errorMessageKey(r.code));
+    return typeof r?.error === 'string' ? r.error : undefined;
+  };
+
   const handleRollback = async () => {
     if (!hasBackup) return;
     try {
@@ -224,7 +366,9 @@ export function CoreManagementCard() {
       toast.success(t('settings.coreVersion.rollbackSuccess'));
       await loadVersionInfo();
     } catch (error) {
-      const msg = error instanceof Error ? error.message : t('settings.coreVersion.rollbackFail');
+      const msg =
+        busyAwareError(error) ??
+        (error instanceof Error ? error.message : t('settings.coreVersion.rollbackFail'));
       toast.error(`${t('settings.coreVersion.rollbackFail')}: ${msg}`);
     } finally {
       setRollingBack(false);
@@ -262,7 +406,7 @@ export function CoreManagementCard() {
         // 目标内核与当前同版本：交给用户确认后再换
         setSameVersionConfirm({ sameVersion: result.sameVersion, filePath: result.filePath });
       } else if (result.error) {
-        toast.error(t('settings.about.coreUpdateFail'), { description: result.error });
+        toast.error(t('settings.about.coreUpdateFail'), { description: busyAwareError(result) });
       }
       // ok:false 且无 needConfirm/error → 用户取消文件选择器，静默
     } catch (error) {
@@ -285,7 +429,7 @@ export function CoreManagementCard() {
         showReplaceSuccess(result.build);
         await loadVersionInfo();
       } else if (result.error) {
-        toast.error(t('settings.about.coreUpdateFail'), { description: result.error });
+        toast.error(t('settings.about.coreUpdateFail'), { description: busyAwareError(result) });
       }
     } catch (error) {
       toast.error(t('settings.about.coreUpdateFail'), {
@@ -308,7 +452,7 @@ export function CoreManagementCard() {
         showReplaceSuccess(result.build);
         await loadVersionInfo();
       } else if (result.error) {
-        toast.error(t('settings.about.coreUpdateFail'), { description: result.error });
+        toast.error(t('settings.about.coreUpdateFail'), { description: busyAwareError(result) });
       }
     } catch (error) {
       toast.error(t('settings.about.coreUpdateFail'), {
@@ -343,33 +487,64 @@ export function CoreManagementCard() {
       await loadAutoStatus();
     } catch (error) {
       toast.error(t('settings.about.coreUpdateFail'), {
-        description: error instanceof Error ? error.message : String(error),
+        description:
+          busyAwareError(error) ?? (error instanceof Error ? error.message : String(error)),
       });
     } finally {
       setApplyingStaged(false);
     }
   };
 
-  // B6：重置内核到出厂版本
-  const handleResetFactory = async () => {
-    setShowResetConfirm(false);
+  /**
+   * 恢复随包 / B6 重置到出厂：同一条 resetFactory 路径（主进程以 kind 'reset' 推进度）。source 只决定提示文案：
+   * restore = 版本选择里选中随包版本；factory = 危险区「重置」。未开始即被拒（BUSY / XRAY_BUSY）按 code 出文案。
+   */
+  const runReset = async (source: 'restore' | 'factory') => {
+    setRequesting('reset');
+    const toastId = toast.loading(t('settings.coreManagement.restoring'), {
+      description: t('settings.about.doNotClose'),
+    });
+    const failTitle =
+      source === 'restore'
+        ? t('settings.coreManagement.restoreFail')
+        : t('settings.coreManagement.resetFactoryFail');
     try {
-      setResettingFactory(true);
       const result = await api.coreUpdate.resetFactory();
       if (result.ok) {
         setAvailableCoreUpdate(null);
-        toast.success(t('settings.coreManagement.resetFactorySuccess'));
-        await loadVersionInfo();
+        if (source === 'restore') {
+          toast.success(
+            t('settings.coreManagement.restoreSuccess', { version: isolateLtr(bundledVersion) }),
+            {
+              id: toastId,
+            }
+          );
+        } else {
+          toast.success(t('settings.coreManagement.resetFactorySuccess'), { id: toastId });
+        }
       } else {
-        toast.error(t('settings.coreManagement.resetFactoryFail'), { description: result.error });
+        toast.error(failTitle, {
+          id: toastId,
+          description: result.code ? t(errorMessageKey(result.code)) : result.error,
+        });
       }
     } catch (error) {
-      toast.error(t('settings.coreManagement.resetFactoryFail'), {
+      toast.error(failTitle, {
+        id: toastId,
         description: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      setResettingFactory(false);
+      setRequesting(null);
+      void loadVersionInfo();
+      void loadAutoStatus();
+      void loadList(false);
     }
+  };
+
+  // B6：重置内核到出厂版本
+  const handleResetFactory = () => {
+    setShowResetConfirm(false);
+    void runReset('factory');
   };
 
   // B6：完全卸载 FlowZ
@@ -405,17 +580,185 @@ export function CoreManagementCard() {
     );
   };
 
+  const handleTogglePrerelease = (checked: boolean) => {
+    if (!config) return;
+    saveConfig({ ...config, coreIncludePrerelease: checked }).catch(() =>
+      toast.error(t('common.saveFailed'))
+    );
+  };
+
+  // ── 版本选择 ──────────────────────────────────────────────────────────────────────────────────
+  const listBundled = list?.bundledVersion;
+  const stagedVersion = autoStatus?.staged?.version ?? null;
+  const autoUpdateEnabled = config?.autoUpdateCore === true;
+  // 决策逻辑的状态快照（getVersionInfo 未返回前为 null → 版本操作禁用）。
+  const status = useMemo<SingboxStatusLike | null>(
+    () =>
+      versionLoaded
+        ? {
+            currentVersion,
+            build: coreBuild,
+            bundledVersion: bundledVersion || listBundled || '',
+            stagedVersion,
+            autoUpdateEnabled,
+          }
+        : null,
+    [
+      versionLoaded,
+      currentVersion,
+      coreBuild,
+      bundledVersion,
+      listBundled,
+      stagedVersion,
+      autoUpdateEnabled,
+    ]
+  );
+  const minVersion = status?.bundledVersion ?? '';
+
+  const includePrerelease = config?.coreIncludePrerelease === true;
+  const filtered = useMemo(
+    () => filterSingboxReleases(list?.releases ?? [], includePrerelease, status),
+    [list, includePrerelease, status]
+  );
+  // 选中项不入 effect：原选中被过滤掉（如关掉预发布）时即时回落到最新一项。
+  const effectiveTag = pickSelection(filtered, selectedTag);
+  const selected = filtered.find((r) => r.tag === effectiveTag) ?? null;
+  const action = selected ? singboxReleaseAction(selected, status) : null;
+
+  // 进行中的安装 / 恢复随包（主进程持有，含本卡卸载期间发起的）或本卡刚发起、尚未收到首个进度事件。
+  const opBusy = progress !== null || requesting !== null;
   const busy =
     checkingCoreUpdate ||
     updatingCore ||
     replacingManual ||
     rollingBack ||
     applyingStaged ||
-    resettingFactory ||
-    uninstalling;
+    uninstalling ||
+    opBusy;
+  // 全部操作按钮：任一内核操作进行中，或代理正在启动 / 停止时禁用（开关类只改配置，不受影响）。
+  const actionsDisabled = busy || proxyPhase !== 'idle';
+  const installBusy = requesting === 'install' || progress?.kind === 'install';
+  const resetBusy = requesting === 'reset' || progress?.kind === 'reset';
+
+  const failureDescription = (res: FailureLike) => {
+    const msg = t(errorMessageKey(res.code, res.rolledBack), { bundled: isolateLtr(minVersion) });
+    const detail = failureDetail(res.code, res.detail);
+    if (!detail) return msg;
+    return (
+      <>
+        <div>{msg}</div>
+        <div
+          className="mono"
+          dir="ltr"
+          style={{ fontSize: 11, opacity: 0.85, wordBreak: 'break-all' }}
+        >
+          {detail}
+        </div>
+      </>
+    );
+  };
+
+  const runInstall = async (release: SingboxRelease, opts: { force: boolean; pin: boolean }) => {
+    setRequesting('install');
+    const toastId = toast.loading(
+      t('settings.coreManagement.installing', { version: isolateLtr(release.version) }),
+      { description: t('settings.about.doNotClose') }
+    );
+    try {
+      const res = await api.coreUpdate.installTag(release.tag, opts);
+      if (res.ok) {
+        // 「发现新内核」常驻入口：装上的版本不旧于它 → 入口已无意义
+        const entry = useAppStore.getState().availableCoreUpdate;
+        if (entry && compareSemver(res.version, entry.latestVersion) >= 0) {
+          setAvailableCoreUpdate(null);
+        }
+        toast.success(
+          t('settings.coreManagement.installSuccess', { version: isolateLtr(res.version) }),
+          {
+            id: toastId,
+            description: res.restarted
+              ? t('settings.coreManagement.restartedDesc')
+              : t('settings.coreManagement.nextStartDesc'),
+          }
+        );
+      } else if (res.code === 'START_BLOCKED') {
+        // 已切换（新核留用），只是代理因与内核无关的原因（取消授权 / TUN 地址冲突等）没起来：标题如实说已切换。
+        toast.warning(
+          t('settings.coreManagement.installSuccess', { version: isolateLtr(release.version) }),
+          { id: toastId, description: failureDescription(res) }
+        );
+      } else {
+        toast.error(t('settings.coreManagement.installFail'), {
+          id: toastId,
+          description: failureDescription(res),
+        });
+      }
+    } catch (error) {
+      toast.error(t('settings.coreManagement.installFail'), {
+        id: toastId,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setRequesting(null);
+      // 版本 / 备份 / 固定 / 暂存 / 列表里的问题版本标记都可能变了（列表走主进程缓存，不额外请求 GitHub）。
+      void loadVersionInfo();
+      void loadAutoStatus();
+      void loadList(false);
+    }
+  };
+
+  const openConfirm = (c: PendingConfirm) => {
+    setPinChecked(true);
+    setConfirm(c);
+  };
+
+  const handleAction = () => {
+    if (!selected || !status || actionsDisabled) return;
+    const act = singboxReleaseAction(selected, status);
+    if (act === 'current') return;
+    // releases 传完整列表（不受预发布开关影响）：推算自动更新的目标版本。
+    const all = list?.releases ?? [];
+    const reasons = singboxConfirms(selected, all, status, proxyRunning);
+    const latest = autoUpdateSupersedes(selected, all, status);
+    if (act === 'restore') {
+      // 恢复随包总要确认：resetFactory 会删除现有备份（第三方内核时理由里专门警示无法找回）。
+      openConfirm({ kind: 'restore', reasons, latest });
+      return;
+    }
+    if (reasons.length > 0) {
+      openConfirm({ kind: 'install', release: selected, reasons, latest });
+    } else {
+      void runInstall(selected, installOptions(reasons, false));
+    }
+  };
+
+  const handleConfirm = () => {
+    const c = confirm;
+    setConfirm(null);
+    if (!c) return;
+    if (c.kind === 'install') void runInstall(c.release, installOptions(c.reasons, pinChecked));
+    else void runReset('restore');
+  };
+
+  const handleClearPin = async () => {
+    setClearingPin(true);
+    try {
+      await api.coreUpdate.clearPin();
+      setPinned(null);
+      toast.success(t('settings.coreManagement.unpinSuccess'));
+    } catch (error) {
+      toast.error(t('settings.coreManagement.unpinFail'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setClearingPin(false);
+      void loadVersionInfo();
+    }
+  };
 
   // 第三方（非官方）内核：置灰在线/自动更新相关控件（检查更新 / 更新 / 自动更新开关 / 跨带限制 / 立即应用）。
-  // 本地管理控件（手动替换 / 回滚 / 重置出厂 / 卸载）保留可用——它们是装/换内核与回到官方的逃生通道。
+  // 本地管理控件（手动替换 / 回滚 / 重置出厂 / 卸载）保留可用——它们是装/换内核与回到官方的逃生通道；
+  // 版本选择同样可用（装官方版本需确认，第三方内核留作备份可回滚）。
   const isForkCore = coreBuild === 'fork';
   const isUnknownCore = coreBuild === 'unknown';
 
@@ -426,6 +769,46 @@ export function CoreManagementCard() {
       : coreBuild === 'fork'
         ? { cls: 'warn', label: t('settings.coreManagement.sourceFork', '第三方') }
         : { cls: 'idle', label: t('settings.coreManagement.sourceUnknown', '未知') };
+  // 版本通道徽章（随包 ok / 预发布 warn；在线装的正式版、第三方、版本未知时不显示）。
+  const chPill = channelPill(status);
+
+  const optionSuffix = {
+    prerelease: t('settings.coreManagement.optionPrerelease'),
+    current: t('settings.coreManagement.optionCurrent'),
+    bundled: t('settings.coreManagement.optionBundled'),
+    staged: t('settings.coreManagement.optionStaged'),
+    crossBand: t('settings.coreManagement.optionCrossBand'),
+    knownBad: t('settings.coreManagement.optionKnownBad'),
+  };
+  const selectedDate = selected ? releaseDate(selected.publishedAt) : null;
+
+  const actionLabel =
+    action === 'current'
+      ? t('settings.coreManagement.isCurrent')
+      : action === 'restore'
+        ? t('settings.coreManagement.restoreBundled')
+        : t('settings.coreManagement.install');
+
+  const listPlaceholder = listLoading
+    ? t('settings.coreManagement.loadingList')
+    : listError && !list
+      ? t('settings.coreManagement.listFail')
+      : t('settings.coreManagement.noReleases');
+
+  const confirmVersion = confirm?.kind === 'install' ? confirm.release.version : minVersion;
+  const confirmAction = confirm?.kind === 'install' ? 'install' : 'restore';
+  // 插进译文的版本号一律 isolateLtr：RTL（fa）下 `1.14.0-rc.1` 会被双向算法重排成 `rc.1-1.14.0`。
+  const reasonVars = {
+    version: isolateLtr(confirmVersion),
+    bundled: isolateLtr(minVersion),
+    current: isolateLtr(currentVersion),
+    staged: isolateLtr(stagedVersion ?? ''),
+    latest: isolateLtr(confirm?.latest ?? ''),
+  };
+  // 「固定此版本」只给在线安装：恢复随包走 resetFactory，无从固定（其 autoUpdate 理由只警示、提示先关自动更新）。
+  const showPinOption = confirm?.kind === 'install' && confirm.reasons.includes('autoUpdate');
+  // 恢复随包会覆盖第三方内核且不留备份：确认按钮用危险色。
+  const destructiveConfirm = confirm?.kind === 'restore' && confirm.reasons.includes('fork');
 
   return (
     <div className="card set-card">
@@ -439,18 +822,19 @@ export function CoreManagementCard() {
           <>
             {t('settings.coreManagement.currentVersion')}
             <span className={cn('pill', buildPill.cls)}>{buildPill.label}</span>
+            {chPill && <span className={cn('pill', chPill.cls)}>{t(chPill.key)}</span>}
           </>
         }
-        desc={t('settings.coreManagement.sourceDesc', '内核来源：官方 / 第三方 / 未知 自动识别')}
+        desc={t('settings.coreManagement.versionDesc', { bundled: isolateLtr(minVersion || '—') })}
       >
-        <span className="mono tnum" style={{ fontSize: 13, fontWeight: 640 }}>
+        <span className="mono tnum" dir="ltr" style={{ fontSize: 13, fontWeight: 640 }}>
           {currentVersion}
         </span>
         <button
           type="button"
           className="btn ghost sm"
           onClick={handleCheckCoreUpdate}
-          disabled={busy || isForkCore}
+          disabled={actionsDisabled || isForkCore}
         >
           {checkingCoreUpdate && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {t('settings.coreManagement.checkUpdate')}
@@ -464,7 +848,7 @@ export function CoreManagementCard() {
         </span>
         <span className="pill warn">{t('settings.coreManagement.sourceFork', '第三方')}</span>
         <span className="src-note">
-          {t('settings.coreManagement.srcNoteFork', '禁在线 / 自动更新')}
+          {t('settings.coreManagement.srcNoteFork', '禁检查更新 / 自动更新')}
         </span>
         <span className="pill idle">{t('settings.coreManagement.sourceUnknown', '未知')}</span>
         <span className="src-note">
@@ -511,14 +895,18 @@ export function CoreManagementCard() {
           label={t('settings.coreManagement.backupVersion')}
           desc={t('settings.coreManagement.backupVersionDesc', '升级失败或异常时可回滚至此版本')}
         >
-          <span className="mono tnum" style={{ fontSize: 13, color: 'hsl(var(--fg-dim))' }}>
+          <span
+            className="mono tnum"
+            dir="ltr"
+            style={{ fontSize: 13, color: 'hsl(var(--fg-dim))' }}
+          >
             {backupVersion || '—'}
           </span>
           <button
             type="button"
             className="btn ghost sm"
             onClick={() => setShowRollbackConfirm(true)}
-            disabled={busy}
+            disabled={actionsDisabled}
           >
             {rollingBack && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {t('settings.coreManagement.rollback')}
@@ -536,7 +924,7 @@ export function CoreManagementCard() {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>
                 {t('settings.coreManagement.updateAvailable', {
-                  version: availableCoreUpdate.latestVersion,
+                  version: isolateLtr(availableCoreUpdate.latestVersion),
                 })}
               </div>
               {availableCoreUpdate.crossBand && (
@@ -551,7 +939,7 @@ export function CoreManagementCard() {
               onClick={() =>
                 handleUpdateCore(availableCoreUpdate.downloadUrl, availableCoreUpdate.latestVersion)
               }
-              disabled={busy || isForkCore}
+              disabled={actionsDisabled || isForkCore}
             >
               {updatingCore && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {t('settings.coreManagement.updateNow')}
@@ -566,13 +954,15 @@ export function CoreManagementCard() {
           <div className="set-note info">
             <ArrowUpCircle />
             <span>
-              {t('settings.coreManagement.stagedPending', { version: autoStatus.staged.version })}
+              {t('settings.coreManagement.stagedPending', {
+                version: isolateLtr(autoStatus.staged.version),
+              })}
             </span>
             <button
               type="button"
               className="btn flow sm"
               onClick={handleApplyStaged}
-              disabled={busy || isForkCore}
+              disabled={actionsDisabled || isForkCore}
               title={t('settings.coreManagement.applyNowWarn')}
             >
               {applyingStaged && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -589,7 +979,7 @@ export function CoreManagementCard() {
             <AlertTriangle />
             <span>
               {t('settings.coreManagement.crossBandFound', {
-                version: autoStatus.crossBandLatest,
+                version: isolateLtr(autoStatus.crossBandLatest),
               })}
             </span>
           </div>
@@ -619,6 +1009,141 @@ export function CoreManagementCard() {
         />
       </Srow>
 
+      {/* 版本选择：只影响下拉列表（「检查更新」与自动更新恒只看正式版） */}
+      <Srow
+        label={t('settings.coreManagement.includePrerelease')}
+        desc={t('settings.coreManagement.includePrereleaseDesc')}
+      >
+        <Swt
+          checked={includePrerelease}
+          onChange={handleTogglePrerelease}
+          disabled={!config}
+          label={t('settings.coreManagement.includePrerelease')}
+        />
+      </Srow>
+
+      <Srow
+        stacked
+        label={t('settings.coreManagement.selectVersion')}
+        desc={
+          minVersion
+            ? t('settings.coreManagement.selectVersionDesc', { bundled: isolateLtr(minVersion) })
+            : undefined
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div className="sel" style={{ flex: '1 1 240px', minWidth: 0 }}>
+              <select
+                aria-label={t('settings.coreManagement.selectVersion')}
+                style={{ width: '100%' }}
+                value={effectiveTag}
+                onChange={(e) => setSelectedTag(e.target.value)}
+                disabled={busy || filtered.length === 0}
+              >
+                {filtered.length === 0 && <option value="">{listPlaceholder}</option>}
+                {filtered.map((r) => (
+                  <option key={r.tag} value={r.tag}>
+                    {composeOptionLabel(optionParts(r, status), optionSuffix)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              className="btn flow sm"
+              onClick={handleAction}
+              disabled={actionsDisabled || !status || !selected || action === 'current'}
+            >
+              {(action === 'restore' ? resetBusy : installBusy) && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              )}
+              {actionLabel}
+            </button>
+            <button
+              type="button"
+              className="btn ghost sm"
+              onClick={() => void loadList(true)}
+              disabled={listLoading || busy}
+            >
+              {listLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {t('settings.coreManagement.refreshList')}
+            </button>
+          </div>
+
+          {selected && (
+            <div
+              className="ng-hint"
+              style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+            >
+              <span className={cn('pill', selected.prerelease ? 'warn' : 'ok')}>
+                {selected.prerelease
+                  ? t('settings.coreManagement.prerelease')
+                  : t('settings.coreManagement.stable')}
+              </span>
+              {selectedDate && <span className="mono tnum">{selectedDate}</span>}
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => void openExternal(selected.htmlUrl)}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                {t('settings.coreManagement.releaseNotes')}
+              </button>
+            </div>
+          )}
+
+          {listError && (
+            <div className="ng-hint ng-warn">
+              {t('settings.coreManagement.listFail')} · {t(errorMessageKey(listError))}
+            </div>
+          )}
+        </div>
+      </Srow>
+
+      {/* 安装 / 恢复随包进度（主进程持有，卸载重挂后经 getInstallState 找回） */}
+      {progress && (
+        <>
+          <div className="set-hair" />
+          <div className="set-pad">
+            <div className="srow-desc" style={{ fontSize: 12 }}>
+              {t(phaseKey(progress), { tag: isolateLtr(progress.tag) })}
+              {progress.phase === 'downloading' && typeof progress.percent === 'number' && (
+                <>
+                  {' '}
+                  <span className="mono tnum">{progressBarPercent(progress)}%</span>
+                </>
+              )}
+            </div>
+            <div className="bar">
+              <i style={{ width: `${progressBarPercent(progress)}%` }} />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 固定版本：自动更新暂停，直到取消固定（或版本被回滚 / 手动替换 / 恢复随包等途径改变） */}
+      {pinned && (
+        <div className="set-pad" style={{ paddingTop: 0 }}>
+          <div className="set-note info">
+            <Pin />
+            <span>
+              {t('settings.coreManagement.pinnedNote', { version: isolateLtr(pinned.version) })}
+            </span>
+            <button
+              type="button"
+              className="btn ghost sm"
+              style={{ marginInlineStart: 'auto', marginInlineEnd: 0 }}
+              onClick={() => void handleClearPin()}
+              disabled={clearingPin || busy}
+            >
+              {clearingPin && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {t('settings.coreManagement.unpin')}
+            </button>
+          </div>
+        </div>
+      )}
+
       <Srow
         label={t('settings.coreManagement.manualReplace')}
         desc={t(
@@ -630,7 +1155,7 @@ export function CoreManagementCard() {
           type="button"
           className="btn ghost sm"
           onClick={handleReplaceManual}
-          disabled={busy}
+          disabled={actionsDisabled}
         >
           {replacingManual && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {t('settings.coreManagement.selectFile', '选择文件…')}
@@ -651,9 +1176,9 @@ export function CoreManagementCard() {
             type="button"
             className="btn danger sm"
             onClick={() => setShowResetConfirm(true)}
-            disabled={busy}
+            disabled={actionsDisabled}
           >
-            {resettingFactory && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {resetBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {t('settings.coreManagement.resetShort', '重置')}
           </button>
         </div>
@@ -668,13 +1193,80 @@ export function CoreManagementCard() {
             type="button"
             className="btn danger sm"
             onClick={() => setShowUninstallConfirm(true)}
-            disabled={busy}
+            disabled={actionsDisabled}
           >
             {uninstalling && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {t('settings.coreManagement.uninstallShort', '完全卸载')}
           </button>
         </div>
       </div>
+
+      {/* 版本选择确认（安装 / 恢复随包）：理由按需逐条列出；自动更新会覆盖所选版本时给「固定此版本」 */}
+      <AlertDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirm?.kind === 'install'
+                ? t('settings.coreManagement.confirmInstallTitle', { version: reasonVars.version })
+                : t('settings.coreManagement.restoreConfirmTitle', { version: reasonVars.version })}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  {confirm?.kind === 'install'
+                    ? t('settings.coreManagement.confirmInstallDesc', {
+                        version: reasonVars.version,
+                      })
+                    : t('settings.coreManagement.restoreConfirmDesc', {
+                        version: reasonVars.version,
+                      })}
+                </p>
+                {confirm && confirm.reasons.length > 0 && (
+                  <ul className="list-disc space-y-1 ps-5">
+                    {confirm.reasons.map((r) => (
+                      <li key={r}>{t(confirmReasonKey(r, confirmAction), reasonVars)}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {showPinOption && (
+            <div className="flex items-center gap-2 text-sm">
+              <Checkbox
+                id="core-pin-version"
+                checked={pinChecked}
+                onCheckedChange={(v) => setPinChecked(v === true)}
+              />
+              <label htmlFor="core-pin-version" className="cursor-pointer select-none">
+                {t('settings.coreManagement.pinVersion')}
+              </label>
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirm}
+              className={
+                destructiveConfirm
+                  ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+                  : undefined
+              }
+            >
+              {confirm?.kind === 'restore'
+                ? t('settings.coreManagement.restoreConfirmBtn')
+                : confirm && confirmAnyway(confirm.reasons)
+                  ? t('settings.coreManagement.confirmAnywayBtn')
+                  : t('settings.coreManagement.confirmInstallBtn')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 回滚内核单层轻确认（回滚是可逆逃生通道，不加「不可撤销」红字，仅危险色确认动词） */}
       <AlertDialog open={showRollbackConfirm} onOpenChange={setShowRollbackConfirm}>
@@ -686,7 +1278,7 @@ export function CoreManagementCard() {
             <AlertDialogDescription>
               {t('settings.coreVersion.rollbackConfirmDesc', {
                 defaultValue: '将回滚到 {{version}}，内核会重启。',
-                version: backupVersion || '—',
+                version: isolateLtr(backupVersion || '—'),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -718,7 +1310,7 @@ export function CoreManagementCard() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t('settings.coreManagement.sameVersionConfirmDesc', {
-                version: sameVersionConfirm?.sameVersion ?? '',
+                version: isolateLtr(sameVersionConfirm?.sameVersion ?? ''),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -745,8 +1337,8 @@ export function CoreManagementCard() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t('settings.coreManagement.baselineOverrideConfirmDesc', {
-                upload: baselineConfirm?.uploadVersion ?? '',
-                bundled: baselineConfirm?.bundledVersion ?? '',
+                upload: isolateLtr(baselineConfirm?.uploadVersion ?? ''),
+                bundled: isolateLtr(baselineConfirm?.bundledVersion ?? ''),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>

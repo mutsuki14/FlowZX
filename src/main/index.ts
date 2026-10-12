@@ -383,8 +383,10 @@ async function promptHelperGate(
     mainWindow.focus();
   }
   if (process.platform === 'win32') {
-    // Windows：无「允许在后台」概念（backgroundDisabled 恒 false）。needsRepair(已装未就绪) → 修复；未装 → 安装。
-    // 任一路径仅弹一次 UAC（装服务需管理员授权）；「用 UAC 启动」= 本次回退 buildWindowsUacLaunchCommand（每次 UAC）。
+    // Windows：无「允许在后台」概念（backgroundDisabled 恒 false）。needsRepair(已装未就绪 / 锁定的内核路径与现役核不符)
+    // → 修复；未装 → 安装。任一路径仅弹一次 UAC（装服务需管理员授权）；「用 UAC 启动」= 本次回退
+    // buildWindowsUacLaunchCommand（每次 UAC；路径不符时 ProxyManager 也不经服务起旧核）。
+    // pathMismatch：服务只跑安装时锁定的 sing-box，核更新 / 版本选择换了现役核后需重装服务重新锁定（文案分流）。
     if (hs.needsRepair) {
       const { response } = await dialog.showMessageBox({
         type: 'question',
@@ -392,7 +394,7 @@ async function promptHelperGate(
         defaultId: 0,
         cancelId: 2,
         message: mt('dlgWinRepairServiceMsg'),
-        detail: mt('dlgWinRepairDetail'),
+        detail: hs.pathMismatch ? mt('dlgWinRepairPathMismatchDetail') : mt('dlgWinRepairDetail'),
       });
       if (response === 2) return 'abort';
       if (response === 0) await helperManager.install().catch(() => {});
@@ -2143,7 +2145,9 @@ if (gotTheLock) {
           thresholdMb: RENDERER_RSS_LIMIT_MB,
         }),
         // 测速专项诊断：最近一次临时测速 sing-box config + 逐节点失败 reason。DiagnosticService 内统一脱敏。
-        () => speedTestService?.getLastSpeedTestDiagnostics() ?? null
+        () => speedTestService?.getLastSpeedTestDiagnostics() ?? null,
+        // sing-box 固定版本（内核版本行标「已固定」）：读状态文件 + 版本缓存，不 spawn 内核。
+        () => coreUpdateService.getAutoStatus()
       );
       registerDiagnosticHandlers(diagnosticService);
     }
