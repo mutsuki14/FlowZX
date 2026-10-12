@@ -117,6 +117,7 @@ export function SingboxDashboardSection() {
             {running && dashboardUrl ? (
               <span
                 className="mono"
+                dir="ltr"
                 title={dashboardUrl}
                 onClick={() => api.system.openExternal(dashboardUrl).catch(() => undefined)}
                 style={{

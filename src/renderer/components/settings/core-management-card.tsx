@@ -98,7 +98,7 @@ interface FailureLike {
 }
 
 export function CoreManagementCard() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const config = useAppStore((s) => s.config);
   const saveConfig = useAppStore((s) => s.saveConfig);
   // 常驻内核更新入口数据源（放 store：本卡随设置子节切换会卸载，本地 state 承载不了「toast 消失后入口仍在」）
@@ -1165,7 +1165,10 @@ export function CoreManagementCard() {
 
       {/* B6：危险区（重置出厂 / 完全卸载） */}
       <div className="danger-zone">
-        <div className="set-sub-h">{t('settings.coreManagement.dangerZone')} · DANGER ZONE</div>
+        <div className="set-sub-h">
+          {t('settings.coreManagement.dangerZone')}
+          {i18n.language?.startsWith('en') ? null : ' · DANGER ZONE'}
+        </div>
         <div className="danger-row">
           <div className="srow-main">
             <div className="srow-lbl">{t('settings.coreManagement.resetFactory')}</div>
