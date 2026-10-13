@@ -41,6 +41,7 @@ import { CoreUpdateService } from '../CoreUpdateService';
 import { IPC_CHANNELS } from '../../../shared/ipc-channels';
 import { encodeMajorMinor } from '../../../shared/version';
 import coreManifest from '../../../shared/core-manifest.json';
+import { pageFromUrl } from './github-release-fixtures';
 
 // M1 修复：jest30 + node26 组合下 useFakeTimers() 会删除 globalThis.setTimeout，且 useRealTimers() 不恢复
 // （typeof globalThis.setTimeout === 'undefined'）。applyStagedNow 内裸用 setTimeout(2000) 会 ReferenceError。
@@ -1352,6 +1353,68 @@ describe('版本选择配套（pin / verifiedCeiling / 恢复随包 / checkUpdat
       const r = await env.svc.checkUpdate();
       expect(r.hasUpdate).toBe(false);
       expect(r.error).toBeUndefined();
+    });
+
+    // ── 分页（fetchReleases：3 页 × 10 个；4.6.0 一次取默认 30 个 ≈ 8–10 MB，资产再涨就撞 16 MiB 上限）──
+
+    const API = 'https://api.github.com/repos/SagerNet/sing-box/releases';
+    /** 新→旧 40 个：最大正式版 SAME_BAND 在第 3 页（第 26 个），其余是下一带 alpha / 上一带补丁 / 本带旧补丁。 */
+    const paged = () => [
+      ...Array.from({ length: 25 }, (_, i) =>
+        i % 2 === 0
+          ? rel(`v${B_MAJ}.${B_MIN + 1}.0-alpha.${40 - i}`, { prerelease: true })
+          : rel(`v${B_MAJ}.${B_MIN - 1}.${60 - i}`)
+      ),
+      rel(`v${SAME_BAND}`),
+      ...Array.from({ length: 14 }, (_, i) => rel(`v${B_MAJ}.${B_MIN - 1}.${20 - i}`)),
+    ];
+    const pageUrls = (spy: jest.SpyInstance) => spy.mock.calls.map((c) => String(c[0]));
+
+    it('经分页取 30 个（3 页 × 10）：最大正式版在第 3 页也能选中；不取第 4 页', async () => {
+      const env = makeEnv({ current: CUR, running: true });
+      const all = paged();
+      const fetch = jest
+        .spyOn(env.s.coreDownloader, 'fetchGithubJson')
+        .mockImplementation(async (url: any) => pageFromUrl(all, String(url)));
+      jest.spyOn(env.s.coreDownloader, 'findSuitableAsset').mockImplementation((a: any) => a[0]);
+      const r = await env.svc.checkUpdate();
+      expect(pageUrls(fetch)).toEqual([
+        `${API}?per_page=10&page=1`,
+        `${API}?per_page=10&page=2`,
+        `${API}?per_page=10&page=3`,
+      ]);
+      expect(r).toMatchObject({
+        hasUpdate: true,
+        currentVersion: CUR,
+        latestVersion: SAME_BAND,
+        downloadUrl: expect.stringContaining(`/v${SAME_BAND}/`),
+      });
+    });
+
+    it('第 1 页失败 → 照旧返回该错误（文案不变，不取后续页）；第 2 页起失败 → 用已取到的部分', async () => {
+      const env = makeEnv({ current: CUR, running: true });
+      const msg = 'GitHub API 访问频率限制 (403)，请稍后再试或使用代理';
+      const fetch = jest
+        .spyOn(env.s.coreDownloader, 'fetchGithubJson')
+        .mockRejectedValueOnce(Object.assign(new Error(msg), { code: 'RATE_LIMITED' }));
+      jest.spyOn(env.s.coreDownloader, 'findSuitableAsset').mockImplementation((a: any) => a[0]);
+      await expect(env.svc.checkUpdate()).resolves.toEqual({
+        hasUpdate: false,
+        currentVersion: '未知',
+        error: msg,
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      // 最大正式版在第 1 页；第 2 页断连 → 仍以第 1 页的结果判出更新
+      const all = [rel(`v${SAME_BAND}`), ...paged()];
+      fetch.mockReset();
+      fetch.mockImplementation(async (url: any) => {
+        if (String(url).endsWith('page=2')) throw new Error('ERR_CONNECTION_CLOSED');
+        return pageFromUrl(all, String(url));
+      });
+      const r = await env.svc.checkUpdate();
+      expect(pageUrls(fetch)).toEqual([`${API}?per_page=10&page=1`, `${API}?per_page=10&page=2`]);
+      expect(r).toMatchObject({ hasUpdate: true, latestVersion: SAME_BAND });
     });
   });
 });

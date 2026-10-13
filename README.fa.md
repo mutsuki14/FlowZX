@@ -44,16 +44,16 @@
 
 ## دانلود و نصب
 
-آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.6.0 است:
+آخرین نسخه را از [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) دانلود کنید. جدول زیر لینک‌های مستقیم دانلود نسخهٔ v4.6.1 است:
 
 | سکو | فایل | توضیح |
 |---|---|---|
-| Windows x64 | [FlowZ-4.6.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
-| Windows x64 | [FlowZ-4.6.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
-| macOS | [FlowZ-4.6.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
-| macOS | [FlowZ-4.6.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-x64.dmg) | تراشهٔ Intel |
-| Linux x86_64 | [FlowZ-4.6.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
-| Linux x86_64 | [FlowZ-4.6.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
+| Windows x64 | [FlowZ-4.6.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-setup.exe) | نسخهٔ نصبی؛ به‌طور پیش‌فرض فقط برای کاربر فعلی نصب می‌شود (هنگام نصب می‌توان آن را برای همهٔ کاربران نصب کرد) و پوشهٔ نصب قابل انتخاب است |
+| Windows x64 | [FlowZ-4.6.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-portable.exe) | نسخهٔ قابل‌حمل؛ داده‌ها در پوشهٔ <code dir="ltr">data&#92;</code> کنار فایل exe ذخیره می‌شوند |
+| macOS | [FlowZ-4.6.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-arm64.dmg) | تراشهٔ Apple (سری M) |
+| macOS | [FlowZ-4.6.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-x64.dmg) | تراشهٔ Intel |
+| Linux x86_64 | [FlowZ-4.6.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-x86_64.AppImage) | بدون نیاز به نصب؛ به FUSE 2 نیاز دارد |
+| Linux x86_64 | [FlowZ-4.6.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-amd64.deb) | برای Debian / Ubuntu؛ در <code dir="ltr">/opt/FlowZ</code> نصب می‌شود و نصب هم‌زمان `policykit-1` توصیه می‌شود |
 
 | سکو | پیش‌نیازهای سیستم |
 |---|---|
@@ -278,7 +278,7 @@ flowchart LR
 
 ### چطور نسخهٔ sing-box را عوض کنم؟
 
-در «تنظیمات ← پیشرفته ← مدیریت هسته»، در بخش «انتخاب نسخه» نسخه را انتخاب کنید و «نصب» را بزنید: FlowZX آن را از صفحهٔ انتشارهای رسمی SagerNet/sing-box دانلود می‌کند، با چکیدهٔ SHA-256 ارائه‌شده از سوی GitHub API بررسی می‌کند (پروژه فایل checksum جداگانه منتشر نمی‌کند)، پیکربندی فعلی را با `sing-box check` می‌آزماید و سپس تعویض می‌کند (اگر پروکسی در حال اجرا باشد یک بار دوباره راه‌اندازی می‌شود و اگر پس از آن اجرا نشود، هستهٔ قبلی خودکار برمی‌گردد). نسخه‌های قدیمی‌تر از نسخهٔ همراه برنامه (در 4.6.0 یعنی 1.14.0-rc.1) ارائه نمی‌شوند؛ برای دیدن نسخه‌های alpha / beta / rc، «شامل نسخه‌های پیش‌انتشار» را روشن کنید. اگر به‌روزرسانی خودکار روشن باشد و بعداً نسخهٔ انتخابی را جایگزین کند، پنجرهٔ تأیید گزینهٔ «ثابت کردن این نسخه (توقف به‌روزرسانی خودکار)» را نشان می‌دهد. بیلدهای 1.15.0-alpha.11 به بعد بدون gVisor ساخته می‌شوند، پس تا وقتی پشتهٔ شبکهٔ TUN روی gvisor یا mixed باشد (Auto در macOS / Windows یعنی gvisor) نصبشان رد می‌شود؛ ابتدا آن را در «تنظیمات ← شبکه» روی system بگذارید. «بازگشت» هستهٔ قبلی را برمی‌گرداند و با انتخاب نسخهٔ همراه برنامه، «بازگرداندن نسخهٔ همراه» در دسترس است. جزئیات بیشتر در [docs/CORE.md](docs/CORE.md).
+در «تنظیمات ← پیشرفته ← مدیریت هسته»، در بخش «انتخاب نسخه» نسخه را انتخاب کنید و «نصب» را بزنید: FlowZX آن را از صفحهٔ انتشارهای رسمی SagerNet/sing-box دانلود می‌کند، با چکیدهٔ SHA-256 ارائه‌شده از سوی GitHub API بررسی می‌کند (پروژه فایل checksum جداگانه منتشر نمی‌کند)، پیکربندی فعلی را با `sing-box check` می‌آزماید و سپس تعویض می‌کند (اگر پروکسی در حال اجرا باشد یک بار دوباره راه‌اندازی می‌شود و اگر پس از آن اجرا نشود، هستهٔ قبلی خودکار برمی‌گردد). نسخه‌های قدیمی‌تر از نسخهٔ همراه برنامه (در 4.6.1 یعنی 1.14.0-rc.1) ارائه نمی‌شوند؛ برای دیدن نسخه‌های alpha / beta / rc، «شامل نسخه‌های پیش‌انتشار» را روشن کنید. اگر به‌روزرسانی خودکار روشن باشد و بعداً نسخهٔ انتخابی را جایگزین کند، پنجرهٔ تأیید گزینهٔ «ثابت کردن این نسخه (توقف به‌روزرسانی خودکار)» را نشان می‌دهد. بیلدهای 1.15.0-alpha.11 به بعد بدون gVisor ساخته می‌شوند، پس تا وقتی پشتهٔ شبکهٔ TUN روی gvisor یا mixed باشد (Auto در macOS / Windows یعنی gvisor) نصبشان رد می‌شود؛ ابتدا آن را در «تنظیمات ← شبکه» روی system بگذارید. «بازگشت» هستهٔ قبلی را برمی‌گرداند و با انتخاب نسخهٔ همراه برنامه، «بازگرداندن نسخهٔ همراه» در دسترس است. جزئیات بیشتر در [docs/CORE.md](docs/CORE.md).
 
 ### چرا پس از تغییر تنظیمات، اتصال لحظه‌ای قطع می‌شود؟
 
@@ -392,7 +392,7 @@ npm run dev
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | هستهٔ Xray: ترکیب‌های پشتیبانی‌شده، معماری، پارامترهای ورود، نکات و روش راستی‌آزمایی |
 | [docs/CORE.md](docs/CORE.md) | هستهٔ sing-box: انتخاب نسخه (از جمله پیش‌انتشار)، بررسی یکپارچگی، ثابت کردن نسخه و به‌روزرسانی خودکار، بازگشت |
-| [docs/releases/v4.6.0.md](docs/releases/v4.6.0.md) | یادداشت‌های انتشار v4.6.0 |
+| [docs/releases/v4.6.1.md](docs/releases/v4.6.1.md) | یادداشت‌های انتشار v4.6.1 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | یادداشت‌های انتشار v4.4.1 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | یادداشت‌های انتشار v4.4.0 |
 | [docs/RELEASE.md](docs/RELEASE.md) | فرایند انتشار |

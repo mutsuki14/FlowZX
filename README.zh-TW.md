@@ -42,16 +42,16 @@ FlowZX 是跨平台代理用戶端 [FlowZ](https://github.com/dododook/FlowZ) �
 
 ## 下載安裝
 
-從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.6.0 的直接下載連結：
+從 [Releases](https://github.com/mutsuki14/FlowZX/releases/latest) 下載最新版本。下表為 v4.6.1 的直接下載連結：
 
 | 平台 | 檔案 | 說明 |
 |---|---|---|
-| Windows x64 | [FlowZ-4.6.0-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
-| Windows x64 | [FlowZ-4.6.0-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
-| macOS | [FlowZ-4.6.0-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-arm64.dmg) | Apple 晶片（M 系列） |
-| macOS | [FlowZ-4.6.0-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-mac-x64.dmg) | Intel 晶片 |
-| Linux x86_64 | [FlowZ-4.6.0-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
-| Linux x86_64 | [FlowZ-4.6.0-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.0/FlowZ-4.6.0-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
+| Windows x64 | [FlowZ-4.6.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-setup.exe) | 安裝版，預設僅為目前使用者安裝（安裝時可改為所有使用者），可自選安裝目錄 |
+| Windows x64 | [FlowZ-4.6.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-portable.exe) | 可攜版，資料儲存在 exe 同目錄下的 `data\` |
+| macOS | [FlowZ-4.6.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-arm64.dmg) | Apple 晶片（M 系列） |
+| macOS | [FlowZ-4.6.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-x64.dmg) | Intel 晶片 |
+| Linux x86_64 | [FlowZ-4.6.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-x86_64.AppImage) | 免安裝，需要 FUSE 2 |
+| Linux x86_64 | [FlowZ-4.6.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-amd64.deb) | Debian / Ubuntu，安裝至 `/opt/FlowZ`，建議一併安裝 `policykit-1` |
 
 | 平台 | 系統需求 |
 |---|---|
@@ -268,7 +268,7 @@ flowchart LR
 
 ### 如何更換 sing-box 版本？
 
-在「設定 → 進階 → 核心管理」的「選擇版本」中選擇版本後點「安裝」：FlowZX 會從 SagerNet/sing-box 官方發行頁下載，依 GitHub API 提供的 SHA-256 摘要驗證（上游不另外發布校驗檔），再以 `sing-box check` 檢查目前設定，通過後切換（代理執行中會重新啟動一次代理，無法啟動時會自動換回原本的核心）。不提供早於隨附版本的版本（4.6.0 為 1.14.0-rc.1）；開啟「包含預先發行版本」可選 alpha / beta / rc。自動更新開啟且稍後會取代所選版本時，確認框會提供「固定此版本（暫停自動更新）」。1.15.0-alpha.11 起的建置不含 gVisor，TUN 網路堆疊為 gvisor 或 mixed（macOS / Windows 上的 Auto 即為 gvisor）時會拒絕安裝，需先在「設定 → 網路」改為 system。「回復核心」可換回上一個核心，選取隨附版本可「還原隨附」。詳見 [docs/CORE.md](docs/CORE.md)。
+在「設定 → 進階 → 核心管理」的「選擇版本」中選擇版本後點「安裝」：FlowZX 會從 SagerNet/sing-box 官方發行頁下載，依 GitHub API 提供的 SHA-256 摘要驗證（上游不另外發布校驗檔），再以 `sing-box check` 檢查目前設定，通過後切換（代理執行中會重新啟動一次代理，無法啟動時會自動換回原本的核心）。不提供早於隨附版本的版本（4.6.1 為 1.14.0-rc.1）；開啟「包含預先發行版本」可選 alpha / beta / rc。自動更新開啟且稍後會取代所選版本時，確認框會提供「固定此版本（暫停自動更新）」。1.15.0-alpha.11 起的建置不含 gVisor，TUN 網路堆疊為 gvisor 或 mixed（macOS / Windows 上的 Auto 即為 gvisor）時會拒絕安裝，需先在「設定 → 網路」改為 system。「回復核心」可換回上一個核心，選取隨附版本可「還原隨附」。詳見 [docs/CORE.md](docs/CORE.md)。
 
 ### 變更設定後連線短暫中斷？
 
@@ -374,7 +374,7 @@ npm run dev            # Vite + Electron 開發模式
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray 核心：支援的組合、架構、匯入參數、注意事項、驗證方法 |
 | [docs/CORE.md](docs/CORE.md) | sing-box 核心：版本選擇（含預先發行版）、完整性驗證、固定版本與自動更新、回復 |
-| [docs/releases/v4.6.0.md](docs/releases/v4.6.0.md) | v4.6.0 發行說明 |
+| [docs/releases/v4.6.1.md](docs/releases/v4.6.1.md) | v4.6.1 發行說明 |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 發行說明 |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 發行說明 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 發布流程 |

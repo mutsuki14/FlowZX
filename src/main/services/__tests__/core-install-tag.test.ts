@@ -20,7 +20,9 @@
  *  - 一次只允许一个内核操作：安装进行中回滚 / 手动替换 / 立即应用 → BUSY，自动回滚 / 自动轮次 / 自动落位让开；
  *  - 用户介入（换核窗口 / 重启 / 回滚窗口内停止或连接）→ 让位，不回滚、不再起；
  *  - 善后：临时包与解压目录清理、锁释放、进度推 null；
- *  - listReleases：per_page=100、10 分钟缓存 + force + 并发合并、knownBad / currentVersion 现算、403 → RATE_LIMITED；
+ *  - listReleases：分页（每页 10 个、最多 10 页；整页都低于随包版本即停；第 2 页起失败 → 残缺结果只缓存 60 秒，
+ *    且并入已有列表、不使其变短）、
+ *    10 分钟缓存 + force + 并发合并、knownBad / currentVersion 现算、403 → RATE_LIMITED；
  *  - preflightValidate：`version` / `check` 带超时；check 失败摘要取 FATAL 行、detail 带全文。
  */
 import { createHash } from 'crypto';
@@ -57,14 +59,25 @@ jest.mock('../ResourceManager', () => ({
 }));
 
 import { dialog } from 'electron';
-import { CoreUpdateService, SINGBOX_LIST_TTL_MS } from '../CoreUpdateService';
+import {
+  CoreUpdateService,
+  SINGBOX_LIST_PARTIAL_TTL_MS,
+  SINGBOX_LIST_TTL_MS,
+} from '../CoreUpdateService';
 import { CoreStartTunPersistentError } from '../core-readiness';
 import { resourceManager } from '../ResourceManager';
 import { IPC_CHANNELS } from '../../../shared/ipc-channels';
 import { singboxAssetName } from '../../../shared/singbox-release';
-import { encodeMajorMinor } from '../../../shared/version';
+import { compareSemver, encodeMajorMinor } from '../../../shared/version';
 import type { SingboxInstallProgress } from '../../../shared/singbox-release';
 import coreManifest from '../../../shared/core-manifest.json';
+import { MAX_GITHUB_JSON_BYTES } from '../../utils/http-limits';
+import {
+  SINGBOX_REPO,
+  githubPageText,
+  makeGithubRelease,
+  pageFromUrl,
+} from './github-release-fixtures';
 
 afterAll(() => {
   try {
@@ -1871,12 +1884,13 @@ describe('listReleases', () => {
     [`v${B_MAJ}.${B_MIN + 3}.0-alpha.1`, { prerelease: true, draft: true }],
   ]);
 
-  it('per_page=100 拉取；剔除草稿 / 低于随包 / 无精确资产；semver 新→旧；附随包与当前版本（读缓存，不 spawn）', async () => {
+  it('分页拉取（每页 10 个，首页即短页 → 一次请求）；剔除草稿 / 低于随包 / 无精确资产；semver 新→旧；附随包与当前版本（读缓存，不 spawn）', async () => {
     const env = makeEnv();
     env.fetchGithubJson.mockResolvedValueOnce(raw);
     const list = await env.svc.listReleases();
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(1);
     expect(env.fetchGithubJson).toHaveBeenCalledWith(
-      'https://api.github.com/repos/SagerNet/sing-box/releases?per_page=100'
+      'https://api.github.com/repos/SagerNet/sing-box/releases?per_page=10&page=1'
     );
     expect(list.releases.map((r) => [r.tag, r.prerelease, r.channel])).toEqual([
       [PRE_TAG, true, 'alpha'],
@@ -1951,6 +1965,171 @@ describe('listReleases', () => {
     const env = makeEnv({ proxy: null });
     env.fetchGithubJson.mockResolvedValueOnce(raw);
     await expect(env.svc.listReleases()).resolves.toMatchObject({ currentVersion: '未知' });
+  });
+
+  // ── 分页（4.6.0：per_page=100 一次 27–34 MB，超 fetchGithubJson 的 16 MiB 上限 → 列表必失败）──
+
+  const API = 'https://api.github.com/repos/SagerNet/sing-box/releases';
+  const NEXT = (p: number) => `v${B_MAJ}.${B_MIN + 1}.${p}`;
+  const NEXT_ALPHA = (n: number) => `v${B_MAJ}.${B_MIN + 2}.0-alpha.${n}`;
+  const PREV = (p: number) => `v${B_MAJ}.${B_MIN - 1}.${p}`;
+  /**
+   * 上游真实的交错发布（新→旧）：前 20 个是上一 minor 补丁（低于随包）/ 再下一 minor 的 alpha / 下一 minor 正式补丁交替；
+   * 之后 40 个全是上一 minor 补丁。按每页 10 个：第 1、2 页含 ≥ 随包版本，第 3 页一个都没有 → 取完第 3 页即停。
+   */
+  const TIMELINE = [
+    ...Array.from({ length: 20 }, (_, i) =>
+      i % 3 === 0 ? PREV(80 - i) : i % 3 === 1 ? NEXT_ALPHA(20 - i) : NEXT(20 - i)
+    ),
+    ...Array.from({ length: 40 }, (_, i) => PREV(59 - i)),
+  ];
+  const LISTABLE = TIMELINE.filter((t) => !t.startsWith(`v${B_MAJ}.${B_MIN - 1}.`));
+  const pagesRequested = (env: Env) =>
+    env.fetchGithubJson.mock.calls.map((c) => {
+      const u = new URL(String(c[0]));
+      expect(`${u.origin}${u.pathname}`).toBe(API);
+      expect(u.searchParams.get('per_page')).toBe('10');
+      return Number(u.searchParams.get('page'));
+    });
+
+  it('真实体量的交错时间线（每个 release 168 个资产）：每页 ≤ 上限一半；整页都低于随包版本即停；列出全部 ≥ 随包版本者', async () => {
+    const env = makeEnv();
+    const all = TIMELINE.map((t) => makeGithubRelease(SINGBOX_REPO, t));
+    const pageBytes: number[] = [];
+    env.fetchGithubJson.mockImplementation(async (url: unknown) => {
+      const page = pageFromUrl(all, String(url));
+      pageBytes.push(Buffer.byteLength(githubPageText(page)));
+      return page;
+    });
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2, 3]);
+    for (const b of pageBytes) expect(b).toBeLessThanOrEqual(MAX_GITHUB_JSON_BYTES / 2);
+    expect(list.releases.map((r) => r.tag).sort()).toEqual([...LISTABLE].sort());
+    // 新→旧按 semver：再下一 minor 的 alpha 在前，下一 minor 正式版在后
+    expect(list.releases[0].tag).toBe(NEXT_ALPHA(19));
+    expect(list.releases[list.releases.length - 1].tag).toBe(NEXT(3));
+    expect(list.releases.every((r) => r.hasAsset)).toBe(true);
+  });
+
+  it('每页都还有 ≥ 随包版本 → 最多取 10 页（100 个，同 4.6.0 的覆盖范围）', async () => {
+    const env = makeEnv();
+    const all = listRaw(Array.from({ length: 130 }, (_, i) => [NEXT(200 - i), {}]));
+    env.fetchGithubJson.mockImplementation(async (url: unknown) => pageFromUrl(all, String(url)));
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(list.releases).toHaveLength(100);
+  });
+
+  it('翻页期间新发布（条目后移）→ 跨页重复的 release 只列一次', async () => {
+    const env = makeEnv();
+    const page1 = listRaw(Array.from({ length: 10 }, (_, i) => [NEXT(50 - i), {}]));
+    const page2 = [page1[9], ...listRaw(Array.from({ length: 3 }, (_, i) => [NEXT(40 - i), {}]))];
+    env.fetchGithubJson.mockImplementation(async (url: unknown) =>
+      new URL(String(url)).searchParams.get('page') === '1' ? page1 : page2
+    );
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2]);
+    expect(list.releases.map((r) => r.tag)).toEqual([
+      ...Array.from({ length: 10 }, (_, i) => NEXT(50 - i)),
+      NEXT(40),
+      NEXT(39),
+      NEXT(38),
+    ]);
+  });
+
+  it('第 2 页起失败 → 返回已取到的部分并记 warn；残缺结果只缓存 60 秒，之后重取（完整结果照常缓存 10 分钟）', async () => {
+    const env = makeEnv();
+    const all = TIMELINE.map((t) => makeGithubRelease(SINGBOX_REPO, t));
+    let failPage2 = true;
+    env.fetchGithubJson.mockImplementation(async (url: unknown) => {
+      if (failPage2 && new URL(String(url)).searchParams.get('page') === '2') {
+        throw new Error('ERR_CONNECTION_RESET');
+      }
+      return pageFromUrl(all, String(url));
+    });
+    const partial = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2]);
+    expect(partial.releases.map((r) => r.tag).sort()).toEqual(
+      LISTABLE.filter((t) => TIMELINE.indexOf(t) < 10).sort()
+    );
+    expect(env.logs.some((m) => /只取到前 1 页.*ERR_CONNECTION_RESET/.test(m))).toBe(true);
+
+    env.advance(SINGBOX_LIST_PARTIAL_TTL_MS - 1);
+    await env.svc.listReleases();
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(2); // 仍命中（短）缓存
+
+    failPage2 = false;
+    env.advance(1);
+    const full = await env.svc.listReleases();
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(2 + 3);
+    expect(full.releases.map((r) => r.tag).sort()).toEqual([...LISTABLE].sort());
+
+    env.advance(SINGBOX_LIST_PARTIAL_TTL_MS);
+    await env.svc.listReleases();
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(5); // 完整结果：10 分钟缓存
+    expect(SINGBOX_LIST_PARTIAL_TTL_MS).toBeLessThan(SINGBOX_LIST_TTL_MS);
+  });
+
+  it('已有完整列表时 force 刷新第 2 页限流 → 不缩短列表：新取到的页为准 + 补回旧列表其余版本；仍只缓存 60 秒，完整重取后整体替换', async () => {
+    const env = makeEnv();
+    let all = TIMELINE.map((t) => makeGithubRelease(SINGBOX_REPO, t));
+    let failPage2 = false;
+    env.fetchGithubJson.mockImplementation(async (url: unknown) => {
+      if (failPage2 && new URL(String(url)).searchParams.get('page') === '2') {
+        throw Object.assign(new Error('GitHub API 访问频率限制 (403)'), { code: 'RATE_LIMITED' });
+      }
+      return pageFromUrl(all, String(url));
+    });
+    const before = (await env.svc.listReleases()).releases.map((r) => r.tag);
+    expect(before.sort()).toEqual([...LISTABLE].sort());
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(3);
+
+    // 新发布一个版本（落在第 1 页），随后第 2 页撞上限流
+    const NEW = NEXT(21);
+    all = [makeGithubRelease(SINGBOX_REPO, NEW), ...all];
+    failPage2 = true;
+    const merged = await env.svc.listReleases({ force: true });
+    expect(pagesRequested(env).slice(3)).toEqual([1, 2]);
+    const mergedTags = merged.releases.map((r) => r.tag);
+    expect(mergedTags.length).toBeGreaterThanOrEqual(before.length);
+    expect(mergedTags).toEqual(expect.arrayContaining(before));
+    expect(mergedTags).toContain(NEW);
+    expect(mergedTags.sort()).toEqual([...LISTABLE, NEW].sort());
+    // 合并后仍按 semver 新→旧
+    expect(merged.releases.map((r) => r.version)).toEqual(
+      [...merged.releases.map((r) => r.version)].sort((a, b) => compareSemver(b, a))
+    );
+    expect(env.logs.some((m) => /只取到前 1 页.*频率限制/.test(m))).toBe(true);
+
+    // 60 秒内非 force 调用命中同一份合并结果
+    env.advance(SINGBOX_LIST_PARTIAL_TTL_MS - 1);
+    const cached = await env.svc.listReleases();
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(5);
+    expect(cached.releases).toEqual(merged.releases);
+
+    // 过了残缺 TTL → 重取；这次完整取到 → 整体替换（上游已删的版本不再残留）
+    failPage2 = false;
+    const GONE = NEXT(18);
+    expect(mergedTags).toContain(GONE);
+    all = all.filter((r) => r.tag_name !== GONE);
+    env.advance(1);
+    const full = await env.svc.listReleases();
+    expect(env.fetchGithubJson.mock.calls.length).toBeGreaterThan(5);
+    expect(full.releases.map((r) => r.tag).sort()).toEqual(
+      [...LISTABLE, NEW].filter((t) => t !== GONE).sort()
+    );
+  });
+
+  it('第 1 页因体量超限中止（TOO_LARGE）→ 仍按 NETWORK 上报（渲染端只分限流 / 其它）', async () => {
+    const env = makeEnv();
+    env.fetchGithubJson.mockRejectedValueOnce(
+      Object.assign(new Error('GitHub 响应过大（疑似被劫持/WAF 拦截）'), { code: 'TOO_LARGE' })
+    );
+    await expect(env.svc.listReleases()).rejects.toMatchObject({
+      code: 'NETWORK',
+      message: 'GitHub 响应过大（疑似被劫持/WAF 拦截）',
+    });
+    expect(env.fetchGithubJson).toHaveBeenCalledTimes(1);
   });
 });
 

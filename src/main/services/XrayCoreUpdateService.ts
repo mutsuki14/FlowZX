@@ -29,6 +29,7 @@ import type { LogManager } from './LogManager';
 import type { ProxyManager } from './ProxyManager';
 import type { UpdateNetwork } from './UpdateNetwork';
 import { CoreDownloader, DOWNLOAD_HASH_MISMATCH } from './core-downloader';
+import { RELEASE_PAGING, fetchGithubReleasePages } from './github-release-pages';
 import { normalizeAssetDigest } from './singbox-asset';
 import { resourceManager } from './ResourceManager';
 import { parseXrayVersion } from './XrayCoreManager';
@@ -66,6 +67,8 @@ const XRAY_API = 'https://api.github.com/repos/XTLS/Xray-core';
 const XRAY_DOWNLOAD = 'https://github.com/XTLS/Xray-core/releases/download';
 /** release 列表缓存时长（未认证 GitHub API 60 次/小时/IP，列表不能每次挂载都打）。 */
 export const XRAY_LIST_TTL_MS = 10 * 60 * 1000;
+/** 残缺列表（第 2 页起某页失败，只拿到前几页）的缓存时长：照常展示，但很快就重取。 */
+export const XRAY_LIST_PARTIAL_TTL_MS = 60 * 1000;
 /** 下载进度事件节流（~4 次/秒）；阶段切换与结束事件不节流。 */
 const PROGRESS_THROTTLE_MS = 250;
 const DGST_MAX_BYTES = 16 * 1024;
@@ -164,7 +167,8 @@ export class XrayCoreUpdateService {
   private busy = false;
   private progress: XrayInstallProgress | null = null;
   private lastProgressEmit = 0;
-  private listCache: { releases: XrayRelease[]; fetchedAt: number } | null = null;
+  /** partial = 分页中途失败、只含前几页 → 用短缓存（XRAY_LIST_PARTIAL_TTL_MS）。 */
+  private listCache: { releases: XrayRelease[]; fetchedAt: number; partial: boolean } | null = null;
   private listInflight: Promise<XrayReleaseList> | null = null;
 
   constructor(
@@ -231,21 +235,51 @@ export class XrayCoreUpdateService {
   /**
    * XTLS/Xray-core 的 release 列表（剔除草稿与低于最低版本者，新→旧）。缓存 10 分钟，force 绕过；并发调用合并为一次请求。
    * 失败抛 Error（code：RATE_LIMITED / NETWORK，经 IPC ApiResponse.code 透传到渲染端）。
+   *
+   * 分页取（RELEASE_PAGING.xrayList：每页 20 个、最多 5 页 = 4.6.0 的 per_page=100 同等覆盖）：每个 release ≈ 64 个资产，
+   * 一次 100 个 ≈ 11–14 MB，已逼近 fetchGithubJson 的 16 MiB 上限（sing-box 列表就是这样撞上限的）。某页已不含任何
+   * ≥ 最低版本的 release 即停。第 1 页失败照旧抛错；第 2 页起失败 → 用已取到的部分（记 warn；并入已有列表，
+   * 不使其变短），只缓存 XRAY_LIST_PARTIAL_TTL_MS。经 downloader.fetchGithubJson 逐页取（注入的下载器只需实现
+   * fetchGithubJson）。
    */
   async listReleases(opts: { force?: boolean } = {}): Promise<XrayReleaseList> {
     const cache = this.listCache;
-    if (!opts.force && cache && this.now() - cache.fetchedAt < XRAY_LIST_TTL_MS) {
+    const ttl = cache?.partial ? XRAY_LIST_PARTIAL_TTL_MS : XRAY_LIST_TTL_MS;
+    if (!opts.force && cache && this.now() - cache.fetchedAt < ttl) {
       return this.toList(cache);
     }
     if (this.listInflight) return this.listInflight;
     const inflight = (async () => {
       try {
-        const raw = await this.downloader.fetchGithubJson(`${XRAY_API}/releases?per_page=100`);
-        if (!Array.isArray(raw)) throw new Error('GitHub 返回的 release 列表格式异常');
-        const entry = {
-          releases: listableXrayReleases(raw, this.platform, this.arch, this.minVersion),
-          fetchedAt: this.now(),
-        };
+        const minVersion = this.minVersion;
+        const { releases, complete, pages, error } = await fetchGithubReleasePages(
+          (url) => this.downloader.fetchGithubJson(url),
+          `${XRAY_API}/releases`,
+          {
+            ...RELEASE_PAGING.xrayList,
+            shouldContinue: (page) =>
+              page.some((r) => {
+                const v = xrayTagVersion((r as { tag_name?: unknown } | null)?.tag_name);
+                return !!v && compareSemver(v, minVersion) >= 0;
+              }),
+          }
+        );
+        if (!complete) {
+          this.log(
+            'warn',
+            `Xray 版本列表只取到前 ${pages} 页（后续页失败，${XRAY_LIST_PARTIAL_TTL_MS / 1000}s 后重取）: ${errMsg(error)}`
+          );
+        }
+        let listed = listableXrayReleases(releases, this.platform, this.arch, minVersion);
+        const prev = this.listCache;
+        if (!complete && prev) {
+          // 残缺结果不得把已有列表变短：以新取到的页为准，补上旧列表里其余版本（下次完整取到时整体替换）。
+          const fresh = new Set(listed.map((r) => r.version));
+          listed = [...listed, ...prev.releases.filter((r) => !fresh.has(r.version))].sort((a, b) =>
+            compareSemver(b.version, a.version)
+          );
+        }
+        const entry = { releases: listed, fetchedAt: this.now(), partial: !complete };
         this.listCache = entry;
         return this.toList(entry);
       } catch (e) {

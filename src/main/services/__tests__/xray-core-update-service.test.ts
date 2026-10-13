@@ -3,7 +3,9 @@
  * 用真实文件系统（临时目录）+ 真实 zip 解析走完整条安装链。
  *
  * 钉住的不变量（见服务头注）：
- *  - 列表：10 分钟缓存 + force 绕过 + 并发合并；草稿/低于最低版本剔除；403 → RATE_LIMITED，其它 → NETWORK；
+ *  - 列表：分页（每页 20 个、最多 5 页；整页都低于最低版本即停；第 2 页起失败 → 残缺结果只缓存 60 秒，
+ *    且并入已有列表、不使其变短）；
+ *    10 分钟缓存 + force 绕过 + 并发合并；草稿/低于最低版本剔除；403 → RATE_LIMITED，其它 → NETWORK；
  *  - 摘要：API digest 与 .dgst 交叉核对（不一致 → HASH_MISMATCH）；都没有 → NO_HASH（不下载）；
  *  - 拒装：INVALID_TAG / BELOW_MINIMUM（不打网络）/ NOT_FOUND / DRAFT / NO_ASSET / VERSION_MISMATCH / CONFIG_TEST_FAILED（force 可越过）；
  *  - 单飞锁（BUSY）与代理生命周期在飞（PROXY_BUSY）；
@@ -41,11 +43,23 @@ jest.mock('fs/promises', () => {
 });
 
 import * as fsp from 'fs/promises';
-import { XrayCoreUpdateService, XRAY_LIST_TTL_MS } from '../XrayCoreUpdateService';
+import {
+  XrayCoreUpdateService,
+  XRAY_LIST_PARTIAL_TTL_MS,
+  XRAY_LIST_TTL_MS,
+} from '../XrayCoreUpdateService';
 import { XRAY_MARKER_FILE, detectXraySource } from '../xray-install-marker';
 import { crc32 } from '../../utils/zip-extract';
 import { IPC_CHANNELS } from '../../../shared/ipc-channels';
 import coreManifest from '../../../shared/core-manifest.json';
+import { compareSemver } from '../../../shared/version';
+import { MAX_GITHUB_JSON_BYTES } from '../../utils/http-limits';
+import {
+  XRAY_REPO,
+  githubPageText,
+  makeGithubRelease,
+  pageFromUrl,
+} from './github-release-fixtures';
 
 const realRename = jest.requireActual('fs/promises').rename as typeof fsp.rename;
 const realUnlink = jest.requireActual('fs/promises').unlink as typeof fsp.unlink;
@@ -436,7 +450,7 @@ beforeEach(() => {
 // ── listReleases ─────────────────────────────────────────────────────────────────────────────────
 
 describe('listReleases', () => {
-  it('per_page=100 拉取；剔除草稿与低于最低版本；新→旧；附随包/最低版本', async () => {
+  it('分页拉取（每页 20 个，首页即短页 → 一次请求）；剔除草稿与低于最低版本；新→旧；附随包/最低版本', async () => {
     const env = makeEnv();
     env.downloader.fetchGithubJson.mockResolvedValueOnce(
       listRaw([
@@ -447,8 +461,9 @@ describe('listReleases', () => {
       ])
     );
     const list = await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(1);
     expect(env.downloader.fetchGithubJson).toHaveBeenCalledWith(
-      'https://api.github.com/repos/XTLS/Xray-core/releases?per_page=100'
+      'https://api.github.com/repos/XTLS/Xray-core/releases?per_page=20&page=1'
     );
     expect(list.releases.map((r) => [r.tag, r.prerelease])).toEqual([
       ['v26.10.10', true],
@@ -503,6 +518,169 @@ describe('listReleases', () => {
     await expect(env.svc.listReleases()).resolves.toMatchObject({
       releases: [expect.objectContaining({ tag: 'v26.3.27' })],
     });
+  });
+
+  // ── 分页（4.6.0 的 per_page=100 ≈ 11–14 MB，已逼近 fetchGithubJson 的 16 MiB 上限）──
+
+  const API = 'https://api.github.com/repos/XTLS/Xray-core/releases';
+  const [MIN_Y] = coreManifest.minXrayVersion.split('.').map((p) => parseInt(p, 10));
+  const ABOVE = (n: number) => `v${MIN_Y + 1}.${(n % 12) + 1}.${n}`;
+  const BELOW = (n: number) => `v${MIN_Y - 1}.${(n % 12) + 1}.${n}`;
+  /** 新→旧 80 个：前 40 个 ≥ 最低版本与低于最低版本交替；之后 40 个全低于最低版本 → 每页 20 个时取完第 3 页即停。 */
+  const TIMELINE = [
+    ...Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? ABOVE(100 - i) : BELOW(200 - i))),
+    ...Array.from({ length: 40 }, (_, i) => BELOW(150 - i)),
+  ];
+  const pagesRequested = (env: ReturnType<typeof makeEnv>) =>
+    env.downloader.fetchGithubJson.mock.calls.map((c) => {
+      const u = new URL(String(c[0]));
+      expect(`${u.origin}${u.pathname}`).toBe(API);
+      expect(u.searchParams.get('per_page')).toBe('20');
+      return Number(u.searchParams.get('page'));
+    });
+
+  it('真实体量（每个 release 64 个资产）：每页 ≤ 上限一半；整页都低于最低版本即停；列出全部 ≥ 最低版本者', async () => {
+    const env = makeEnv();
+    const all = TIMELINE.map((t) => makeGithubRelease(XRAY_REPO, t));
+    const pageBytes: number[] = [];
+    env.downloader.fetchGithubJson.mockImplementation(async (url: string) => {
+      const page = pageFromUrl(all, url);
+      pageBytes.push(Buffer.byteLength(githubPageText(page)));
+      return page;
+    });
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2, 3]);
+    for (const b of pageBytes) expect(b).toBeLessThanOrEqual(MAX_GITHUB_JSON_BYTES / 2);
+    expect(list.releases.map((r) => r.tag).sort()).toEqual(
+      TIMELINE.filter((_, i) => i < 40 && i % 2 === 0).sort()
+    );
+    expect(list.releases.every((r) => r.hasAsset && !r.belowMinimum)).toBe(true);
+  });
+
+  it('每页都还有 ≥ 最低版本 → 最多取 5 页（100 个，同 4.6.0 的覆盖范围）', async () => {
+    const env = makeEnv();
+    const all = listRaw(Array.from({ length: 130 }, (_, i) => [ABOVE(300 - i), {}]));
+    env.downloader.fetchGithubJson.mockImplementation(async (url: string) => pageFromUrl(all, url));
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2, 3, 4, 5]);
+    expect(list.releases).toHaveLength(100);
+  });
+
+  it('第 2 页起失败 → 返回已取到的部分并记 warn；残缺结果只缓存 60 秒，之后重取（完整结果照常缓存 10 分钟）', async () => {
+    const env = makeEnv();
+    const log = jest.spyOn(env.svc as any, 'log');
+    const all = TIMELINE.map((t) => makeGithubRelease(XRAY_REPO, t));
+    let failPage2 = true;
+    env.downloader.fetchGithubJson.mockImplementation(async (url: string) => {
+      if (failPage2 && new URL(url).searchParams.get('page') === '2') {
+        throw new Error('ERR_CONNECTION_RESET');
+      }
+      return pageFromUrl(all, url);
+    });
+    const partial = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2]);
+    expect(partial.releases.map((r) => r.tag).sort()).toEqual(
+      TIMELINE.filter((_, i) => i < 20 && i % 2 === 0).sort()
+    );
+    expect(log).toHaveBeenCalledWith(
+      'warn',
+      expect.stringMatching(/只取到前 1 页.*ERR_CONNECTION_RESET/)
+    );
+
+    env.advance(XRAY_LIST_PARTIAL_TTL_MS - 1);
+    await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(2); // 仍命中（短）缓存
+
+    failPage2 = false;
+    env.advance(1);
+    const full = await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(2 + 3);
+    expect(full.releases).toHaveLength(20);
+
+    env.advance(XRAY_LIST_PARTIAL_TTL_MS);
+    await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(5); // 完整结果：10 分钟缓存
+    expect(XRAY_LIST_PARTIAL_TTL_MS).toBeLessThan(XRAY_LIST_TTL_MS);
+  });
+
+  it('已有完整列表时 force 刷新第 2 页限流 → 不缩短列表：新取到的页为准 + 补回旧列表其余版本；仍只缓存 60 秒，完整重取后整体替换', async () => {
+    const env = makeEnv();
+    const log = jest.spyOn(env.svc as any, 'log');
+    let all = TIMELINE.map((t) => makeGithubRelease(XRAY_REPO, t));
+    let failPage2 = false;
+    env.downloader.fetchGithubJson.mockImplementation(async (url: string) => {
+      if (failPage2 && new URL(url).searchParams.get('page') === '2') {
+        throw Object.assign(new Error('GitHub API 访问频率限制 (403)'), { code: 'RATE_LIMITED' });
+      }
+      return pageFromUrl(all, url);
+    });
+    const LISTABLE = TIMELINE.filter((_, i) => i < 40 && i % 2 === 0);
+    const before = (await env.svc.listReleases()).releases.map((r) => r.tag);
+    expect(before.sort()).toEqual([...LISTABLE].sort());
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(3);
+
+    // 新发布一个版本（落在第 1 页），随后第 2 页撞上限流
+    const NEW = ABOVE(101);
+    all = [makeGithubRelease(XRAY_REPO, NEW), ...all];
+    failPage2 = true;
+    const merged = await env.svc.listReleases({ force: true });
+    expect(pagesRequested(env).slice(3)).toEqual([1, 2]);
+    const mergedTags = merged.releases.map((r) => r.tag);
+    expect(mergedTags.length).toBeGreaterThanOrEqual(before.length);
+    expect(mergedTags).toEqual(expect.arrayContaining(before));
+    expect(mergedTags).toContain(NEW);
+    expect(mergedTags.sort()).toEqual([...LISTABLE, NEW].sort());
+    // 合并后仍按 semver 新→旧
+    expect(merged.releases.map((r) => r.version)).toEqual(
+      [...merged.releases.map((r) => r.version)].sort((a, b) => compareSemver(b, a))
+    );
+    expect(log).toHaveBeenCalledWith('warn', expect.stringMatching(/只取到前 1 页.*频率限制/));
+
+    // 60 秒内非 force 调用命中同一份合并结果
+    env.advance(XRAY_LIST_PARTIAL_TTL_MS - 1);
+    const cached = await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(5);
+    expect(cached.releases).toEqual(merged.releases);
+
+    // 过了残缺 TTL → 重取；这次完整取到 → 整体替换（上游已删的版本不再残留）
+    failPage2 = false;
+    const GONE = ABOVE(98);
+    expect(mergedTags).toContain(GONE);
+    all = all.filter((r) => r.tag_name !== GONE);
+    env.advance(1);
+    const full = await env.svc.listReleases();
+    expect(env.downloader.fetchGithubJson.mock.calls.length).toBeGreaterThan(5);
+    expect(full.releases.map((r) => r.tag).sort()).toEqual(
+      [...LISTABLE, NEW].filter((t) => t !== GONE).sort()
+    );
+  });
+
+  it('只含 [最低版本, 随包版本) 的整页不触发早停（早停比的是 minXrayVersion，不是 bundledXrayVersion）', async () => {
+    const env = makeEnv();
+    const [minY, minM] = coreManifest.minXrayVersion.split('.').map((p) => parseInt(p, 10));
+    const MID = (n: number) => `v${minY}.${minM + 1}.${n}`;
+    expect(compareSemver(MID(1).slice(1), coreManifest.minXrayVersion)).toBeGreaterThan(0);
+    expect(compareSemver(MID(60).slice(1), coreManifest.bundledXrayVersion)).toBeLessThan(0);
+    const tl = [
+      ...Array.from({ length: 20 }, (_, i) => ABOVE(400 - i)),
+      ...Array.from({ length: 20 }, (_, i) => MID(60 - i)),
+      ...Array.from({ length: 10 }, (_, i) => MID(30 - i)),
+      ...Array.from({ length: 30 }, (_, i) => BELOW(500 - i)),
+    ];
+    const all = listRaw(tl.map((t) => [t, {}]));
+    env.downloader.fetchGithubJson.mockImplementation(async (url: string) => pageFromUrl(all, url));
+    const list = await env.svc.listReleases();
+    expect(pagesRequested(env)).toEqual([1, 2, 3, 4]);
+    expect(list.releases.filter((r) => r.tag.startsWith(`v${minY}.${minM + 1}.`))).toHaveLength(30);
+  });
+
+  it('第 1 页因体量超限中止（TOO_LARGE）→ 仍按 NETWORK 上报', async () => {
+    const env = makeEnv();
+    env.downloader.fetchGithubJson.mockRejectedValueOnce(
+      Object.assign(new Error('GitHub 响应过大（疑似被劫持/WAF 拦截）'), { code: 'TOO_LARGE' })
+    );
+    await expect(env.svc.listReleases()).rejects.toMatchObject({ code: 'NETWORK' });
+    expect(env.downloader.fetchGithubJson).toHaveBeenCalledTimes(1);
   });
 });
 
