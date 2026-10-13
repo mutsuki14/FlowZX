@@ -43,6 +43,7 @@ import {
 import { CoreUpdateStateStore } from './core-update-state-store';
 import type { StagedCoreInfo, CoreAutoUpdateState } from './core-update-state-store';
 import { CoreDownloader, DOWNLOAD_HASH_MISMATCH } from './core-downloader';
+import { RELEASE_PAGING } from './github-release-pages';
 import { CoreStartTunPersistentError } from './core-readiness';
 import type { UpdateNetwork } from './UpdateNetwork';
 import coreManifest from '../../shared/core-manifest.json';
@@ -148,6 +149,8 @@ const SINGBOX_API = 'https://api.github.com/repos/SagerNet/sing-box';
 const SINGBOX_DOWNLOAD = 'https://github.com/SagerNet/sing-box/releases/download';
 /** release 列表缓存时长（未认证 GitHub API 60 次/小时/IP，设置页每次挂载都打会很快被限流）。 */
 export const SINGBOX_LIST_TTL_MS = 10 * 60 * 1000;
+/** 残缺列表（第 2 页起某页失败，只拿到前几页）的缓存时长：照常展示，但很快就重取，不把残缺结果钉 10 分钟。 */
+export const SINGBOX_LIST_PARTIAL_TTL_MS = 60 * 1000;
 /** 下载进度事件节流（~4 次/秒）；阶段切换与结束事件不节流。 */
 const INSTALL_PROGRESS_THROTTLE_MS = 250;
 /**
@@ -157,6 +160,9 @@ const INSTALL_PROGRESS_THROTTLE_MS = 250;
 const CORE_EXEC_TIMEOUT_MS = 20_000;
 /** 渲染端 detail 上限（`sing-box check` 的 stderr 取尾部）。 */
 const INSTALL_DETAIL_MAX = 2000;
+
+/** release 列表缓存项（partial = 分页中途失败、只含前几页 → 用短缓存）。 */
+type SingboxListCacheEntry = { releases: SingboxRelease[]; fetchedAt: number; partial: boolean };
 
 /** installTag 预期内的失败（带 code，映射为 { ok:false, code, detail }）。 */
 class SingboxInstallError extends Error {
@@ -288,9 +294,8 @@ export class CoreUpdateService {
   private now: () => number = () => Date.now();
   /** 停代理后等进程完全退出再换核（同 updateCore 的 2s；单测置 0）。 */
   private swapSettleMs = 2000;
-  private releaseListCache: { releases: SingboxRelease[]; fetchedAt: number } | null = null;
-  private releaseListInflight: Promise<{ releases: SingboxRelease[]; fetchedAt: number }> | null =
-    null;
+  private releaseListCache: SingboxListCacheEntry | null = null;
+  private releaseListInflight: Promise<SingboxListCacheEntry> | null = null;
   /** 进行中的安装 / 恢复随包进度（主进程持有，设置卡卸载重挂后经 getInstallState 找回）。 */
   private installProgress: SingboxInstallProgress | null = null;
   private lastInstallProgressEmit = 0;
@@ -697,27 +702,51 @@ export class CoreUpdateService {
    * SagerNet/sing-box 的 release 列表（剔除草稿 / 低于随包版本 / 无本平台精确资产者，新→旧）。缓存 10 分钟，force 绕过；
    * 并发调用合并为一次请求。失败抛 Error（code：RATE_LIMITED / NETWORK，经 IPC ApiResponse.code 透传到渲染端）。
    * knownBad / currentVersion 每次现算（不进缓存）：前者随预检 / 首启结果变化，后者读 ProxyManager 版本缓存（命中即不 spawn 内核）。
+   *
+   * 分页取（RELEASE_PAGING.singboxList：每页 10 个、最多 10 页）：sing-box 每个 release 带 168 个资产，4.6.0 的
+   * per_page=100 一次 27–34 MB，超过 fetchGithubJson 的 16 MiB 上限 → 必失败（被报成「无法连接 GitHub」）。某页已不含
+   * 任何 ≥ 随包版本的 release 即停（更早的只会更旧，列表反正剔除）。第 1 页失败照旧抛错；第 2 页起失败 → 用已取到的
+   * 部分（记 warn；并入已有列表，不使其变短），只缓存 SINGBOX_LIST_PARTIAL_TTL_MS，下次打开即重取。
    */
   async listReleases(opts: { force?: boolean } = {}): Promise<SingboxReleaseList> {
     const cache = this.releaseListCache;
-    if (!opts.force && cache && this.now() - cache.fetchedAt < SINGBOX_LIST_TTL_MS) {
+    const ttl = cache?.partial ? SINGBOX_LIST_PARTIAL_TTL_MS : SINGBOX_LIST_TTL_MS;
+    if (!opts.force && cache && this.now() - cache.fetchedAt < ttl) {
       return this.toReleaseList(cache);
     }
     if (!this.releaseListInflight) {
       this.releaseListInflight = (async () => {
         try {
-          const raw = await this.coreDownloader.fetchGithubJson(
-            `${SINGBOX_API}/releases?per_page=100`
-          );
-          if (!Array.isArray(raw)) throw new Error('GitHub 返回的 release 列表格式异常');
-          const entry = {
-            releases: listableSingboxReleases(
-              raw,
-              this.platform,
-              this.arch,
-              coreManifest.bundledCoreVersion
-            ),
+          const bundled = coreManifest.bundledCoreVersion;
+          const { releases, complete, pages, error } =
+            await this.coreDownloader.fetchGithubReleasePages(`${SINGBOX_API}/releases`, {
+              ...RELEASE_PAGING.singboxList,
+              shouldContinue: (page) =>
+                page.some((r) => {
+                  const v = singboxTagVersion((r as { tag_name?: unknown } | null)?.tag_name);
+                  return !!v && compareSemver(v, bundled) >= 0;
+                }),
+            });
+          if (!complete) {
+            this.logManager.addLog(
+              'warn',
+              `sing-box 版本列表只取到前 ${pages} 页（后续页失败，${SINGBOX_LIST_PARTIAL_TTL_MS / 1000}s 后重取）: ${errMsg(error)}`,
+              'CoreUpdateService'
+            );
+          }
+          let listed = listableSingboxReleases(releases, this.platform, this.arch, bundled);
+          const prev = this.releaseListCache;
+          if (!complete && prev) {
+            // 残缺结果不得把已有列表变短：以新取到的页为准，补上旧列表里其余版本（下次完整取到时整体替换）。
+            const fresh = new Set(listed.map((r) => r.version));
+            listed = [...listed, ...prev.releases.filter((r) => !fresh.has(r.version))].sort(
+              (a, b) => compareSemver(b.version, a.version)
+            );
+          }
+          const entry: SingboxListCacheEntry = {
+            releases: listed,
             fetchedAt: this.now(),
+            partial: !complete,
           };
           this.releaseListCache = entry;
           return entry;
@@ -738,10 +767,7 @@ export class CoreUpdateService {
     return this.toReleaseList(await this.releaseListInflight);
   }
 
-  private async toReleaseList(entry: {
-    releases: SingboxRelease[];
-    fetchedAt: number;
-  }): Promise<SingboxReleaseList> {
+  private async toReleaseList(entry: SingboxListCacheEntry): Promise<SingboxReleaseList> {
     const currentVersion = await this.getCurrentVersion(false).catch(() => '未知');
     return {
       releases: entry.releases.map((r) => ({ ...r, knownBad: this.isKnownBad(r.version) })),

@@ -9,6 +9,9 @@
  * Xray 版本选择（XrayCoreUpdateService）复用同一类型：fetchGithubJson（按 tag 取 release）/ fetchGithubText
  *（直连 github.com 取 .dgst，绝不经镜像）/ downloadFile 的 opts（临时文件前缀 + 进度回调）。sing-box 调用路径不传
  * 新参数，行为与报错文案逐字不变（core-downloader-integrity 单测钉住）。
+ *
+ * release 列表一律分页取（fetchGithubReleasePages，纯逻辑见 github-release-pages）：一次取 30 / 100 个 release 的
+ * JSON 已逼近 / 超过 MAX_GITHUB_JSON_BYTES（sing-box 每个 release 168 个资产），4.6.0 的版本列表因此必失败。
  */
 
 import { app, net, session, Session } from 'electron';
@@ -24,6 +27,12 @@ import { createIdleTimeout, parseExpectedBytes } from './download-hardening';
 import { powershellPath } from '../utils/win-system32';
 import { MAX_GITHUB_JSON_BYTES } from '../utils/http-limits';
 import { findSuitableSingboxAsset } from './singbox-asset';
+import {
+  RELEASE_PAGING,
+  fetchGithubReleasePages as fetchReleasePages,
+  type GithubReleasePagesOptions,
+  type GithubReleasePagesResult,
+} from './github-release-pages';
 import { UpdateNetwork } from './UpdateNetwork';
 
 /** downloadFile 的可选参数（sing-box 调用方不传 → 行为与原实现逐字相同）。 */
@@ -45,6 +54,14 @@ export const DOWNLOAD_HASH_MISMATCH = 'HASH_MISMATCH';
 
 const isHashMismatch = (e: unknown): boolean =>
   (e as { code?: unknown } | null)?.code === DOWNLOAD_HASH_MISMATCH;
+
+/**
+ * fetchGithubJson 因响应超过 MAX_GITHUB_JSON_BYTES 而中止时的 Error.code（文案不变）。release 列表已分页，正常 GitHub
+ * 响应远不到上限，命中它基本意味着被劫持 / WAF 回灌；调用方可据此与断网 / 超时区分（日志 / 单测）。
+ */
+export const GITHUB_JSON_TOO_LARGE = 'TOO_LARGE';
+
+const SINGBOX_RELEASES_API = 'https://api.github.com/repos/SagerNet/sing-box/releases';
 
 export class CoreDownloader {
   // direct 自举兜底会话（强制 mode:direct）：核下载是自举链路，UpdateNetwork 未注入 / update-in 端口不可用 /
@@ -85,15 +102,45 @@ export class CoreDownloader {
     return this.updateNetwork.resolveSessionForMainUpdate().catch(() => this.getDirectSession());
   }
 
+  /**
+   * sing-box 最近 30 个 release（checkUpdate 取最大正式版 / resolveAssetSha256 补取摘要）。4.6.0 一次取默认 30 条，单次响应
+   * 已 8–10 MB、资产再涨 ~60% 就撞上限；现分 3 页 × 10 条取，覆盖范围不变（只在短页处提前停）。
+   * 第 1 页失败照旧 reject（报错文案 / code / status 不变）；第 2 页起失败 → 返回已取到的部分并记 warn。
+   */
   async fetchReleases(): Promise<any[]> {
-    return this.fetchGithubJson('https://api.github.com/repos/SagerNet/sing-box/releases');
+    const { releases, complete, pages, error } = await this.fetchGithubReleasePages(
+      SINGBOX_RELEASES_API,
+      RELEASE_PAGING.singboxCheck
+    );
+    if (!complete) {
+      this.logManager.addLog(
+        'warn',
+        `sing-box release 列表只取到前 ${pages} 页（${releases.length} 个），后续页失败: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        'CoreDownloader'
+      );
+    }
+    return releases;
+  }
+
+  /**
+   * 分页拉取一个 GitHub release 列表（`baseUrl` 不带查询串，如 `…/repos/<owner>/<repo>/releases`）；每页经
+   * fetchGithubJson（同一会话 / 超时 / 字节上限 / RATE_LIMITED）。语义见 github-release-pages。
+   */
+  fetchGithubReleasePages(
+    baseUrl: string,
+    opts: GithubReleasePagesOptions
+  ): Promise<GithubReleasePagesResult> {
+    return fetchReleasePages((url) => this.fetchGithubJson(url), baseUrl, opts);
   }
 
   /**
    * GET 一个 GitHub API JSON（从 fetchReleases 抽出，sing-box 行为与报错文案逐字不变；Xray 版本选择复用）。
    * 经核更新链路会话（UpdateNetwork）直连 api.github.com，**不走 gh-proxy 镜像**——摘要/资产清单是完整性锚，
    * 必须来自官方源。护栏：15s 兜底超时、MAX_GITHUB_JSON_BYTES 上限、request/response 双错误源单点 settle。
-   * 失败的 Error 带机器可读字段：403 → `code='RATE_LIMITED'`；其它非 200 → `status=<HTTP 码>`（如 404）。
+   * 失败的 Error 带机器可读字段：403 → `code='RATE_LIMITED'`；其它非 200 → `status=<HTTP 码>`（如 404）；
+   * 超过字节上限 → `code='TOO_LARGE'`（GITHUB_JSON_TOO_LARGE）。release 列表请走 fetchGithubReleasePages（分页）。
    */
   async fetchGithubJson(url: string): Promise<any> {
     const sess = await this.updateSession();
@@ -133,14 +180,19 @@ export class CoreDownloader {
           if (settled) return;
           data += chunk.toString();
           // OOM 防护：GitHub api 被劫持/WAF 接管可回灌 GB 级响应撞 V8 堆/512MB string 上限。
-          // 超 16MiB 即 abort + 单点收口 finish（releases JSON 实际 < 数 MB；与超时同路径）。
+          // 超 16MiB 即 abort + 单点收口 finish（与超时同路径）。release 列表须分页取：单页仅数 MB，
+          // 而 sing-box 一次取 100 个 release 实测 27–34 MB，会在这里被误判（4.6.0 版本列表必失败的根因）。
           if (data.length > MAX_GITHUB_JSON_BYTES) {
             try {
               request.abort();
             } catch {
               /* ignore */
             }
-            finish(new Error('GitHub 响应过大（疑似被劫持/WAF 拦截）'));
+            finish(
+              withErrorFields(new Error('GitHub 响应过大（疑似被劫持/WAF 拦截）'), {
+                code: GITHUB_JSON_TOO_LARGE,
+              })
+            );
             return;
           }
         });
