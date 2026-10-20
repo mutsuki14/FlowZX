@@ -1094,8 +1094,8 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     // 【待真机验证 / CDN 风险】：对"域名节点"预解析得到的 IP 会进 route_exclude_address，若节点在
     //   共享 CDN(如 Cloudflare) 后，等于把共享 IP 加直连 → 误伤同 IP 的被墙站点、且抗不住 IP 轮换。
     //   现已在 generateRouteConfig 用"全节点域名 → direct"的纯域名规则(sniff SNI)做 CDN 安全豁免；
-    //   此处 Windows IP 预解析是否仍为断环所必需，需 Wintun 真机验证：若域名规则+sniff 足够 → 删除本块；
-    //   若 Windows 确需 IP 级兜底 → 应仅对 IP-literal 节点保留、域名节点不预解析。无 Windows 环境暂不擅改。
+    //   域名是否预解析成 IP 仍保持原策略（只进 route_exclude，不进路由层 ip_cidr）。
+    //   「哪些节点」与 route_exclude 共用 tunLoopBypassServerIds，避免规则目标只被预解析、不写进排除表。
     const resolvedServerIps: Record<string, string> = {};
     if (isTunMode && (process.platform === 'win32' || process.platform === 'darwin')) {
       this.logToManager('info', '正在预解析节点域名用于 TUN 防回流与 VPN 路由跟踪...');
