@@ -42,16 +42,16 @@ FlowZX is a fork of the cross-platform proxy client [FlowZ](https://github.com/d
 
 ## Download & install
 
-Download the latest version from [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Direct download links for v4.6.1:
+Download the latest version from [Releases](https://github.com/mutsuki14/FlowZX/releases/latest). Direct download links for v4.6.2:
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows x64 | [FlowZ-4.6.1-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-setup.exe) | Installer; installs for the current user only by default (can be changed to all users during setup), with a choice of directory |
-| Windows x64 | [FlowZ-4.6.1-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-win-x64-portable.exe) | Portable; data is stored in `data\` next to the exe |
-| macOS | [FlowZ-4.6.1-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-arm64.dmg) | Apple silicon (M series) |
-| macOS | [FlowZ-4.6.1-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-mac-x64.dmg) | Intel |
-| Linux x86_64 | [FlowZ-4.6.1-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-x86_64.AppImage) | No installation needed; requires FUSE 2 |
-| Linux x86_64 | [FlowZ-4.6.1-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.1/FlowZ-4.6.1-linux-amd64.deb) | Debian / Ubuntu; installs to `/opt/FlowZ`; installing `policykit-1` as well is recommended |
+| Windows x64 | [FlowZ-4.6.2-win-x64-setup.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-win-x64-setup.exe) | Installer; installs for the current user only by default (can be changed to all users during setup), with a choice of directory |
+| Windows x64 | [FlowZ-4.6.2-win-x64-portable.exe](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-win-x64-portable.exe) | Portable; data is stored in `data\` next to the exe |
+| macOS | [FlowZ-4.6.2-mac-arm64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-mac-arm64.dmg) | Apple silicon (M series) |
+| macOS | [FlowZ-4.6.2-mac-x64.dmg](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-mac-x64.dmg) | Intel |
+| Linux x86_64 | [FlowZ-4.6.2-linux-x86_64.AppImage](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-linux-x86_64.AppImage) | No installation needed; requires FUSE 2 |
+| Linux x86_64 | [FlowZ-4.6.2-linux-amd64.deb](https://github.com/mutsuki14/FlowZX/releases/download/v4.6.2/FlowZ-4.6.2-linux-amd64.deb) | Debian / Ubuntu; installs to `/opt/FlowZ`; installing `policykit-1` as well is recommended |
 
 | Platform | System requirements |
 |---|---|
@@ -268,7 +268,7 @@ Pick a version under **Settings → Advanced → Xray core (sidecar)** and click
 
 ### How do I change the sing-box version?
 
-Pick a version under **Choose version** in **Settings → Advanced → Core Management** and click **Install**: FlowZX downloads it from the official SagerNet/sing-box releases, verifies it against the SHA-256 digest the GitHub API provides (upstream publishes no separate checksum files), checks your current config with `sing-box check` and switches (restarting the proxy once if it is running; if it then fails to start, the previous core is restored automatically). Versions older than the bundled one (1.14.0-rc.1 in 4.6.1) are not offered; turn on **Include pre-releases** to see alpha / beta / rc builds. If auto-update is on and would later replace your pick, the confirmation offers **Pin this version (pause auto-update)**. Builds from 1.15.0-alpha.11 on ship without gVisor, so they are refused while the TUN network stack is gvisor or mixed (Auto means gvisor on macOS / Windows); switch it to system under **Settings → Network** first. **Roll back** returns to the previous core, and picking the bundled version offers **Restore bundled**. See [docs/CORE.md](docs/CORE.md).
+Pick a version under **Choose version** in **Settings → Advanced → Core Management** and click **Install**: FlowZX downloads it from the official SagerNet/sing-box releases, verifies it against the SHA-256 digest the GitHub API provides (upstream publishes no separate checksum files), checks your current config with `sing-box check` and switches (restarting the proxy once if it is running; if it then fails to start, the previous core is restored automatically). Versions older than the bundled one (1.14.0-rc.1 in 4.6.2) are not offered; turn on **Include pre-releases** to see alpha / beta / rc builds. If auto-update is on and would later replace your pick, the confirmation offers **Pin this version (pause auto-update)**. Builds from 1.15.0-alpha.11 on ship without gVisor, so they are refused while the TUN network stack is gvisor or mixed (Auto means gvisor on macOS / Windows); switch it to system under **Settings → Network** first. **Roll back** returns to the previous core, and picking the bundled version offers **Restore bundled**. See [docs/CORE.md](docs/CORE.md).
 
 ### Connections drop briefly after changing settings?
 
@@ -374,7 +374,7 @@ Tech stack: Electron 42 · React 19 · TypeScript · Vite · Tailwind CSS · Rad
 |---|---|
 | [docs/XRAY.md](docs/XRAY.md) | Xray core: supported combinations, architecture, import parameters, caveats, verification |
 | [docs/CORE.md](docs/CORE.md) | sing-box core: version selection (incl. pre-releases), integrity checks, pinning vs auto-update, rollback |
-| [docs/releases/v4.6.1.md](docs/releases/v4.6.1.md) | v4.6.1 release notes |
+| [docs/releases/v4.6.2.md](docs/releases/v4.6.2.md) | v4.6.2 release notes |
 | [docs/releases/v4.4.1.md](docs/releases/v4.4.1.md) | v4.4.1 release notes |
 | [docs/releases/v4.4.0.md](docs/releases/v4.4.0.md) | v4.4.0 release notes |
 | [docs/RELEASE.md](docs/RELEASE.md) | Release process |
