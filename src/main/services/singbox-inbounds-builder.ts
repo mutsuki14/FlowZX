@@ -17,6 +17,7 @@ import {
   hostToExcludeCidr,
   effectiveAppRules,
   effectiveCustomRules,
+  tunLoopBypassServerIds,
   getCustomDomesticDnsEndpoint,
 } from './singbox-config-helpers';
 import { bypassLanCidrs, effectiveBypassLan } from '../../shared/system-proxy-bypass';
@@ -289,12 +290,9 @@ export function buildInbounds(
     // route_exclude 同样触发表分解害连入；拨号回环由 auto_detect_interface bind/oif 逸出 TUN 防（v6 侧 Y6 相
     // EGRESS6 已佐证 direct 重拨经 oif 逸出，v4 侧真实节点走 L-B2 裁决）。darwin/win32 维持双保险。
     if (process.platform !== 'linux') {
-      // 绝杀级修复（多服务器版本）：应用分流选中的其它节点 IP 也必须排除，否则连它们的流量回流进 TUN 死循环。
-      const allServerIds = new Set([
-        config.selectedServerId as string,
-        ...effectiveAppRules(config).map((r) => r.targetServerId),
-      ]);
-      for (const serverId of allServerIds) {
+      // 选中节点、自定义规则 / 应用分流指向的节点、以及它们的前置代理都要排除，否则连这些节点的拨号
+      // 回流进 TUN 死循环（规则表现为不生效）。集合与起核前预解析共用 tunLoopBypassServerIds。
+      for (const serverId of tunLoopBypassServerIds(config)) {
         if (!serverId) continue;
         const server = config.servers.find((s) => s.id === serverId);
         if (server?.address) {

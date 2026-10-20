@@ -61,8 +61,7 @@ import { parseMacRouteInterface } from '../../shared/mac-route-interface';
 import {
   isIpv4Host,
   isIpv6Host,
-  effectiveCustomRules,
-  effectiveAppRules,
+  tunLoopBypassServerIds,
   applyRuleSetPrune,
   buildIdToTagMap,
 } from './singbox-config-helpers';
@@ -1089,8 +1088,9 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     await this.writeCustomRuleFiles(config);
     this.markStart('customRules');
 
-    // 3.5. 预解析所有节点的域名为 IP（仅针对 TUN 模式）。Windows 用于防回流；macOS 还用于
-    // route_exclude + VPN 路由热切检测，确保 OpenVPN 重连后查询的是节点 IP 而非被自家 TUN 捕获的域名路由。
+    // 3.5. 预解析防回流节点的域名为 IP（仅 Windows/macOS TUN）。集合与 route_exclude 共用
+    // tunLoopBypassServerIds（选中节点 + 规则指向的节点 + 前置代理）。macOS 还用这些 IP 做 VPN 路由热切检测，
+    // 确保 OpenVPN 重连后查询的是节点 IP 而非被自家 TUN 捕获的域名路由。
     // 【待真机验证 / CDN 风险】：对"域名节点"预解析得到的 IP 会进 route_exclude_address，若节点在
     //   共享 CDN(如 Cloudflare) 后，等于把共享 IP 加直连 → 误伤同 IP 的被墙站点、且抗不住 IP 轮换。
     //   现已在 generateRouteConfig 用"全节点域名 → direct"的纯域名规则(sniff SNI)做 CDN 安全豁免；
@@ -1100,13 +1100,7 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     if (isTunMode && (process.platform === 'win32' || process.platform === 'darwin')) {
       this.logToManager('info', '正在预解析节点域名用于 TUN 防回流与 VPN 路由跟踪...');
       const dns = require('dns').promises;
-      const allServerIds = new Set([
-        config.selectedServerId as string,
-        ...effectiveCustomRules(config).map((r) => r.targetServerId),
-        ...effectiveAppRules(config).map((r) => r.targetServerId),
-      ]);
-
-      const resolvePromises = Array.from(allServerIds).map(async (serverId) => {
+      const resolvePromises = Array.from(tunLoopBypassServerIds(config)).map(async (serverId) => {
         if (!serverId) return;
         const server = config.servers.find((s) => s.id === serverId);
         if (
@@ -3936,16 +3930,7 @@ done
       return null;
     }
 
-    const ids = new Set<string>();
-    if (config.selectedServerId && !isDirectSelection(config.selectedServerId)) {
-      ids.add(config.selectedServerId);
-    }
-    for (const rule of effectiveCustomRules(config)) {
-      if (rule.targetServerId) ids.add(rule.targetServerId);
-    }
-    for (const rule of effectiveAppRules(config)) {
-      if (rule.targetServerId) ids.add(rule.targetServerId);
-    }
+    const ids = tunLoopBypassServerIds(config);
 
     const targets = Array.from(ids)
       .map(

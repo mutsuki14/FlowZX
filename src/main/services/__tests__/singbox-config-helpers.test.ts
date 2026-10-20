@@ -11,6 +11,7 @@ import {
   getDomesticResolverTag,
   effectiveCustomRules,
   effectiveAppRules,
+  tunLoopBypassServerIds,
   getCustomDomesticDnsEndpoint,
   getRequiredGeoCategories,
 } from '../singbox-config-helpers';
@@ -208,6 +209,70 @@ describe('effectiveAppRules — 应用分流总开关 + 仅 smart 双 gate', () 
         mk({ appRoutingEnabled: true, proxyMode: 'direct', appRules: appRules as any })
       )
     ).toEqual([]);
+  });
+});
+
+describe('tunLoopBypassServerIds — TUN 防回流节点集合', () => {
+  const mk = (over: Partial<UserConfig>): UserConfig => over as unknown as UserConfig;
+
+  it('选中节点 + 启用的代理规则目标 + 应用分流目标，并展开 detour 前置链', () => {
+    const ids = tunLoopBypassServerIds(
+      mk({
+        proxyMode: 'smart',
+        appRoutingEnabled: true,
+        selectedServerId: 'sel',
+        servers: [
+          { id: 'sel', detour: 'front' },
+          { id: 'front' },
+          { id: 'jp' },
+          { id: 'appnode', detour: 'appfront' },
+          { id: 'appfront' },
+          { id: 'idle' },
+        ] as UserConfig['servers'],
+        customRules: [
+          { id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' },
+          { id: 'r2', enabled: true, action: 'direct', targetServerId: 'idle' },
+          { id: 'r3', enabled: false, action: 'proxy', targetServerId: 'idle' },
+        ] as UserConfig['customRules'],
+        appRules: [
+          { appId: 'a', enabled: true, action: 'proxy', targetServerId: 'appnode' },
+        ] as UserConfig['appRules'],
+      })
+    );
+    expect(Array.from(ids).sort()).toEqual(['appfront', 'appnode', 'front', 'jp', 'sel']);
+  });
+
+  it('global 模式 / 应用分流关闭 → 不纳入对应规则目标', () => {
+    const globalIds = tunLoopBypassServerIds(
+      mk({
+        proxyMode: 'global',
+        selectedServerId: 'sel',
+        servers: [{ id: 'sel' }, { id: 'jp' }] as UserConfig['servers'],
+        customRules: [
+          { id: 'r', enabled: true, action: 'proxy', targetServerId: 'jp' },
+        ] as UserConfig['customRules'],
+      })
+    );
+    expect(Array.from(globalIds)).toEqual(['sel']);
+
+    const appOff = tunLoopBypassServerIds(
+      mk({
+        proxyMode: 'smart',
+        selectedServerId: 'sel',
+        servers: [{ id: 'sel' }, { id: 'appnode' }] as UserConfig['servers'],
+        appRules: [
+          { appId: 'a', enabled: true, action: 'proxy', targetServerId: 'appnode' },
+        ] as UserConfig['appRules'],
+      })
+    );
+    expect(Array.from(appOff)).toEqual(['sel']);
+  });
+
+  it('直连哨兵不进集合', () => {
+    const ids = tunLoopBypassServerIds(
+      mk({ proxyMode: 'smart', selectedServerId: '__direct__', servers: [], customRules: [] })
+    );
+    expect(ids.size).toBe(0);
   });
 });
 

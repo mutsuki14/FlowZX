@@ -262,6 +262,79 @@ describe('buildInbounds — TUN', () => {
     }
   });
 
+  it('Windows/mac TUN：自定义规则指向的其它节点 IP 也排除（防规则拨号回流）', () => {
+    const c = cfg({
+      proxyMode: 'smart',
+      proxyModeType: 'tun',
+      selectedServerId: 'xray',
+      servers: [
+        { id: 'xray', address: '1.1.1.1', protocol: 'vless', port: 443 },
+        { id: 'jp', address: '2.2.2.2', protocol: 'vless', port: 443 },
+      ],
+      customRules: [{ id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' }],
+    } as unknown as Partial<UserConfig>);
+    for (const plat of ['win32', 'darwin'] as const) {
+      const excl = withPlatform(plat, () => byTag(buildInbounds(c, undefined, deps()), 'tun-in'))
+        .route_exclude_address as string[];
+      expect(excl).toContain('1.1.1.1/32');
+      expect(excl).toContain('2.2.2.2/32');
+    }
+  });
+
+  it('自定义规则目标是域名 → 用预解析 IP 排除', () => {
+    const c = cfg({
+      proxyMode: 'smart',
+      proxyModeType: 'tun',
+      selectedServerId: 'xray',
+      servers: [
+        { id: 'xray', address: '1.1.1.1', protocol: 'vless', port: 443 },
+        { id: 'jp', address: 'jp.example.com', protocol: 'vless', port: 443 },
+      ],
+      customRules: [{ id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' }],
+    } as unknown as Partial<UserConfig>);
+    const excl = withPlatform('win32', () =>
+      byTag(buildInbounds(c, { jp: '9.9.9.9' }, deps()), 'tun-in')
+    ).route_exclude_address as string[];
+    expect(excl).toContain('9.9.9.9/32');
+  });
+
+  it('规则目标 / 选中节点的前置代理 IP 一并排除', () => {
+    const c = cfg({
+      proxyMode: 'smart',
+      proxyModeType: 'tun',
+      selectedServerId: 'xray',
+      servers: [
+        { id: 'xray', address: '1.1.1.1', protocol: 'vless', port: 443, detour: 'hop' },
+        { id: 'hop', address: '3.3.3.3', protocol: 'socks', port: 1080 },
+        { id: 'jp', address: '2.2.2.2', protocol: 'vless', port: 443, detour: 'jp-front' },
+        { id: 'jp-front', address: '4.4.4.4', protocol: 'socks', port: 1080 },
+      ],
+      customRules: [{ id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' }],
+    } as unknown as Partial<UserConfig>);
+    const excl = withPlatform('win32', () => byTag(buildInbounds(c, undefined, deps()), 'tun-in'))
+      .route_exclude_address as string[];
+    expect(excl).toEqual(
+      expect.arrayContaining(['1.1.1.1/32', '3.3.3.3/32', '2.2.2.2/32', '4.4.4.4/32'])
+    );
+  });
+
+  it('global 模式不排除自定义规则目标（规则本就不生效）', () => {
+    const c = cfg({
+      proxyMode: 'global',
+      proxyModeType: 'tun',
+      selectedServerId: 'xray',
+      servers: [
+        { id: 'xray', address: '1.1.1.1', protocol: 'vless', port: 443 },
+        { id: 'jp', address: '2.2.2.2', protocol: 'vless', port: 443 },
+      ],
+      customRules: [{ id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' }],
+    } as unknown as Partial<UserConfig>);
+    const excl = withPlatform('win32', () => byTag(buildInbounds(c, undefined, deps()), 'tun-in'))
+      .route_exclude_address as string[];
+    expect(excl).toContain('1.1.1.1/32');
+    expect(excl).not.toContain('2.2.2.2/32');
+  });
+
   it('选中节点为 IP 字面量 → 排除该节点 IP（防回流死循环）', () => {
     const c = cfg({
       proxyModeType: 'tun',
@@ -300,6 +373,21 @@ describe('buildInbounds — TUN', () => {
     const ibs = withPlatform('linux', () =>
       buildInbounds(cfg({ proxyModeType: 'tun' }), undefined, deps())
     );
+    expect(byTag(ibs, 'tun-in').route_exclude_address).toBeUndefined();
+  });
+
+  it('Linux TUN：自定义规则目标 IP 也不进 route_exclude（加法态跳过整块节点排除）', () => {
+    const c = cfg({
+      proxyMode: 'smart',
+      proxyModeType: 'tun',
+      selectedServerId: 'xray',
+      servers: [
+        { id: 'xray', address: '1.1.1.1', protocol: 'vless', port: 443 },
+        { id: 'jp', address: '2.2.2.2', protocol: 'vless', port: 443 },
+      ],
+      customRules: [{ id: 'r1', enabled: true, action: 'proxy', targetServerId: 'jp' }],
+    } as unknown as Partial<UserConfig>);
+    const ibs = withPlatform('linux', () => buildInbounds(c, undefined, deps()));
     expect(byTag(ibs, 'tun-in').route_exclude_address).toBeUndefined();
   });
 

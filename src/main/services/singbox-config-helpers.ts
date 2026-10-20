@@ -5,6 +5,7 @@
  */
 
 import { isIpv4 } from '../../shared/ip';
+import { isDirectSelection } from '../../shared/direct-selection';
 import type {
   UserConfig,
   ServerConfig,
@@ -248,6 +249,39 @@ export function effectiveAppRules(config: UserConfig): AppRule[] {
   if (config.appRoutingEnabled !== true) return [];
   if ((config.proxyMode || 'smart').toLowerCase() !== 'smart') return [];
   return config.appRules || [];
+}
+
+/**
+ * TUN 防回流要放行的节点：选中节点 ∪ 智能模式下「会真正拨向某节点」的自定义规则 / 应用分流目标，
+ * 再沿 detour 前置链闭包展开。直连哨兵与未启用 / 非代理规则的陈旧 targetServerId 不算。
+ *
+ * Windows / macOS 的 route_exclude_address 与起核前域名预解析必须用同一份集合。只放行当前选中节点时，
+ * 「规则指向另一个节点」的拨号（含该节点的前置代理）会重新进 TUN：strict_route 或 WFP 进程匹配失效时，
+ * 这条拨号被全局出口再次带走或回环，规则表现为不生效。应用分流早已纳入；自定义规则（规则页）此前只参与
+ * 预解析、没有写进排除表——选中 Xray 节点、规则改走其它节点时正好踩中。
+ */
+export function tunLoopBypassServerIds(config: UserConfig): Set<string> {
+  const ids = new Set<string>();
+  const seed = (id?: string | null): void => {
+    if (id && !isDirectSelection(id)) ids.add(id);
+  };
+  seed(config.selectedServerId);
+  const proxyTarget = (rule: { enabled?: boolean; action?: string; targetServerId?: string }) => {
+    if (rule.enabled && rule.action === 'proxy') seed(rule.targetServerId);
+  };
+  for (const rule of effectiveCustomRules(config)) proxyTarget(rule);
+  for (const rule of effectiveAppRules(config)) proxyTarget(rule);
+
+  const byId = new Map((config.servers || []).map((s) => [s.id, s]));
+  const pending = [...ids];
+  while (pending.length > 0) {
+    const detour = byId.get(pending.pop() as string)?.detour;
+    if (detour && !isDirectSelection(detour) && !ids.has(detour)) {
+      ids.add(detour);
+      pending.push(detour);
+    }
+  }
+  return ids;
 }
 
 /** 用户自定义国内 DNS 若为 IP（非 DoH 域名），返回 {ip, port} 供 TUN 直连放行/排除集；否则 null。 */
