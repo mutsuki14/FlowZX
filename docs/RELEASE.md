@@ -48,7 +48,7 @@
 ## Release 工作流的步骤
 
 - **meta**：确定版本号。tag 触发时取 tag 名；手动触发时取 `package.json`，并检查分支是否为 `main`、同名 tag 是否已指向其他 commit。
-- **release**：在 `windows-2022`、`macos-14`、`ubuntu-latest` 上并行执行 `npm ci`、`npm run build` 和 `npm run package:<平台>`。设置了 `REQUIRE_HELPER=1`，缺少 Go 时直接失败，不会发布不含提权助手的包。macOS 上再把 arm64 与 x64 的 `FlowZ.app` 分别用 `codesign` 做 ad-hoc 签名，并用 `hdiutil` 打成 DMG（内附首次打开说明），缺少任一架构即失败。
+- **release**：在 `windows-2022`、`macos-15`、`ubuntu-latest` 上并行执行 `npm ci`、`npm run build` 和 `npm run package:<平台>`。设置了 `REQUIRE_HELPER=1`，缺少 Go 时直接失败，不会发布不含提权助手的包。macOS 上再把 arm64 与 x64 的 `FlowZ.app` 分别用 `codesign` 做 ad-hoc 签名，并用 `hdiutil` 打成 DMG（内附首次打开说明），缺少任一架构即失败。
 - **create-release**：用 `softprops/action-gh-release` 发布 `v<版本>` 的 Release 并上传全部安装包。
 
 ## 本地打包（只验证，不发布）

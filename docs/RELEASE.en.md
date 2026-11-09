@@ -48,7 +48,7 @@ This document describes how to release a new version of FlowZX. Releases are mad
 ## What the Release workflow does
 
 - **meta**: resolves the version. On a tag push it uses the tag name; on a manual run it uses `package.json` and checks that the branch is `main` and that no tag of the same name points to a different commit.
-- **release**: runs `npm ci`, `npm run build` and `npm run package:<platform>` in parallel on `windows-2022`, `macos-14` and `ubuntu-latest`. `REQUIRE_HELPER=1` is set, so a missing Go toolchain fails the build instead of publishing packages without the privileged helper. On macOS it then ad-hoc signs the arm64 and x64 `FlowZ.app` bundles and packs each into a DMG with `hdiutil` (including a first-launch guide); a missing architecture fails the job.
+- **release**: runs `npm ci`, `npm run build` and `npm run package:<platform>` in parallel on `windows-2022`, `macos-15` and `ubuntu-latest`. `REQUIRE_HELPER=1` is set, so a missing Go toolchain fails the build instead of publishing packages without the privileged helper. On macOS it then ad-hoc signs the arm64 and x64 `FlowZ.app` bundles and packs each into a DMG with `hdiutil` (including a first-launch guide); a missing architecture fails the job.
 - **create-release**: publishes the `v<version>` Release with `softprops/action-gh-release` and uploads all installers.
 
 ## Local packaging (verification only, no release)
