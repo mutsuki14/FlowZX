@@ -99,11 +99,12 @@ func cfgAllowed(cfg string) bool {
 //   - 经 c.Process / done channel 做 PID 复用安全：Wait() 收割后再发信号天然无害（进程句柄已 release）。
 //
 // Windows delta：无 SIGTERM。优雅路径 = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)（要求 child 以
-// CREATE_NEW_PROCESS_GROUP 启动，见 startSingbox）；硬路径 = TerminateProcess（c.Process.Kill）。
+// CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW 启动，见 startSingbox）；硬路径 = TerminateProcess（c.Process.Kill）。
 //
 // 关键现实（H1）：CTRL_BREAK 在**服务模式是 no-op** —— GenerateConsoleCtrlEvent 只投递给与调用者共享 console
 // 的进程，而本 helper 是 session 0 无 console 的 LocalSystem 服务（见 sendCtrlBreak）。故服务模式下优雅路径
-// 永远不生效，硬杀（TerminateProcess）是**预期**收割手段。仅 --console dev 模式有 console，CTRL_BREAK 才有效。
+// 永远不生效，硬杀（TerminateProcess）是**预期**收割手段。另：child 以 CREATE_NO_WINDOW 启动时拥有独立的无窗口
+// console，与 helper 不共享 → 即便 --console dev 模式 CTRL_BREAK 也通常投递不到，优雅路径整体为 best-effort。
 // 因此把等待窗口从 5s 缩到 2s：服务模式 5s 纯属空等（信号根本没投出去），2s 给 dev 模式 console 下 sing-box
 // 优雅拆栈留余量即可。
 // 残留风险：硬杀可能残留 wintun 适配器/路由（真机必验项，sing-box 硬杀是否自清适配器）；但 Job Object

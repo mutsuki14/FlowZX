@@ -15,15 +15,26 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// startSingbox：以 CREATE_NEW_PROCESS_GROUP 启动锁定的 sing-box（exec.Command(singboxBin,"run","-c",cfg)）。
-// 新进程组是 stop 走 GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) 优雅停的前提（CTRL_BREAK 按进程组投递）。
+// singboxCreationFlags：sing-box child 的进程创建标志（独立进程组 + 无控制台窗口）。
+const singboxCreationFlags = windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
+
+// startSingbox：以 CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW 启动锁定的 sing-box
+// （exec.Command(singboxBin,"run","-c",cfg)）。
+//   - CREATE_NEW_PROCESS_GROUP：child 成为独立进程组组长（CTRL_BREAK 按进程组投递）。
+//   - CREATE_NO_WINDOW：sing-box 是控制台程序；helper 作为 session 0 无 console 的服务启动它时，若不带该标志，
+//     系统会为 child 隐式分配新 console（conhost），后台 console 初始化偶发卡住 → sing-box 迟迟走不到 TUN 建立，
+//     wintun 网卡无法创建。CREATE_NO_WINDOW 让 child 以「无窗口 console」启动，跳过可见控制台初始化。
+//
 // 早期 stdout/stderr 重定向到 app 日志文件（镜像 macOS start），便于诊断启动问题。
 func startSingbox(singboxBin, cfg, logPath string) (*exec.Cmd, *os.File, error) {
 	c := exec.Command(singboxBin, "run", "-c", cfg)
 	// CREATE_NEW_PROCESS_GROUP：使 child 成为独立进程组组长，可被定向投递 CTRL_BREAK_EVENT。
 	// 注意：CREATE_NEW_PROCESS_GROUP 会令 child 默认忽略 CTRL_C（仅 CTRL_BREAK 可达），故 stop 用 CTRL_BREAK。
+	// CREATE_NO_WINDOW：避免服务模式下为控制台 child 初始化后台 console 时卡住，导致 TUN 网卡建不起来。
+	// HideWindow 作为双保险（即便某些环境忽略 CREATE_NO_WINDOW，也以 SW_HIDE 启动，不弹黑框）。
 	c.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP,
+		CreationFlags: singboxCreationFlags,
+		HideWindow:    true,
 	}
 	var logFile *os.File
 	if logPath != "" {
@@ -51,8 +62,8 @@ func startSingbox(singboxBin, cfg, logPath string) (*exec.Cmd, *os.File, error) 
 // sendCtrlBreak：向指定进程组（pid 为组长，见 CREATE_NEW_PROCESS_GROUP）投递 CTRL_BREAK_EVENT，尝试触发
 // sing-box 优雅退出（拆 wintun/路由/DNS）。镜像 macOS SIGTERM 的「优雅信号」语义。
 // 重要限制：GenerateConsoleCtrlEvent 只路由给与调用者**共享 console** 的进程。本 helper 作为 session 0 的
-// LocalSystem 服务**无 console**，且 child 以 CREATE_NEW_PROCESS_GROUP 启动（不分配新 console）→ 服务模式下
-// 此调用是 no-op，CTRL_BREAK 永远投递不到。仅在 --console dev 模式（有 console）下有效。
+// LocalSystem 服务**无 console**，且 child 以 CREATE_NO_WINDOW 启动（拥有自己的无窗口 console，不与 helper 共享）
+// → 此调用通常投递不到 child，属 best-effort。
 // 失败（进程已退出/非组长/服务模式无 console）返回 err，由 terminateChild 的超时 + TerminateProcess 硬杀兜底。
 func sendCtrlBreak(pid int) error {
 	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(pid))
