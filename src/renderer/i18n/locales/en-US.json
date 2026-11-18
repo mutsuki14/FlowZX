@@ -504,6 +504,8 @@
       "releaseNotes": "Release notes",
       "install": "Install",
       "restoreBundled": "Restore bundled",
+      "reinstall": "Reinstall",
+      "cronetMismatchNote": "The current core is missing its matching libcronet (older FlowZX versions kept only the bundled, older library when installing a core online, and mixing them crashes the core), so NaiveProxy nodes are unavailable. Select the current version below and click Reinstall to fix it, or restore the bundled core.",
       "isCurrent": "Current version",
       "installing": "Installing sing-box {{version}}…",
       "installSuccess": "sing-box switched to {{version}}",

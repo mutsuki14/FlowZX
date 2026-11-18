@@ -1344,6 +1344,14 @@ describe('installTag：重启失败时固定回到换核前', () => {
     expect(env.state().pinned).toBeUndefined();
   });
 
+  it('重新安装同一版本（补齐配套 libcronet）→ 保留原固定', async () => {
+    const env = makeEnv();
+    const same = { version: STABLE, tag: STABLE_TAG, prerelease: false, pinnedAt: PRIOR.pinnedAt };
+    env.s.saveAutoState({ pinned: same });
+    await expect(env.svc.installTag({ tag: STABLE_TAG })).resolves.toMatchObject({ ok: true });
+    expect(env.state().pinned).toEqual(same);
+  });
+
   it('换核成功 / 未重启的路径照常以本次选择覆盖旧固定', async () => {
     const env = makeEnv();
     env.s.saveAutoState({ pinned: PRIOR });

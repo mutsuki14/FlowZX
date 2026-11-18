@@ -1179,6 +1179,13 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
     await this.prepareXrayBridge(config);
     this.markStart('xrayPrepare'); // 无 Xray 节点时 ≈0（仅一次 stop 空操作）
 
+    // 3.9.8 libcronet 启动前自愈（对称化）：linux/win 确保内核同目录是与**该内核**配套的 libcronet（缺失 / 0 字节 /
+    //     截断 / 版本错位 → 从随包或本机库存重拷；内核需要的版本本机没有 → 不动、naive 节点判不可用）。须在生成配置
+    //     之前：generateSingBoxConfig 按 hasCronetLib 决定 naive 节点去留，先修好库才不会把可修复的节点误剔。
+    //     mac 静态编入 cronet，ensureCronetReadyForLaunch 内部跳过。热路径仅 stat（内核版本读取有缓存）。
+    await this.ensureCronetReadyForLaunch();
+    this.markStart('cronetCheck');
+
     // 4. 生成 sing-box 配置文件
     const singboxConfig = this.generateSingBoxConfig(config, resolvedServerIps);
 
@@ -1202,11 +1209,8 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
       await this.deletePidFile();
     }
 
-    // 4.9 libcronet 启动前自愈（对称化）：linux/win 起内核前确保 cronet 在核心同目录、且与内置 bundle 大小一致
-    //     （缺失/0 字节/截断/版本错位 → 从内置重拷）。覆盖 Windows 常规启动不补的盲区（Linux 既有 ensureWritableCore
-    //     内的 beside 保留，此处对其幂等）；mac 静态编入 cronet，ensureCronetReadyForLaunch 内部跳过。热路径仅 stat。
-    await this.ensureCronetReadyForLaunch();
-    this.markStart('cronetCheck'); // 含上面的 deletePidFile；热路径应仅 stat
+    // （libcronet 启动前自愈已前移到生成配置之前，见 3.9.8。）
+    this.markStart('pidFileClear'); // 含上面的 deletePidFile
 
     // issue #176 L1.2：快照本次起核世代——就绪/重试腿据此判 supersede 让位。捕获点在本方法上方内部 stop()
     //   （它会 lifecycleGeneration++）之后，故此值即本次 start 的稳定基线；之后任一外部 start/stop 接管即令其变化。
@@ -4724,6 +4728,7 @@ done
   /** 节点是否可用：naive 需要 libcronet 核心库，缺库时不可用（会被跳过、分流/选中回退到 selector）。 */
   /**
    * naive 节点因缺 libcronet 不可用时的用户可读原因，按平台/真因区分文案：
+   * - mismatch：内核绑定的 cronet 版本本机没有配套库（不能用随包库凑数），引导重新安装当前版本 / 恢复随包
    * - copy-failed：内置库存在但拷贝到核心目录失败（权限/磁盘/AV），提示重启或修权限，而非误报"无预编译库"
    * - macOS no-lib：mac-x64 等未静态编入 cronet 的核心
    * - 其它 no-lib：linux/win 未随包提供 libcronet（如未跑 fetch-cronet）
@@ -4733,6 +4738,9 @@ done
       return `选中的节点「${server.name}」需要 Xray 内核（XHTTP / VLESS Encryption 等 Xray 独有协议），但未找到 Xray 内核。请重新安装应用，或把 xray 可执行文件放到 ${resourceManager.getXrayOverrideDir()}。`;
     }
     const status = resourceManager.getCronetLibStatus();
+    if (status === 'mismatch') {
+      return `选中的节点「${server.name}」是 NaiveProxy：当前 sing-box 内核需要与它配套的 libcronet，但本机没有（旧版 FlowZX 在线安装内核时只保留了随包的旧版库，混用会让内核崩溃）。请到「设置 → 高级 → 内核管理」点「重新安装」当前版本，或恢复随包内核。`;
+    }
     if (status === 'copy-failed') {
       return `选中的节点「${server.name}」是 NaiveProxy：libcronet 核心库已内置，但拷贝到核心目录失败（可能是权限/磁盘空间/杀软占用）。请重启应用重试或检查目录权限；如仍失败，请改用其它协议的节点。`;
     }

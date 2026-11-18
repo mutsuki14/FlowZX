@@ -18,6 +18,7 @@ import {
   installOptions,
   isActiveSingboxRelease,
   isBundledSingboxRelease,
+  isSingboxReinstall,
   isolateLtr,
   latestStable,
   listErrorCode,
@@ -313,6 +314,25 @@ describe('singbox-version-logic', () => {
   });
 
   describe('singboxReleaseAction', () => {
+    it('reinstalls the running version when its libcronet is missing (cronetRepair)', () => {
+      const st = status({ currentVersion: '1.14.3', cronetRepair: true });
+      expect(singboxReleaseAction(R('1.14.3'), st)).toBe('install');
+      expect(isSingboxReinstall(R('1.14.3'), st)).toBe(true);
+      // 其它版本照常；bundled 仍是恢复随包
+      expect(isSingboxReinstall(R('1.14.2'), st)).toBe(false);
+      expect(singboxReleaseAction(R(BUNDLED), st)).toBe('restore');
+      // 同版本重装不算降级 / 不要求额外确认
+      expect(singboxConfirms(R('1.14.3'), list, st, false)).toEqual([]);
+      // 没缺库 → 仍是「已是当前版本」
+      expect(isSingboxReinstall(R('1.14.3'), status({ currentVersion: '1.14.3' }))).toBe(false);
+      // fork 永远不算当前 → 不出现「重新安装」
+      expect(
+        isSingboxReinstall(
+          R('1.14.3'),
+          status({ currentVersion: '1.14.3', build: 'fork', cronetRepair: true })
+        )
+      ).toBe(false);
+    });
     it('is current for the running official version', () => {
       expect(singboxReleaseAction(R(BUNDLED), status())).toBe('current');
       expect(singboxReleaseAction(R('1.14.3'), status({ currentVersion: '1.14.3' }))).toBe(

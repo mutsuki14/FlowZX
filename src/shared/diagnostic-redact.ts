@@ -345,7 +345,7 @@ export interface DiagnosticReportInput {
     nodeDomainResolver?: string; // #57 节点域名解析档位
     logLevel: string;
     captureActive: boolean;
-    cronetLibStatus?: string; // libcronet 可用性：available / copy-failed（损坏/拷贝失败）/ no-lib（无内置库）
+    cronetLibStatus?: string; // libcronet 可用性：available / copy-failed（损坏/拷贝失败）/ mismatch（内核绑定的版本本机无配套库）/ no-lib（无内置库）
     cronetHealTriggered?: number; // 本会话 libcronet 自愈触发次数
     cronetHealFailed?: number; // 本会话 libcronet 自愈失败次数（连续失败疑库被反复删/杀软）
     lastStartReadyRetries?: number; // issue #176：最近一次启动经几次就绪重试（>0=起核慢，多因 Win 重启争用，非核崩）

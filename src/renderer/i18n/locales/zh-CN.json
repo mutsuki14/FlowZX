@@ -504,6 +504,8 @@
       "releaseNotes": "发行说明",
       "install": "安装",
       "restoreBundled": "恢复随包",
+      "reinstall": "重新安装",
+      "cronetMismatchNote": "当前内核缺少配套的 libcronet（旧版 FlowZX 在线安装内核时只保留了随包的旧版库，混用会让内核崩溃），NaiveProxy 节点暂不可用。在下方选中当前版本点「重新安装」即可补齐，或恢复随包内核。",
       "isCurrent": "已是当前版本",
       "installing": "正在安装 sing-box {{version}}…",
       "installSuccess": "sing-box 已切换到 {{version}}",

@@ -77,6 +77,11 @@ export interface CoreVersionInfo {
   bundledVersion: string;
   /** 生效中的固定版本（当前内核仍是它时自动更新暂停）；无 / 已陈旧 → null。 */
   pinned: SingboxPin | null;
+  /**
+   * 现役内核绑定的 libcronet 版本本机没有（如旧版 FlowZX 在线装的内核：当时丢弃了压缩包自带的库）→ NaiveProxy 节点
+   * 被跳过。版本选择据此允许「重新安装」当前版本来补齐配套库。
+   */
+  cronetMismatch?: boolean;
 }
 
 // StagedCoreInfo / CoreAutoUpdateState 迁至 core-update-state-store（与 CoreUpdateStateStore 同处）；re-export 保对外兼容。
@@ -1269,6 +1274,12 @@ export class CoreUpdateService {
     }
 
     // 固定：pin=true 记下此版本（自动更新暂停）；否则清掉旧固定（用户已改选其它版本，旧固定已无意义）。
+    // 例外：重新安装同一版本（补齐配套 libcronet）不算改选——原来固定的就是它则保留。
+    const prevPin = this.loadAutoState().pinned;
+    const keepPin =
+      !o.pinned &&
+      !!prevPin &&
+      comparableCoreVersion(prevPin.version) === comparableCoreVersion(o.version);
     this.saveAutoState({
       pinned: o.pinned
         ? {
@@ -1277,7 +1288,9 @@ export class CoreUpdateService {
             prerelease: o.prerelease,
             pinnedAt: new Date(this.now()).toISOString(),
           }
-        : undefined,
+        : keepPin
+          ? prevPin
+          : undefined,
     });
     this.emitAutoStatus();
 
@@ -1458,6 +1471,9 @@ export class CoreUpdateService {
     version: string | null,
     onBackupDone?: () => void
   ): Promise<void> {
+    // 收下官方压缩包自带的 libcronet（与新内核同版本）。必须在下方任何 ensureCronetBeside 之前：后者按内核绑定的版本
+    // 选权威源，库存里有了它才不会被判 missing；旧逻辑在此用随包库覆盖压缩包里的库 → 跨 cronet 版本时 naive 一工作内核就崩。
+    await resourceManager.adoptCronetFromCoreDir(sourceDir);
     // B 块：macOS + helper v5 → 整个核心目录经 install-core 由 root 写入受保护目录（含 libcronet：先 ensureCronetBeside
     // 把配套放进 sourceDir，再整目录交 helper）。不经普通用户 fs.copy（受保护目录 root-only）。受保护目录回滚靠 B5。
     if ((process.platform === 'darwin' || process.platform === 'linux') && this.helperManager) {
@@ -1532,9 +1548,10 @@ export class CoreUpdateService {
       fs.chmodSync(targetPath, 0o755);
     }
 
-    // 核心单独更新后，确保 NaiveProxy 库 libcronet 与新核心同目录（官方 sing-box 包不含 libcronet，
-    // naive 仍依赖随 app 打包的那个；purego 从核心同目录加载）。
+    // 确保新内核旁是与它配套的 libcronet（purego 从核心同目录加载）：内核绑定随包版本 → 随包库；否则 → 上方收下的库存库
+    //（官方 linux/windows 压缩包自带 libcronet，已随 files 一并复制，这里多为幂等校验）。
     await resourceManager.ensureCronetBeside(targetDir);
+    await this.pruneCronetStoreSafe();
 
     // macOS: 清除下载隔离标记并重新 ad-hoc 签名
     // 原因: macOS Gatekeeper 对新放入的未公证二进制会拦截执行 (SIGKILL)
@@ -1556,12 +1573,12 @@ export class CoreUpdateService {
 
     this.logManager.addLog('info', '核心文件替换成功', 'CoreUpdateService');
 
-    // naive 依赖随 app 打包的 libcronet（匹配出厂核心的 cronet-go 版本）。单独更新核心——尤其跨版本——
-    // 可能与打包库 ABI 漂移；该漂移在 dlopen 前不可见，sing-box check 预检无法发现。有 naive 节点则提示。
-    if (this.proxyManager?.hasNaiveNodes()) {
+    // naive 依赖与内核配套的 libcronet。新内核绑定的 cronet 版本本机没有（压缩包未带库、收下失败）→ naive 节点会被跳过
+    //（绝不配随包库凑数：ABI 漂移在 dlopen 后才暴露、sing-box check 发现不了，表现为 naive 一工作内核就崩）。
+    if (this.proxyManager?.hasNaiveNodes() && resourceManager.getCronetLibStatus() === 'mismatch') {
       this.logManager.addLog(
         'warn',
-        'naive 节点依赖随 app 打包的 libcronet；本次核心更新后如遇 naive 不可用，请回滚核心或等待 app 整体更新',
+        '新内核缺少配套的 libcronet，NaiveProxy 节点暂不可用；请重新安装该版本或恢复随包内核',
         'CoreUpdateService'
       );
     }
@@ -1613,6 +1630,8 @@ export class CoreUpdateService {
     if (!this.helperManager) throw new Error('helper 不可用');
     const tmpDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'flowz-core-'));
     try {
+      // 手动替换：所选文件旁若有 libcronet，按该内核绑定的版本收下（.bak 回滚 / 恢复时旁边没有库，no-op）。
+      await resourceManager.adoptCronetFromCoreDir(path.dirname(src), src);
       fs.copyFileSync(src, path.join(tmpDir, 'sing-box'));
       fs.chmodSync(path.join(tmpDir, 'sing-box'), 0o755);
       await resourceManager.ensureCronetBeside(tmpDir);
@@ -2316,7 +2335,17 @@ export class CoreUpdateService {
       pendingChangeNotice,
       bundledVersion: coreManifest.bundledCoreVersion,
       pinned,
+      cronetMismatch: this.cronetMismatch(),
     };
+  }
+
+  /** 现役内核缺配套 libcronet（naive 不可用，重新安装当前版本可修复）。读失败按 false（只影响提示）。 */
+  private cronetMismatch(): boolean {
+    try {
+      return resourceManager.getCronetLibStatus() === 'mismatch';
+    } catch {
+      return false;
+    }
   }
 
   /** banner 展示版本变更通知后 ack 清除 pendingChangeNotice（show→ack：弹一次非每启）。无通知则 no-op。 */
@@ -2389,6 +2418,8 @@ export class CoreUpdateService {
         fs.copyFileSync(backupPath, currentPath);
         fs.chmodSync(currentPath, 0o755);
       }
+      // 换回的旧内核可能绑定另一版 cronet：把与它配套的库（随包或库存）放回同目录，免得旧核配新库。
+      await resourceManager.ensureCronetBeside(path.dirname(currentPath));
 
       // macOS: 重新签名
       if (process.platform === 'darwin') {
@@ -2418,6 +2449,7 @@ export class CoreUpdateService {
       // 更新版本记录
       await this.recordSuccessfulVersion();
       await this.settleStateAfterRollback();
+      await this.pruneCronetStoreSafe();
     } finally {
       this.proxyManager?.setCoreSwapInProgress(false);
     }
@@ -2633,13 +2665,15 @@ export class CoreUpdateService {
       `手动替换核心: ${sourcePath} → ${targetPath}`,
       'CoreUpdateService'
     );
+    // 用户所选文件同目录若有 libcronet（解压官方压缩包后直接选 sing-box 的常见情形）→ 按该内核绑定的版本收下。
+    await resourceManager.adoptCronetFromCoreDir(path.dirname(sourcePath), sourcePath);
     if (process.platform === 'win32') {
       await this.copyFileElevatedWindows(sourcePath, targetPath);
     } else {
       fs.copyFileSync(sourcePath, targetPath);
       fs.chmodSync(targetPath, 0o755);
     }
-    // naive 依赖：libcronet 与新核心同目录（linux/win dlopen；macOS 静态编入为 no-op）
+    // naive 依赖：与新核心配套的 libcronet 同目录（linux/win dlopen；macOS 静态编入为 no-op）
     await resourceManager.ensureCronetBeside(targetDir);
     if (process.platform === 'darwin') {
       try {
@@ -2900,6 +2934,21 @@ export class CoreUpdateService {
     } catch {
       /* ignore */
     }
+    void this.pruneCronetStoreSafe();
+  }
+
+  /**
+   * 清理 libcronet 库存：只留现役 / 备份 / 暂存内核用得到的版本（随包版本不进库存，无需保留）。best-effort，绝不抛。
+   */
+  private async pruneCronetStoreSafe(): Promise<void> {
+    try {
+      const keep = [resourceManager.getSingBoxPath(), this.getBackupPath()];
+      const staged = this.loadAutoState().staged;
+      if (staged?.dir) keep.push(path.join(staged.dir, resourceManager.getCoreBinaryName()));
+      await resourceManager.pruneCronetStore(keep);
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
@@ -3068,6 +3117,8 @@ export class CoreUpdateService {
         fs.copyFileSync(backupPath, currentPath);
         fs.chmodSync(currentPath, 0o755);
       }
+      // 恢复的旧内核配回它自己那版 libcronet（失败只告警，不影响恢复结果）。
+      await resourceManager.ensureCronetBeside(path.dirname(currentPath));
       this.logManager.addLog('info', '已从备份恢复核心', 'CoreUpdateService');
       return true;
     } catch {
