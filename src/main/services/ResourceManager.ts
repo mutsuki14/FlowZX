@@ -1,19 +1,51 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import type { LogLevel } from '../../shared/types';
 import type { LogManager } from './LogManager';
 import { sha256File } from '../../shared/file-hash';
+import coreManifest from '../../shared/core-manifest.json';
+import { findGoDepVersion } from '../utils/go-buildinfo';
 
-/** libcronet 自愈动作：ok=已就位无需动 / restored=刚从内置 bundle 重拷 / failed=拷贝失败（已告警，调用方降级）。 */
+/** libcronet 自愈动作：ok=已就位无需动 / restored=刚从权威源重拷 / failed=拷贝失败或无配套库（已告警，调用方降级）。 */
 export type CronetHealAction = 'ok' | 'restored' | 'failed';
+
+/**
+ * libcronet 可用性：
+ * - available：可加载（macOS 静态编入，或 linux/win 核心同目录已有与该内核配套的库）
+ * - copy-failed：配套库有权威源，但核心同目录缺失 / 大小不符（拷贝失败、损坏），可经自愈恢复
+ * - mismatch：当前内核绑定的 cronet 版本既不是随包版本、本机也没有它配套的库（例如旧版 FlowZX 在线装的内核，
+ *   当时丢弃了压缩包自带的库）。此时绝不能拿随包库凑数——ABI 漂移会让 naive 一工作内核就崩（0xc0000005）
+ * - no-lib：既无随包库、也无法确定内核需要哪一版
+ */
+export type CronetLibStatus = 'available' | 'copy-failed' | 'mismatch' | 'no-lib';
+
+/**
+ * 某个内核配套 libcronet 的权威来源：
+ * - bundled：随包库（内核绑定的版本 = 随包版本，或无法读出版本时沿用旧行为）
+ * - store：本机库存（userData/cronet/<版本>/），由安装内核时从官方压缩包收下
+ * - missing：内核需要的版本既非随包、库存里也没有
+ * - none：无随包库且版本未知（mac-x64 等）
+ */
+export type CronetSource =
+  | { kind: 'bundled' | 'store'; path: string; version: string | null }
+  | { kind: 'missing'; version: string }
+  | { kind: 'none' };
+
+/** sing-box 经 purego 加载的 cronet 预编译库模块（Go build info 里的 dep 路径前缀）。 */
+const CRONET_LIB_MODULE_PREFIX = 'github.com/sagernet/cronet-go/lib/';
 
 export class ResourceManager {
   private _isDev?: boolean;
   private readonly platform: string;
   private readonly arch: string;
   private logManager?: LogManager;
+  /** 内核二进制 → 其绑定的 cronet 库版本（按 size+mtime 失效；扫描 ~80MB 二进制只做一次）。 */
+  private readonly cronetVersionCache = new Map<
+    string,
+    { size: number; mtimeMs: number; version: string | null }
+  >();
 
   constructor() {
     this.platform = process.platform;
@@ -497,92 +529,231 @@ export class ResourceManager {
     return 'libcronet.so';
   }
 
+  /** 当前平台的 sing-box 可执行文件名。 */
+  getCoreBinaryName(): string {
+    return this.platform === 'win32' ? 'sing-box.exe' : 'sing-box';
+  }
+
+  /** Go 的 <goos>_<goarch>（cronet-go/lib 子模块名），如 windows_amd64；未知组合 → null。 */
+  private cronetGoTarget(): string | null {
+    const goos =
+      this.platform === 'win32'
+        ? 'windows'
+        : this.platform === 'linux' || this.platform === 'darwin'
+          ? this.platform
+          : null;
+    const goarch =
+      this.arch === 'x64'
+        ? 'amd64'
+        : this.arch === 'arm64'
+          ? 'arm64'
+          : this.arch === 'ia32'
+            ? '386'
+            : null;
+    return goos && goarch ? `${goos}_${goarch}` : null;
+  }
+
   /**
-   * libcronet（naive 出站依赖库）的可用性状态：
-   * - 'available'：可加载（macOS 静态编入，或 linux/win 核心同目录已有库）→ naive 可用
-   * - 'copy-failed'：linux/win 内置了库、但核心同目录缺库（ensureCronetBeside 拷贝失败：EACCES/磁盘满/
-   *   AV 锁等瞬时原因）→ 非永久"无库"，应提示拷贝/权限问题而非"无预编译库"
-   * - 'no-lib'：内置就没有该平台的库（如 mac-x64 未编入、或未跑 fetch-cronet）→ 真·不可用
+   * 读出内核二进制编译时绑定的 libcronet 版本（`cronet-go/lib/<goos>_<goarch>` 的 Go 模块伪版本，与
+   * core-manifest.cronetVersion 同一口径）。文件不存在 / 不是带 naive 的 Go 构建 / 读失败 → null（调用方沿用随包库）。
    */
-  getCronetLibStatus(): 'available' | 'copy-failed' | 'no-lib' {
+  getRequiredCronetVersion(corePath: string): string | null {
+    const target = this.cronetGoTarget();
+    if (!target) return null;
+    let st: { size: number; mtimeMs: number };
     try {
-      // macOS：cronet 由 sing-box 二进制静态编入（CGO，无 .dylib）。打包的 mac-arm64 与 mac-x64
-      // 核心（均 ≥1.13.13，with_naive_outbound）都含静态 cronet → naive 两 arch 皆可用、无需外部库。
+      st = statSync(corePath);
+    } catch {
+      return null;
+    }
+    const hit = this.cronetVersionCache.get(corePath);
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.version;
+    // 只认本平台子模块（含 *_musl 变体）；官方构建只编入目标平台那一个，过滤只是保险。
+    const m = findGoDepVersion(
+      corePath,
+      CRONET_LIB_MODULE_PREFIX,
+      (d) => d.suffix === target || d.suffix === `${target}_musl`
+    );
+    const version = m?.version ?? null;
+    this.cronetVersionCache.set(corePath, { size: st.size, mtimeMs: st.mtimeMs, version });
+    return version;
+  }
+
+  /** 本机 libcronet 库存根目录：userData/cronet/<版本>/<库文件>。 */
+  getCronetStoreDir(): string {
+    return path.join(app.getPath('userData'), 'cronet');
+  }
+
+  /** 库存里某版本库的路径；版本串不合法（防目录穿越）→ null。 */
+  private getStoredCronetPath(version: string): string | null {
+    if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) return null;
+    return path.join(this.getCronetStoreDir(), version, this.getCronetLibFilename());
+  }
+
+  /**
+   * coreDir 里那个内核应配的 libcronet 从哪来（见 CronetSource）。macOS cronet 静态编入，沿用旧行为（随包库或 none）。
+   * 关键不变量：内核绑定的版本 ≠ 随包版本时，**绝不**回落随包库。
+   */
+  resolveCronetSource(coreDir: string): CronetSource {
+    const bundled = path.join(this.getPlatformResourceDir(), this.getCronetLibFilename());
+    const hasBundled = existsSync(bundled);
+    const bundledVersion: string | null = coreManifest.cronetVersion || null;
+    const required =
+      this.platform === 'darwin'
+        ? null
+        : this.getRequiredCronetVersion(path.join(coreDir, this.getCoreBinaryName()));
+    if (!required || required === bundledVersion) {
+      return hasBundled
+        ? { kind: 'bundled', path: bundled, version: bundledVersion }
+        : { kind: 'none' };
+    }
+    const stored = this.getStoredCronetPath(required);
+    if (stored && existsSync(stored)) return { kind: 'store', path: stored, version: required };
+    return { kind: 'missing', version: required };
+  }
+
+  /**
+   * libcronet（naive 出站依赖库）对**现役内核**的可用性（见 CronetLibStatus）。热路径（每个 naive 节点判一次）：
+   * 版本读取有缓存，其余只 stat。
+   */
+  getCronetLibStatus(): CronetLibStatus {
+    try {
+      // macOS：cronet 由 sing-box 二进制静态编入（CGO，无 .dylib）→ naive 两 arch 皆可用、无需外部库。
       if (this.platform === 'darwin') {
         return 'available';
       }
-      const fsSync = require('fs');
-      const libName = this.getCronetLibFilename();
-      // linux/windows：cronet 走 dlopen 动态加载。检查 libcronet 是否在 sing-box 实际加载目录
-      // （purego 从二进制同目录加载）：Linux/便携=可写核心目录(已由 ensureCronetBeside 拷入)，
-      // 非便携 win=内置 resources 目录。不以"内置存在"直接判可用——否则 beside 拷贝失败仍误判"可用"→ FATAL。
+      // linux/windows：purego 从内核同目录 dlopen。按现役内核所在目录判定（Linux/便携/已更新=userData 可写核目录，
+      // 未更新的 win 安装版=内置 resources 目录）。
       const coreDir = path.dirname(this.getSingBoxPath());
-      const dstLib = path.join(coreDir, libName);
-      const bundledLib = path.join(this.getPlatformResourceDir(), libName);
-      if (fsSync.existsSync(dstLib)) {
-        // 存在但损坏（0 字节/截断/版本错位 → size≠bundle）判 copy-failed：当前不可用，可经自愈恢复（语义同瞬时故障）。
-        // 仅在内置存在时比对（无内置=无权威源，回落原存在性判定，避免把可用库误判损坏）。
-        if (
-          fsSync.existsSync(bundledLib) &&
-          fsSync.statSync(dstLib).size !== fsSync.statSync(bundledLib).size
-        ) {
-          return 'copy-failed';
-        }
-        return 'available';
+      const dstLib = path.join(coreDir, this.getCronetLibFilename());
+      const src = this.resolveCronetSource(coreDir);
+      if (src.kind === 'none') return existsSync(dstLib) ? 'available' : 'no-lib';
+      if (src.kind === 'missing') return 'mismatch';
+      if (!existsSync(dstLib)) return 'copy-failed';
+      // 存在但大小与权威源不符（0 字节 / 截断 / 版本错位）→ 当前不可用，可经自愈恢复。
+      if (
+        path.resolve(dstLib) !== path.resolve(src.path) &&
+        statSync(dstLib).size !== statSync(src.path).size
+      ) {
+        return 'copy-failed';
       }
-      // 加载目录缺库：区分"内置压根没有"（真·无库）与"内置有但 ensureCronetBeside 拷贝失败"（瞬时故障）。
-      // 后者不应永久按"无库/macOS 无预编译库"拒用 naive，应提示拷贝/权限问题，可通过重试/修权限恢复。
-      return fsSync.existsSync(bundledLib) ? 'copy-failed' : 'no-lib';
+      return 'available';
     } catch {
       return 'no-lib';
     }
   }
 
-  /** 内置的 libcronet 是否可用（用于 naive 可用性判断）。copy-failed 也视为当前不可用（库未就位）。 */
+  /** 现役内核的 libcronet 是否可用（naive 可用性判断）。copy-failed / mismatch 均视为当前不可用。 */
   hasCronetLib(): boolean {
     return this.getCronetLibStatus() === 'available';
   }
 
   /**
-   * 把内置的 libcronet 复制到与（可写/已更新）核心同一目录，供 naive 出站(purego) 加载。
-   * 供 ensureWritableCore 与核心更新写盘后调用。薄 wrapper → ensureCronetHealthy（strong=false 热路径，
-   * 仅 size 快筛，零 hash 成本）。旧名保留：既有调用点（ensureWritableCore / CoreUpdateService）零改动。
+   * 确保 coreDir 里的内核旁边是与它配套的 libcronet（供 naive 出站 purego 加载）。
+   * 供 ensureWritableCore 与核心更新写盘后调用。薄 wrapper → ensureCronetHealthy（strong=false 热路径）。
    */
   async ensureCronetBeside(coreDir: string): Promise<void> {
     await this.ensureCronetHealthy(coreDir);
   }
 
   /**
-   * libcronet 缺失/损坏自愈（完整性感知的播种）：从内置 bundle 把 libcronet 恢复到核心同目录。
-   * 权威源恒为内置 bundle（与 sing-box 同包、版本天然一致），离线可恢复——不联网下载。
+   * libcronet 缺失/损坏自愈（完整性 + 版本感知的播种）：从该内核配套库的权威源（随包或本机库存，见
+   * resolveCronetSource）恢复到 coreDir。离线可恢复——不联网下载。
    *
-   * 判据（见 cronetNeedsRestore）：dst 缺失 / size(dst)≠size(src)（热路径快筛，抓 0 字节/截断/版本错位）；
-   * strong=true 时额外比 sha256（冷路径，启动失败后强校验）。修复走 atomicCopy（dst.tmp + rename，原子规避半写/AV 锁）。
+   * 判据（见 cronetNeedsRestore）：dst 缺失 / size(dst)≠size(src)（热路径快筛）；strong=true 时额外比 sha256。
+   * 内核需要的版本本机没有（missing）→ 不动 dst、返回 failed（reason='version-mismatch'）：宁可让 naive 节点被跳过，
+   * 也不拿随包库凑数让内核崩。
    *
-   * @returns action：ok（无需动，含 mac-x64 等无内置库 reason='no-bundled-lib'）/ restored（已重拷）/
-   *          failed（拷贝失败，已告警，调用方回落 naive 降级，不裸崩）。
+   * @returns action：ok（无需动 / 无可用源 reason='no-bundled-lib'）/ restored（已重拷）/ failed（拷贝失败或无配套库）。
    */
   async ensureCronetHealthy(
     coreDir: string,
     opts: { strong?: boolean } = {}
   ): Promise<{ action: CronetHealAction; reason?: string }> {
-    const name = this.getCronetLibFilename();
-    const src = path.join(this.getPlatformResourceDir(), name);
-    const dst = path.join(coreDir, name);
-    // 内置无该平台库（mac-x64 等）→ 无权威源、无可恢复对象，按现状跳过（与改动前 ensureCronetBeside 行为一致）。
-    if (!(await this.fileExists(src))) return { action: 'ok', reason: 'no-bundled-lib' };
+    const dst = path.join(coreDir, this.getCronetLibFilename());
+    const src = this.resolveCronetSource(coreDir);
+    // 无随包库且版本未知（mac-x64 等）→ 无权威源，按现状跳过。
+    if (src.kind === 'none') return { action: 'ok', reason: 'no-bundled-lib' };
+    if (src.kind === 'missing') {
+      this.log(
+        'warn',
+        `当前内核需要 libcronet ${src.version}，本机没有配套的库（随包为 ${coreManifest.cronetVersion}）；` +
+          '为免 naive 节点让内核崩溃，不使用随包库，naive 节点暂不可用。请在「内核管理」重新安装当前版本或恢复随包内核'
+      );
+      return { action: 'failed', reason: 'version-mismatch' };
+    }
+    if (path.resolve(src.path) === path.resolve(dst)) return { action: 'ok' };
     try {
-      const need = await this.cronetNeedsRestore(src, dst, opts.strong === true);
+      const need = await this.cronetNeedsRestore(src.path, dst, opts.strong === true);
       if (!need) return { action: 'ok' };
-      await this.atomicCopy(src, dst);
-      this.log('info', `libcronet 自愈：restored（${opts.strong ? 'hash' : 'size'}）→ ${dst}`);
+      await this.atomicCopy(src.path, dst);
+      this.log(
+        'info',
+        `libcronet 自愈：restored（${opts.strong ? 'hash' : 'size'}，${src.kind === 'store' ? `库存 ${src.version}` : '随包'}）→ ${dst}`
+      );
       return { action: 'restored' };
     } catch (error) {
       // 复制失败不阻断启动（naive 不可用时 sing-box 会自报 cronet 错误），但必须告警而非静默吞掉：
       // 否则 dst 缺库会被 getCronetLibStatus 判为 'copy-failed'，需要这条日志定位 EACCES/磁盘满/AV 锁等真因。
       const msg = error instanceof Error ? error.message : String(error);
-      this.log('warn', `libcronet 自愈失败（naive 暂不可用）：${src} → ${dst}：${msg}`);
+      this.log('warn', `libcronet 自愈失败（naive 暂不可用）：${src.path} → ${dst}：${msg}`);
       return { action: 'failed', reason: msg };
+    }
+  }
+
+  /**
+   * 安装内核时收下官方压缩包自带的 libcronet：sourceDir（解压 / 暂存目录）里的内核（corePath，缺省 sourceDir/sing-box[.exe]）
+   * 绑定版本 ≠ 随包版本、且目录里有库 →
+   * 存入 userData/cronet/<版本>/，此后自愈 / 回滚都以它为权威源。压缩包已过 GitHub API 的 SHA-256 校验，库与内核同出一包。
+   * 失败只告警不抛（安装照常，naive 届时判 mismatch 被跳过，不会崩）。macOS 静态编入 → no-op。
+   */
+  async adoptCronetFromCoreDir(
+    sourceDir: string,
+    corePath: string = path.join(sourceDir, this.getCoreBinaryName())
+  ): Promise<{ adopted: boolean; version: string | null }> {
+    if (this.platform === 'darwin') return { adopted: false, version: null };
+    const lib = path.join(sourceDir, this.getCronetLibFilename());
+    const version = this.getRequiredCronetVersion(corePath);
+    if (!version || version === coreManifest.cronetVersion) return { adopted: false, version };
+    const dst = this.getStoredCronetPath(version);
+    if (!dst || !(await this.fileExists(lib))) return { adopted: false, version };
+    try {
+      if ((await this.fileExists(dst)) && sha256File(dst) === sha256File(lib)) {
+        return { adopted: true, version };
+      }
+      await fs.mkdir(path.dirname(dst), { recursive: true });
+      await this.atomicCopy(lib, dst);
+      this.log('info', `已收下新内核配套的 libcronet ${version} → ${dst}`);
+      return { adopted: true, version };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.log('warn', `收下新内核配套的 libcronet ${version} 失败：${msg}`);
+      return { adopted: false, version };
+    }
+  }
+
+  /**
+   * 清理 libcronet 库存：只保留 keepCorePaths（现役 / 备份 / 暂存内核）所需的版本，其余删除（每份 ~10MB）。
+   * 读不出版本的路径忽略；任何失败只忽略，绝不抛。
+   */
+  async pruneCronetStore(keepCorePaths: readonly string[]): Promise<void> {
+    if (this.platform === 'darwin') return;
+    const keep = new Set<string>();
+    for (const p of keepCorePaths) {
+      const v = this.getRequiredCronetVersion(p);
+      if (v) keep.add(v);
+    }
+    const root = this.getCronetStoreDir();
+    let entries: string[];
+    try {
+      entries = await fs.readdir(root);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (keep.has(name)) continue;
+      await fs.rm(path.join(root, name), { recursive: true, force: true }).catch(() => {});
+      this.log('info', `已清理不再使用的 libcronet ${name}`);
     }
   }
 

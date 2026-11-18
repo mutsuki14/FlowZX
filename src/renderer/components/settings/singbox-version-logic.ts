@@ -63,6 +63,11 @@ export interface SingboxStatusLike {
   stagedVersion?: string | null;
   /** 自动更新是否开启；缺省按关闭。 */
   autoUpdateEnabled?: boolean;
+  /**
+   * 现役内核缺配套 libcronet（NaiveProxy 不可用）：当前版本不再是「已是当前版本」，而是可「重新安装」——重装会收下官方
+   * 压缩包自带的库，补齐旧版 FlowZX 在线安装时丢弃的那份。缺省按 false。
+   */
+  cronetRepair?: boolean;
 }
 
 export type SingboxReleaseAction = 'current' | 'restore' | 'install';
@@ -155,14 +160,25 @@ export function optionParts(
   };
 }
 
-/** 选中 release 的动作（见头注）。状态未取到时按 install 处理（组件在状态未取到时禁用按钮）。 */
+/**
+ * 选中 release 的动作（见头注）。状态未取到时按 install 处理（组件在状态未取到时禁用按钮）。
+ * 现役版本缺配套 libcronet 时为 install（重新安装，见 isSingboxReinstall）。
+ */
 export function singboxReleaseAction(
   release: SingboxRelease,
   status: SingboxStatusLike | null
 ): SingboxReleaseAction {
-  if (isActiveSingboxRelease(release, status)) return 'current';
+  if (isActiveSingboxRelease(release, status)) return status?.cronetRepair ? 'install' : 'current';
   if (isBundledSingboxRelease(release, status)) return 'restore';
   return 'install';
+}
+
+/** 选中项是「重新安装当前版本」（补齐配套 libcronet），供按钮文案区分「安装」。 */
+export function isSingboxReinstall(
+  release: Pick<SingboxRelease, 'version'>,
+  status: SingboxStatusLike | null
+): boolean {
+  return status?.cronetRepair === true && isActiveSingboxRelease(release, status);
 }
 
 /** 最新正式版（按版本号取最大，不按列表 / API 顺序；草稿与预发布不算）；没有 → null。 */

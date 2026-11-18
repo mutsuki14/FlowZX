@@ -674,6 +674,8 @@ export const coreUpdateApi = {
     bundledVersion: string;
     /** 生效中的固定版本（当前内核仍是它时自动更新暂停）；无 / 已陈旧 → null。 */
     pinned: SingboxPin | null;
+    /** 现役内核缺配套 libcronet（NaiveProxy 不可用，重新安装当前版本可修复）。 */
+    cronetMismatch?: boolean;
   }> {
     return ipcClient.invoke(IPC_CHANNELS.CORE_GET_VERSION_INFO);
   },

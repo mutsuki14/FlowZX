@@ -65,6 +65,7 @@ import {
   progressBarPercent,
   releaseDate,
   singboxConfirms,
+  isSingboxReinstall,
   singboxReleaseAction,
   type SingboxConfirmReason,
   type SingboxStatusLike,
@@ -117,6 +118,8 @@ export function CoreManagementCard() {
   // 随包版本（= 版本选择的最低可选版本）与生效中的固定版本；versionLoaded 前不允许版本操作（状态未知）。
   const [bundledVersion, setBundledVersion] = useState('');
   const [pinned, setPinned] = useState<SingboxPin | null>(null);
+  // 现役内核缺配套 libcronet → 当前版本可「重新安装」（补齐官方压缩包自带的库）。
+  const [cronetMismatch, setCronetMismatch] = useState(false);
   const [versionLoaded, setVersionLoaded] = useState(false);
 
   const [checkingCoreUpdate, setCheckingCoreUpdate] = useState(false);
@@ -169,6 +172,7 @@ export function CoreManagementCard() {
       setCoreBuild(build);
       setBundledVersion(info.bundledVersion ?? '');
       setPinned(info.pinned ?? null);
+      setCronetMismatch(info.cronetMismatch === true);
       setVersionLoaded(true);
       // 换到第三方内核后清掉此前官方核检查残留的「发现新内核」常驻入口（其更新按钮已置灰，留着是误导性死 UI）。
       if (build === 'fork') setAvailableCoreUpdate(null);
@@ -602,6 +606,7 @@ export function CoreManagementCard() {
             bundledVersion: bundledVersion || listBundled || '',
             stagedVersion,
             autoUpdateEnabled,
+            cronetRepair: cronetMismatch,
           }
         : null,
     [
@@ -612,6 +617,7 @@ export function CoreManagementCard() {
       listBundled,
       stagedVersion,
       autoUpdateEnabled,
+      cronetMismatch,
     ]
   );
   const minVersion = status?.bundledVersion ?? '';
@@ -625,6 +631,7 @@ export function CoreManagementCard() {
   const effectiveTag = pickSelection(filtered, selectedTag);
   const selected = filtered.find((r) => r.tag === effectiveTag) ?? null;
   const action = selected ? singboxReleaseAction(selected, status) : null;
+  const reinstall = selected ? isSingboxReinstall(selected, status) : false;
 
   // 进行中的安装 / 恢复随包（主进程持有，含本卡卸载期间发起的）或本卡刚发起、尚未收到首个进度事件。
   const opBusy = progress !== null || requesting !== null;
@@ -788,7 +795,9 @@ export function CoreManagementCard() {
       ? t('settings.coreManagement.isCurrent')
       : action === 'restore'
         ? t('settings.coreManagement.restoreBundled')
-        : t('settings.coreManagement.install');
+        : reinstall
+          ? t('settings.coreManagement.reinstall')
+          : t('settings.coreManagement.install');
 
   const listPlaceholder = listLoading
     ? t('settings.coreManagement.loadingList')
@@ -1124,6 +1133,14 @@ export function CoreManagementCard() {
       )}
 
       {/* 固定版本：自动更新暂停，直到取消固定（或版本被回滚 / 手动替换 / 恢复随包等途径改变） */}
+      {cronetMismatch && (
+        <div className="set-pad" style={{ paddingTop: 0 }}>
+          <div className="set-note warn">
+            <AlertTriangle />
+            <span>{t('settings.coreManagement.cronetMismatchNote')}</span>
+          </div>
+        </div>
+      )}
       {pinned && (
         <div className="set-pad" style={{ paddingTop: 0 }}>
           <div className="set-note info">
