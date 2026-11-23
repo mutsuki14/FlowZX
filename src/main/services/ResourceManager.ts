@@ -6,7 +6,7 @@ import type { LogLevel } from '../../shared/types';
 import type { LogManager } from './LogManager';
 import { sha256File } from '../../shared/file-hash';
 import coreManifest from '../../shared/core-manifest.json';
-import { findGoDepVersion } from '../utils/go-buildinfo';
+import { findGoBuildSetting, findGoDepVersion } from '../utils/go-buildinfo';
 
 /** libcronet 自愈动作：ok=已就位无需动 / restored=刚从权威源重拷 / failed=拷贝失败或无配套库（已告警，调用方降级）。 */
 export type CronetHealAction = 'ok' | 'restored' | 'failed';
@@ -45,6 +45,12 @@ export class ResourceManager {
   private readonly cronetVersionCache = new Map<
     string,
     { size: number; mtimeMs: number; version: string | null }
+  >();
+
+  /** 内核二进制 → 编译 tag（按 size+mtime 失效）。 */
+  private readonly coreTagsCache = new Map<
+    string,
+    { size: number; mtimeMs: number; tags: string[] | null }
   >();
 
   constructor() {
@@ -577,6 +583,42 @@ export class ResourceManager {
     const version = m?.version ?? null;
     this.cronetVersionCache.set(corePath, { size: st.size, mtimeMs: st.mtimeMs, version });
     return version;
+  }
+
+  /**
+   * 内核编译 tag（Go build info 的 `-tags`，如 with_awg / with_gvisor），按 size+mtime 缓存。读不出 → null（未知）。
+   * 用于判断现役内核能力：AmneziaWG 节点要 with_awg；无 with_gvisor 的内核（awgm-box、1.15.0-alpha.11+ 官方）TUN 不能用 gvisor 栈。
+   */
+  getCoreBuildTags(corePath: string = this.getSingBoxPath()): string[] | null {
+    let st: { size: number; mtimeMs: number };
+    try {
+      st = statSync(corePath);
+    } catch {
+      return null;
+    }
+    const hit = this.coreTagsCache.get(corePath);
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.tags;
+    const raw = findGoBuildSetting(corePath, '-tags');
+    const tags =
+      raw === null
+        ? null
+        : raw
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean);
+    this.coreTagsCache.set(corePath, { size: st.size, mtimeMs: st.mtimeMs, tags });
+    return tags;
+  }
+
+  /** 现役内核是否编入 AmneziaWG（awgm-box 等，build tag with_awg）。未知按不支持（节点跳过而非让内核 FATAL）。 */
+  coreSupportsAwg(): boolean {
+    return this.getCoreBuildTags()?.includes('with_awg') === true;
+  }
+
+  /** 现役内核确定未编入 gVisor（tag 可读且无 with_gvisor）。未知按 false（沿用用户选择，行为不变）。 */
+  coreLacksGvisor(): boolean {
+    const tags = this.getCoreBuildTags();
+    return tags !== null && !tags.includes('with_gvisor');
   }
 
   /** 本机 libcronet 库存根目录：userData/cronet/<版本>/<库文件>。 */

@@ -3,6 +3,7 @@
  * 负责用户配置的加载、保存、验证和管理
  */
 
+import { normalizeAmneziaSettings } from '../../shared/amnezia-wg';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
@@ -541,6 +542,12 @@ export class ConfigManager implements IConfigManager {
         if (Array.isArray(cleanedLocal)) server.wireguardSettings.localAddress = cleanedLocal;
         server.wireguardSettings.allowedIPs = sanitizeCidrs(server.wireguardSettings.allowedIPs);
         sanitizeAllowInternet(server.wireguardSettings);
+        // AmneziaWG 混淆参数：逐字段归一（非法值剔除），全空则删除字段 → 退化为普通 WireGuard。
+        if (server.wireguardSettings.amnezia !== undefined) {
+          const amnezia = normalizeAmneziaSettings(server.wireguardSettings.amnezia);
+          if (amnezia) server.wireguardSettings.amnezia = amnezia;
+          else delete server.wireguardSettings.amnezia;
+        }
       }
       if (server.tailscaleSettings) {
         server.tailscaleSettings.routes = sanitizeCidrs(server.tailscaleSettings.routes);

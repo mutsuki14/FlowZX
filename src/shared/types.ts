@@ -45,6 +45,7 @@ export type {
   SshSettings,
   ShadowTlsSettings,
   WireGuardSettings,
+  AmneziaWgSettings,
   TailscaleSettings,
   CustomSettings,
   XhttpMode,

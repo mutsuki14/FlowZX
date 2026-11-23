@@ -35,6 +35,7 @@ import {
 import { dedupe } from '../../shared/collections';
 import { BOOTSTRAP_DIRECT_DNS_IPS, CONTROLLED_TUN_DNS_IP } from '../../shared/dns';
 import * as os from 'os';
+import { resourceManager } from './ResourceManager';
 
 /** 注入依赖：generateInbounds 原读的实例态。 */
 export interface InboundsDeps {
@@ -404,7 +405,15 @@ export function buildInbounds(
     // pin，绝不吃 sing-box build-tag 默认（编进 gvisor→默认漂成 mixed）。'auto'/缺省→平台默认（mac·Win gvisor /
     // Linux system）；显式 system/gvisor/mixed 原样下发（honor 用户选择，零强制回退——旧 darwin&&system→gvisor
     // 强制回退已移除，它把"用户选 system"与"未设置"混为一谈）。依据/置信度见 docs/design/tun-stack-option.md。
-    const effectiveStack = resolveTunStack(config.tunConfig?.stack, process.platform);
+    let effectiveStack = resolveTunStack(config.tunConfig?.stack, process.platform);
+    // 未编译 gVisor 的内核（如 awgm-box：NewGVisor/NewMixed 为桩，check 通过但运行时 FATAL）→ 回落 system。
+    if (
+      (effectiveStack === 'gvisor' || effectiveStack === 'mixed') &&
+      resourceManager.coreLacksGvisor()
+    ) {
+      console.warn(`[TUN] 当前内核未编译 with_gvisor，TUN 栈 ${effectiveStack} → system`);
+      effectiveStack = 'system';
+    }
 
     // MTU 同款 'auto' 语义（shared/tun-defaults#resolveTunMtu）：'auto'/缺省 → (平台 × 具体栈) 映射；显式数值
     // 原样下发。**必须传已解析的 effectiveStack**（上一行的产物）——传用户原始值会让 'auto' 落不进表。

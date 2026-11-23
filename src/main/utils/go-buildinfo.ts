@@ -82,3 +82,52 @@ export function findGoDepVersion(
     }
   }
 }
+
+/**
+ * 读 Go build info 里的构建设置（`build\t<key>=<value>` 行，等价 `go version -m` 的 build 段），如 key='-tags' 得到
+ * 编译 tag 串（`with_quic,with_awg,...`）。用途：不 spawn 内核即可判断它是否编入 AmneziaWG（with_awg）/ gVisor（with_gvisor）。
+ * 找不到 / 读失败 → null。
+ */
+export function findGoBuildSetting(
+  filePath: string,
+  key: string,
+  chunkSize = DEFAULT_CHUNK
+): string | null {
+  const marker = Buffer.from(`build\t${key}=`, 'utf-8');
+  const maxTail = 8192; // tag 串可能较长
+  const overlap = marker.length + maxTail;
+  let fd: number;
+  try {
+    fd = openSync(filePath, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const chunk = Buffer.alloc(Math.max(chunkSize, overlap * 2));
+    let carry = Buffer.alloc(0);
+    for (;;) {
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      const eof = n === 0;
+      const buf = eof ? carry : Buffer.concat([carry, chunk.subarray(0, n)]);
+      const at = buf.indexOf(marker);
+      if (at >= 0) {
+        const start = at + marker.length;
+        const nl = buf.indexOf(0x0a, start);
+        if (nl >= 0 && nl - start <= maxTail) return buf.subarray(start, nl).toString('utf-8');
+        if (eof || buf.length - at > overlap) return null;
+        carry = buf.subarray(at);
+        continue;
+      }
+      if (eof) return null;
+      carry = buf.subarray(Math.max(0, buf.length - overlap));
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+  }
+}

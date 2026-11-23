@@ -81,6 +81,7 @@ import {
   prunedSelectorDefault,
   buildOutbounds,
   type PendingRuleSelector,
+  isAmneziaNode,
 } from './singbox-outbound-builder';
 import { NodeDnsRaceServer } from './node-dns-race-server';
 import { resolveUpstreams, DEFAULT_POOL_IDS } from '../../shared/node-resolver-upstreams';
@@ -101,6 +102,7 @@ import {
   classifyCoreBuild,
   decideCoreOverride,
   classifyReseedResult,
+  normalizeCoreVersionOutput,
 } from '../../shared/core-build';
 import { retry } from '../utils/retry';
 import { writeFileAtomic } from '../utils/atomic-write';
@@ -3406,7 +3408,9 @@ export class ProxyManager extends EventEmitter implements IProxyManager {
   private async doSpawnCoreVersionFirstLine(): Promise<string> {
     const execAsync = require('util').promisify(require('child_process').exec);
     const { stdout } = await execAsync(`"${this.singboxPath}" version`);
-    return String(stdout).split('\n')[0]?.trim() || '';
+    // awgm-box 等自有构建号的 fork：首行是 `awgm-box version 42`，上游基线在 `based on sing-box X` 行 → 规范成
+    // `sing-box version X-awgm.42`（按基线出配置、判为 fork 不被覆盖）。官方 / 其它 fork 原样取首行。
+    return normalizeCoreVersionOutput(String(stdout));
   }
 
   /**
@@ -4734,6 +4738,9 @@ done
    * - 其它 no-lib：linux/win 未随包提供 libcronet（如未跑 fetch-cronet）
    */
   private naiveUnavailableReason(server: ServerConfig): string {
+    if (isAmneziaNode(server) && !resourceManager.coreSupportsAwg()) {
+      return `选中的节点「${server.name}」是 AmneziaWG（含 Jc/S1/H1 等混淆参数），当前 sing-box 内核不支持（未编译 with_awg）。请在「设置 → 高级 → 内核管理」手动替换为 awgm-box 内核（https://github.com/hoaxisr/awgm-box）。`;
+    }
     if (requiresXrayCore(server) && !resourceManager.hasXrayCore()) {
       return `选中的节点「${server.name}」需要 Xray 内核（XHTTP / VLESS Encryption 等 Xray 独有协议），但未找到 Xray 内核。请重新安装应用，或把 xray 可执行文件放到 ${resourceManager.getXrayOverrideDir()}。`;
     }

@@ -33,6 +33,7 @@ import {
 } from './singbox-config-helpers';
 import { isDirectSelection, resolveGlobalExitTag } from '../../shared/direct-selection';
 import { requiresXrayCore } from '../../shared/xray';
+import { hasAmneziaParams } from '../../shared/amnezia-wg';
 import { realityFingerprint } from '../../shared/reality';
 import { XRAY_DIAL_DIRECT_TAG, type XrayBridgePlan } from './xray-bridge';
 
@@ -78,7 +79,19 @@ export function isNodeUsable(server: ServerConfig): boolean {
   if (requiresXrayCore(server) && !resourceManager.hasXrayCore()) {
     return false;
   }
+  // AmneziaWG：只有编入 with_awg 的内核（awgm-box 等）认 `type: "awg"`；官方内核会 FATAL unknown endpoint type → 跳过。
+  if (isAmneziaNode(server) && !resourceManager.coreSupportsAwg()) {
+    return false;
+  }
   return true;
+}
+
+/** WireGuard 节点带 AmneziaWG 参数 = AmneziaWG 节点（生成 `type: "awg"` endpoint）。 */
+export function isAmneziaNode(server: ServerConfig): boolean {
+  return (
+    server.protocol?.toLowerCase() === 'wireguard' &&
+    hasAmneziaParams(server.wireguardSettings?.amnezia)
+  );
 }
 
 /**
@@ -145,6 +158,14 @@ export function buildWireGuardEndpoint(
   // route.default_domain_resolver——后者的「单 DNS server 时可省略」豁免更脆弱，且 1.14 deprecation 走向是
   // 域名 dial 必须显式 resolver。peer 级 domain_resolver 内核不接受（实测 FATAL unknown field），故放 endpoint 顶层。
   const needsResolver = !!domainResolverTag && !isIpLiteral(server.address);
+  if (isAmneziaNode(server)) {
+    return buildAmneziaEndpoint(
+      server,
+      tag,
+      allowedIps,
+      needsResolver ? domainResolverTag : undefined
+    );
+  }
   const usesSystemInterface = meshUsesSystemInterface(server);
   return {
     type: 'wireguard',
@@ -179,6 +200,82 @@ export function buildWireGuardEndpoint(
       },
     ],
   };
+}
+
+/**
+ * AmneziaWG endpoint（awgm-box `type: "awg"`，字段见其 option/awg.go）。与 WireGuard 的差异：
+ *  - 恒 userspace（awgm-box 的非集成 tun 走 sing-tun 自带 Go 栈，不需 gVisor、不需提权）：不下发 system / name；
+ *  - 预共享密钥字段名为 `preshared_key`（WireGuard 是 pre_shared_key）；
+ *  - keepalive 可为区间串（"25-35"），统一以字符串下发（内核两种形态都认）；
+ *  - 无 reserved（AWG 用 H1–H4 / I1–I5 混淆，不需要 WARP 的 reserved）。
+ */
+function buildAmneziaEndpoint(
+  server: ServerConfig,
+  tag: string,
+  allowedIps: string[],
+  domainResolverTag: SingBoxDomainResolver | undefined
+): SingBoxEndpoint {
+  const s = server.wireguardSettings!;
+  const a = s.amnezia ?? {};
+  const keepalive =
+    a.persistentKeepalive ||
+    String(s.persistentKeepalive && s.persistentKeepalive > 0 ? s.persistentKeepalive : 25);
+  const ep: Record<string, unknown> = {
+    type: 'awg',
+    tag,
+    ...(domainResolverTag ? { domain_resolver: domainResolverTag } : {}),
+    private_key: s.privateKey,
+    address: s.localAddress,
+    mtu: s.mtu && s.mtu > 0 ? s.mtu : 1408,
+  };
+  const num: Array<[keyof typeof a, string]> = [
+    ['jc', 'jc'],
+    ['jmin', 'jmin'],
+    ['jmax', 'jmax'],
+    ['s1', 's1'],
+    ['s2', 's2'],
+    ['s3', 's3'],
+    ['s4', 's4'],
+  ];
+  for (const [k, out] of num) {
+    const v = a[k];
+    if (typeof v === 'number' && v > 0) ep[out] = v;
+  }
+  const str: Array<[keyof typeof a, string]> = [
+    ['h1', 'h1'],
+    ['h2', 'h2'],
+    ['h3', 'h3'],
+    ['h4', 'h4'],
+    ['i1', 'i1'],
+    ['i2', 'i2'],
+    ['i3', 'i3'],
+    ['i4', 'i4'],
+    ['i5', 'i5'],
+    ['headerProtectionKey', 'header_protection_key'],
+    ['contentPaddingAddition', 'content_padding_addition'],
+    ['rekeyAfterTime', 'rekey_after_time'],
+    ['rekeyTimeout', 'rekey_timeout'],
+    ['rejectAfterTime', 'reject_after_time'],
+    ['keepaliveTimeout', 'keepalive_timeout'],
+    ['maxHandshakeAttempts', 'max_handshake_attempts'],
+  ];
+  for (const [k, out] of str) {
+    const v = a[k];
+    if (typeof v === 'string' && v) ep[out] = v;
+  }
+  if (a.randomTrailers) ep.random_trailers = true;
+  if (a.disableCookies) ep.disable_cookies = true;
+  ep.peers = [
+    {
+      address: server.address,
+      port: server.port,
+      public_key: s.peerPublicKey,
+      allowed_ips: allowedIps,
+      ...(s.preSharedKey ? { preshared_key: s.preSharedKey } : {}),
+      persistent_keepalive_interval: keepalive,
+    },
+  ];
+  return ep as unknown as SingBoxEndpoint;
 }
 
 /**
@@ -861,7 +958,9 @@ export function buildOutbounds(
       if (!isNodeUsable(server)) {
         const why = requiresXrayCore(server)
           ? '需要 Xray 内核，但未找到 Xray 内核'
-          : 'NaiveProxy 缺少 libcronet 核心库';
+          : isAmneziaNode(server)
+            ? 'AmneziaWG 需要编入 with_awg 的内核（如 awgm-box），当前内核不支持'
+            : 'NaiveProxy 缺少 libcronet 核心库';
         deps.log('warn', `跳过不可用节点「${server.name}」：${why}`);
         continue;
       }
