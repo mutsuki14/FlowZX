@@ -38,6 +38,7 @@ import {
   decideCoreOverride,
   extractVersionToken,
   parseUploadedCoreVersion,
+  normalizeCoreVersionOutput,
   type CoreBuildKind,
 } from '../../shared/core-build';
 import { CoreUpdateStateStore } from './core-update-state-store';
@@ -2307,8 +2308,8 @@ export class CoreUpdateService {
       const util = require('util');
       const execAsync = util.promisify(exec);
       const { stdout } = await execAsync(`"${backupPath}" version`);
-      const match = stdout.match(/version\s+(\S+)/);
-      return match ? match[1] : null;
+      const tok = extractVersionToken(normalizeCoreVersionOutput(String(stdout)));
+      return tok || null;
     } catch {
       return null;
     }

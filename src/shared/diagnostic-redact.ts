@@ -28,6 +28,7 @@ export const SECRET_KEYS: ReadonlySet<string> = new Set([
   'uuid',
   'privatekey',
   'privatekeypassphrase',
+  'headerprotectionkey',
   'presharedkey',
   'authkey',
   'secret',

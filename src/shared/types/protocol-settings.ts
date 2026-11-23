@@ -198,6 +198,43 @@ export interface WireGuardSettings {
   // 事后无法再取的「自删凭据」——删除此节点时据它发 DELETE /reg/{deviceId} 注销远端匿名设备（见 WARP 设计 §设备移除）。
   // token 与 privateKey 同信任类（device-scoped、客户端所有），随 config 落盘 + 经诊断脱敏（SECRET_KEYS 含 token）。
   warpDevice?: { deviceId: string; token: string };
+  // AmneziaWG（AWG 1.x–3.x 混淆参数）：存在即为 AmneziaWG 节点，生成 sing-box `type: "awg"` endpoint（仅 awgm-box 等
+  // 编入 with_awg 的内核支持；官方内核下节点被跳过）。字段与 awgm-box option/awg.go 一一对应。
+  amnezia?: AmneziaWgSettings;
+}
+
+/**
+ * AmneziaWG 混淆 / 时序参数（wg-quick [Interface] 的 Jc… 字段）。数值字段缺省 = 不下发（内核按 0 = 关闭处理）；
+ * 字符串字段原样下发（H1–H4 可为 "min-max" 区间，I1–I5 为 CPS 包模板，时序字段为秒或 "min-max"）。
+ */
+export interface AmneziaWgSettings {
+  jc?: number;
+  jmin?: number;
+  jmax?: number;
+  s1?: number;
+  s2?: number;
+  s3?: number;
+  s4?: number;
+  h1?: string;
+  h2?: string;
+  h3?: string;
+  h4?: string;
+  i1?: string;
+  i2?: string;
+  i3?: string;
+  i4?: string;
+  i5?: string;
+  headerProtectionKey?: string; // base64；设置后 S1–S4 须 ≥ 12（内核校验）
+  contentPaddingAddition?: string;
+  rekeyAfterTime?: string;
+  rekeyTimeout?: string;
+  rejectAfterTime?: string;
+  keepaliveTimeout?: string;
+  maxHandshakeAttempts?: string;
+  randomTrailers?: boolean; // AWG 3.1：两端都须 3.1
+  disableCookies?: boolean;
+  // AWG 3.0 起 PersistentKeepalive 可为区间（"25-35"）；有值时优先于 WireGuardSettings.persistentKeepalive。
+  persistentKeepalive?: string;
 }
 
 // Tailscale（sing-box endpoint，账号制 mesh，无 server address/port——连控制面）。Phase 1 userspace。

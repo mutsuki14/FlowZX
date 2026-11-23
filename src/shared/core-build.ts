@@ -29,6 +29,33 @@ export function extractVersionToken(versionLine: string): string {
 }
 
 /**
+ * 把 `<core> version` 的完整输出规范成「sing-box 形态」的首行，供 extractVersionToken / classifyCoreBuild / 版本比较统一消费。
+ *
+ * 官方与多数 fork：首行即 `sing-box version X.Y.Z[-suffix]` → 原样返回首行。
+ * awgm-box（hoaxisr/awgm-box，AmneziaWG fork）等「自有构建号」fork：首行是 `awgm-box version 42`（构建计数，非 semver），
+ * 真正的上游基线在后续行 `based on sing-box 1.15.0-alpha.13`。此时合成 `sing-box version <基线>-<程序名>.<构建号>`：
+ *  - 基线决定配置生成按哪个 sing-box 版本出配置（comparableCoreVersion 截到 `1.15.0-alpha.13`）；
+ *  - 程序名后缀让 classifyCoreBuild 判为 fork → 不被官方在线 / 自动更新覆盖，也不会被随包核 reseed。
+ * 无 `based on sing-box` 行 → 原样返回首行（行为与改动前一致）。
+ */
+export function normalizeCoreVersionOutput(stdout: string): string {
+  const text = String(stdout ?? '');
+  const lines = text.split(/\r?\n/);
+  const first = (lines[0] ?? '').trim();
+  const head = /^([A-Za-z][\w.-]*)\s+version\s+(\S+)/i.exec(first);
+  if (!head || /^sing-box$/i.test(head[1])) return first;
+  const base = /^\s*based on sing-box\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\s*$/im.exec(text);
+  if (!base) return first;
+  const name =
+    head[1]
+      .toLowerCase()
+      .replace(/-box$/, '')
+      .replace(/[^0-9a-z]/g, '') || 'fork';
+  const build = head[2].replace(/^v/i, '').replace(/[^0-9A-Za-z.]/g, '');
+  return `sing-box version ${base[1]}-${name}${build ? `.${build}` : ''}`;
+}
+
+/**
  * 解析 `sing-box version` 完整输出为 { version, versionLine }（手动上传 / 预检专用）。
  *  - versionLine：stdout 第一行原始串（含 fork 后缀），供 classifyCoreBuild 判来源。
  *  - version：完整版本 token（保留 prerelease + fork 后缀），经 /^\d+\.\d+/ 形状校验；
@@ -40,7 +67,7 @@ export function parseUploadedCoreVersion(stdout: string): {
   version: string | null;
   versionLine: string;
 } {
-  const versionLine = (String(stdout ?? '').split('\n')[0] ?? '').trim();
+  const versionLine = normalizeCoreVersionOutput(String(stdout ?? ''));
   const token = extractVersionToken(versionLine);
   const version = /^\d+\.\d+/.test(token) ? token : null;
   return { version, versionLine };

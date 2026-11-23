@@ -36,7 +36,7 @@ interface SpeedTestRunContext {
   outcome: SpeedTestOutcome;
   skipped: SpeedTestSkipped;
 }
-import { isEndpointProtocol, isSpeedTestable } from '../../shared/endpoint-routes';
+import { isEndpointProtocol, isEndpointType, isSpeedTestable } from '../../shared/endpoint-routes';
 import { requiresXrayCore } from '../../shared/xray';
 
 /** 临时测速用的 Xray 会话（见 ProxyManager.createXraySpeedTestSession）。 */
@@ -585,7 +585,7 @@ export class SpeedTestService {
         if (latency === null) {
           noteNodeFail(reason ?? 'unknown', u.server, u.tag); // ③ 记失败模式
           report(u.server.id, latency);
-          if (isEndpointProtocol(u.outbound.type as string)) {
+          if (isEndpointType(u.outbound.type as string)) {
             resolvedIpProbePromises.push(
               this.probeEndpointTargetResolvedIps(
                 port,
@@ -865,8 +865,8 @@ export class SpeedTestService {
       inbounds.push({ type: 'http', tag: inboundTag, listen: '127.0.0.1', listen_port: port });
       routeRules.push({ inbound: [inboundTag], action: 'route', outbound: tag });
       // endpoint（WireGuard/WARP/未来 TS）进 endpoints[]，普通协议进 outbounds[]；route 均按 tag 指向。
-      // 按单一真值 isEndpointProtocol 判 type（非硬编码 'wireguard'），未来端点类型自动归位。
-      if (isEndpointProtocol(outbound.type as string)) {
+      // 按单一真值 isEndpointType 判 type（含 AmneziaWG 的 awg）（非硬编码 'wireguard'），未来端点类型自动归位。
+      if (isEndpointType(outbound.type as string)) {
         endpoints.push(outbound);
         // 端点是 L3（运 IP 包、不认域名）→ sing-box 强制**本地解析**目标域名（wireguard/endpoint.go 空 QueryOptions，
         // 过 dns.rules + default）。默认 dns-direct(223.5.5.5) 从**本机**解析 → 本机 geo 的 IP；但端点出口可能在别处

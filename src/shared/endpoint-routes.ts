@@ -2,11 +2,21 @@ import type { ServerConfig, Protocol, UserConfig } from './types';
 import { dedupe, dedupeTrim } from './collections';
 import { isWarpServer } from './warp';
 import { isDirectSelection } from './direct-selection';
+import { hasAmneziaParams } from './amnezia-wg';
 
 /** sing-box endpoint 协议（顶层 endpoints[]、非 outbound）：WireGuard / Tailscale。单一真值，杜绝多处枚举漂移。 */
 export const ENDPOINT_PROTOCOLS: readonly Protocol[] = ['wireguard', 'tailscale'];
 export function isEndpointProtocol(protocol: string | undefined): boolean {
   return !!protocol && ENDPOINT_PROTOCOLS.includes(protocol.toLowerCase() as Protocol);
+}
+
+/**
+ * 生成后的 sing-box 对象 `type` 是否属于顶层 endpoints[]：协议级 endpoint（wireguard/tailscale）+ awgm-box 的
+ * AmneziaWG 端点 `awg`（FlowZX 里 AWG 节点仍是 protocol='wireguard'，只在发射时变 type='awg'）。按已生成对象的
+ * type 归位 endpoints[]/outbounds[] 的位置（测速临时配置等）一律用此谓词，勿用 isEndpointProtocol。
+ */
+export function isEndpointType(type: string | undefined): boolean {
+  return isEndpointProtocol(type) || type?.toLowerCase() === 'awg';
 }
 
 /** 账号制协议（连控制面、无 server address/port）：当前仅 Tailscale。供连接闸门/校验豁免 address/port。 */
@@ -248,6 +258,8 @@ export function meshUsesSystemInterface(server: ServerConfig): boolean {
     // `post-start endpoint/wireguard[Cloudflare WARP]: Connect: resource busy` FATAL（真机实证，多网卡时必现）。
     // 用 isWarpServer 鲁棒判定（含旧/导入的无 warpDevice 标记 WARP，按端点域名兜底）→ 无论 reverseMesh 一律否决。
     if (isWarpServer(server)) return false;
+    // AmneziaWG（awgm-box 的 awg 端点）不走 FlowZX 的 system 内核接口组网路径 → 恒用户态。
+    if (hasAmneziaParams(server.wireguardSettings?.amnezia)) return false;
     return server.wireguardSettings?.reverseMesh === true;
   }
   if (p === 'tailscale') return server.tailscaleSettings?.reverseMesh === true;
